@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.11.0...v1.11.1) (2026-03-20)
+
+
+### Bug Fixes
+
+* skip system context and assistant messages on resume ([1698713](https://github.com/rynfar/opencode-claude-max-proxy/commit/1698713c0206716647e51392f056cb1aabb05f74))
+
 ## [1.11.0](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.10.1...v1.11.0) (2026-03-20)
 
 
