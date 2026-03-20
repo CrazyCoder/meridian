@@ -118,7 +118,7 @@ function storeSession(
   if (fp) fingerprintCache.set(fp, state)
   // Shared file store (cross-proxy resume)
   const key = opencodeSessionId || fp
-  if (key) storeSharedSession(key, claudeSessionId)
+  if (key) storeSharedSession(key, claudeSessionId, state.messageCount)
 }
 
 /** Extract only the last user message (for resume — SDK already has history) */

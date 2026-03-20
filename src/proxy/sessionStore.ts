@@ -18,6 +18,7 @@ export interface StoredSession {
   claudeSessionId: string
   createdAt: number
   lastUsedAt: number
+  messageCount: number
 }
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
@@ -73,13 +74,14 @@ export function lookupSharedSession(key: string): StoredSession | undefined {
   return session
 }
 
-export function storeSharedSession(key: string, claudeSessionId: string): void {
+export function storeSharedSession(key: string, claudeSessionId: string, messageCount?: number): void {
   const store = readStore()
   const existing = store[key]
   store[key] = {
     claudeSessionId,
     createdAt: existing?.createdAt || Date.now(),
     lastUsedAt: Date.now(),
+    messageCount: messageCount ?? existing?.messageCount ?? 0,
   }
   writeStore(store)
 }
