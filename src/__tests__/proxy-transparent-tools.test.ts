@@ -164,7 +164,7 @@ describe("Phase 2: Message format preservation", () => {
     clearSessionCache()
   })
 
-  it("should pass system prompt separately, not merged into messages", async () => {
+  it("should pass system prompt via appendSystemPrompt, not merged into messages", async () => {
     mockMessages = [
       assistantMessage([{ type: "text", text: "Hi" }]),
     ]
@@ -177,12 +177,17 @@ describe("Phase 2: Message format preservation", () => {
     }))
     await response.json()
 
-    // The prompt should include the system context
+    // System prompt should be passed via systemPrompt option (append to Claude Code default)
     expect(capturedQueryParams).toBeDefined()
+    expect(capturedQueryParams.options.systemPrompt).toEqual({
+      type: "preset",
+      preset: "claude_code",
+      append: "You are a helpful assistant.",
+    })
+    // Prompt text should NOT contain the system context (it's in the SDK option now)
     const prompt = capturedQueryParams.prompt
     expect(typeof prompt).toBe("string")
-    // System prompt should be part of the prompt sent to SDK
-    expect(prompt).toContain("You are a helpful assistant.")
+    expect(prompt).not.toContain("You are a helpful assistant.")
   })
 
   it("should include tool_result content in the prompt sent to SDK", async () => {

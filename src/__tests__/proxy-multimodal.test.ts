@@ -149,7 +149,7 @@ describe("Multimodal content", () => {
       messages.push(msg)
     }
 
-    // Should have system context + all 3 messages
+    // Should have all 3 messages (system context now in SDK option, not in prompt)
     expect(messages.length).toBeGreaterThanOrEqual(3)
     // All should have the user type wrapper (SDK requirement)
     for (const msg of messages) {
@@ -178,7 +178,7 @@ describe("Multimodal content", () => {
       messages.push(msg)
     }
 
-    // Find the message with image content (skip system context)
+    // Find the message with image content
     const imageMsg = messages.find((m: any) =>
       Array.isArray(m.message.content) &&
       m.message.content.some((b: any) => b.type === "image")
@@ -189,7 +189,7 @@ describe("Multimodal content", () => {
     }
   })
 
-  it("should include system context in structured messages", async () => {
+  it("should pass system context via systemPrompt option, not in structured messages", async () => {
     const app = createTestApp()
     await (await post(app, {
       model: "claude-sonnet-4-5",
@@ -205,13 +205,23 @@ describe("Multimodal content", () => {
       }],
     })).json()
 
+    // System context should be in SDK option, not injected as a structured message
+    expect(capturedQueryParams.options.systemPrompt).toEqual({
+      type: "preset",
+      preset: "claude_code",
+      append: "You are a helpful assistant.",
+    })
+
     const messages: any[] = []
     for await (const msg of capturedQueryParams.prompt) {
       messages.push(msg)
     }
 
-    // First message should be the system context
-    expect(messages[0]!.message.content).toContain("You are a helpful assistant.")
+    // No message should contain the system context (it's in the SDK option now)
+    const hasSystemMsg = messages.some((m: any) =>
+      typeof m.message.content === "string" && m.message.content.includes("You are a helpful assistant.")
+    )
+    expect(hasSystemMsg).toBe(false)
   })
 
   it("should fall back to text prompt with image placeholder when no multimodal", async () => {

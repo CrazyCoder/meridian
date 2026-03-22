@@ -561,14 +561,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
             }
           }
         } else {
-          // First request: include system context + all messages
-          if (systemContext) {
-            structured.push({
-              type: "user" as const,
-              message: { role: "user", content: systemContext },
-              parent_tool_use_id: null,
-            })
-          }
+          // First request: all messages (system context now passed via appendSystemPrompt)
           for (const m of messagesToConvert) {
             if (m.role === "user") {
               structured.push({
@@ -629,10 +622,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
           })
           .join("\n\n") || ""
 
-        // On resume, skip system context (SDK already has it)
-        prompt = (!isResume && systemContext)
-          ? `${systemContext}\n\n${conversationParts}`
-          : conversationParts
+        // System context now passed via appendSystemPrompt (not in prompt text)
+        prompt = conversationParts
       }
 
       // --- Passthrough mode ---
@@ -716,6 +707,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
                 pathToClaudeCodeExecutable: claudeExecutable,
                 permissionMode: "bypassPermissions",
                 allowDangerouslySkipPermissions: true,
+                // Pass OpenCode's system prompt (includes AGENTS.md, custom instructions)
+                // as an append to Claude Code's default — preserves the SDK identity.
+                ...(systemContext ? {
+                  systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemContext }
+                } : {}),
                 // In passthrough mode: block ALL SDK built-in tools, use OpenCode's via MCP
                 // In normal mode: block built-ins, use our own MCP replacements
                 ...(passthrough
@@ -890,6 +886,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
                   includePartialMessages: true,
                   permissionMode: "bypassPermissions",
                   allowDangerouslySkipPermissions: true,
+                  // Pass OpenCode's system prompt (includes AGENTS.md, custom instructions)
+                  // as an append to Claude Code's default — preserves the SDK identity.
+                  ...(systemContext ? {
+                    systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemContext }
+                  } : {}),
                   ...(passthrough
                     ? {
                         disallowedTools: [...BLOCKED_BUILTIN_TOOLS, ...CLAUDE_CODE_ONLY_TOOLS],
