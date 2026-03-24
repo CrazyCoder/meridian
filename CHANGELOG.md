@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.16.2](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.16.1...v1.16.2) (2026-03-24)
+
+
+### Bug Fixes
+
+* redesign session management with per-message hashing, SDK-native undo, and compaction survival ([f1a7e7b](https://github.com/rynfar/opencode-claude-max-proxy/commit/f1a7e7b6785a3d5b32d2e091e467d93b89862e39))
+* redesign session management with per-message hashing, SDK-native undo, and compaction survival ([291e20f](https://github.com/rynfar/opencode-claude-max-proxy/commit/291e20f93f91dfe8942c84a38847926b20db7598))
+
 ## [1.16.1](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.16.0...v1.16.1) (2026-03-24)
 
 
