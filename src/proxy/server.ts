@@ -464,10 +464,10 @@ async function resolveClaudeExecutableAsync(): Promise<string> {
   }
 }
 
-function mapModelToClaudeModel(model: string): "sonnet" | "opus" | "opus[1m]" | "haiku" {
+function mapModelToClaudeModel(model: string): "sonnet" | "sonnet[1m]" | "opus" | "opus[1m]" | "haiku" {
   if (model.includes("opus")) return "opus[1m]"
   if (model.includes("haiku")) return "haiku"
-  return "sonnet"
+  return "sonnet[1m]"
 }
 
 function isClosedControllerError(error: unknown): boolean {
