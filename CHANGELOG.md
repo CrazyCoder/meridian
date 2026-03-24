@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.3](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.15.2...v1.15.3) (2026-03-24)
+
+
+### Bug Fixes
+
+* add workingDirectory to fingerprint hash for cross-project isolation ([69cfa1a](https://github.com/rynfar/opencode-claude-max-proxy/commit/69cfa1af4f22229494bcc1c3f1cd13dcbe54280a)), closes [#111](https://github.com/rynfar/opencode-claude-max-proxy/issues/111)
+
 ## [1.15.2](https://github.com/rynfar/opencode-claude-max-proxy/compare/v1.15.1...v1.15.2) (2026-03-24)
 
 
