@@ -108,14 +108,13 @@ export function clearSessionCache() {
 // uses count-based pruning. SDK sessions persist on Anthropic's side for
 // weeks — we should never discard a valid mapping before the SDK does.
 
-/** Hash the first user message to fingerprint a conversation.
+/** Hash the first user message + working directory to fingerprint a conversation.
  *  Used to find a cached session when no x-opencode-session header is present.
- *  Does NOT include systemContext because OpenCode's system prompt contains
- *  dynamic content (file trees, diagnostics) that changes every request,
- *  making the hash unstable and preventing resume.
- *  Cross-project safety is handled by lineage verification — different
- *  projects will have different message content after turn 1. */
-function getConversationFingerprint(messages: Array<{ role: string; content: any }>): string {
+ *  Includes workingDirectory (stable per project, unlike systemContext which
+ *  contains dynamic file trees/diagnostics that change every request).
+ *  This prevents cross-project collisions when different projects start
+ *  with the same first message. */
+function getConversationFingerprint(messages: Array<{ role: string; content: any }>, workingDirectory?: string): string {
   const firstUser = messages?.find((m) => m.role === "user")
   if (!firstUser) return ""
   const text = typeof firstUser.content === "string"
@@ -124,7 +123,8 @@ function getConversationFingerprint(messages: Array<{ role: string; content: any
       ? firstUser.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("")
       : ""
   if (!text) return ""
-  return createHash("sha256").update(text.slice(0, 2000)).digest("hex").slice(0, 16)
+  const seed = workingDirectory ? `${workingDirectory}\n${text.slice(0, 2000)}` : text.slice(0, 2000)
+  return createHash("sha256").update(seed).digest("hex").slice(0, 16)
 }
 
 /**
@@ -196,7 +196,8 @@ function touchSession(state: SessionState): SessionState {
 /** Look up a cached session by header or fingerprint */
 function lookupSession(
   opencodeSessionId: string | undefined,
-  messages: Array<{ role: string; content: any }>
+  messages: Array<{ role: string; content: any }>,
+  workingDirectory?: string
 ): SessionState | undefined {
   if (opencodeSessionId) {
     const cached = sessionCache.get(opencodeSessionId)
@@ -219,7 +220,7 @@ function lookupSession(
     return undefined
   }
 
-  const fp = getConversationFingerprint(messages)
+  const fp = getConversationFingerprint(messages, workingDirectory)
   if (fp) {
     const cached = fingerprintCache.get(fp)
     if (cached) {
@@ -246,7 +247,8 @@ function lookupSession(
 function storeSession(
   opencodeSessionId: string | undefined,
   messages: Array<{ role: string; content: any }>,
-  claudeSessionId: string
+  claudeSessionId: string,
+  workingDirectory?: string
 ) {
   if (!claudeSessionId) return
   const lineageHash = computeLineageHash(messages)
@@ -258,7 +260,7 @@ function storeSession(
   }
   // In-memory cache
   if (opencodeSessionId) sessionCache.set(opencodeSessionId, state)
-  const fp = getConversationFingerprint(messages)
+  const fp = getConversationFingerprint(messages, workingDirectory)
   if (fp) fingerprintCache.set(fp, state)
   // Shared file store (cross-proxy resume)
   const key = opencodeSessionId || fp
@@ -553,7 +555,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
         // Session resume: look up cached Claude SDK session
         const opencodeSessionId = c.req.header("x-opencode-session")
-        const cachedSession = lookupSession(opencodeSessionId, body.messages || [])
+        const cachedSession = lookupSession(opencodeSessionId, body.messages || [], workingDirectory)
         const resumeSessionId = cachedSession?.claudeSessionId
         const isResume = Boolean(resumeSessionId)
 
@@ -929,7 +931,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
           // Store session for future resume
               if (currentSessionId) {
-                storeSession(opencodeSessionId, body.messages || [], currentSessionId)
+                storeSession(opencodeSessionId, body.messages || [], currentSessionId, workingDirectory)
               }
 
               const responseSessionId = currentSessionId || resumeSessionId || `session_${Date.now()}`
@@ -1153,7 +1155,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
               // Store session for future resume
               if (currentSessionId) {
-                storeSession(opencodeSessionId, body.messages || [], currentSessionId)
+                storeSession(opencodeSessionId, body.messages || [], currentSessionId, workingDirectory)
               }
 
               if (!streamClosed) {
