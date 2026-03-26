@@ -31,6 +31,7 @@ COPY --from=build --chown=claude:claude /app/node_modules ./node_modules
 COPY --from=build --chown=claude:claude /app/dist ./dist
 COPY --from=build --chown=claude:claude /app/package.json ./
 COPY --chown=claude:claude bin/docker-entrypoint.sh bin/claude-proxy-supervisor.sh ./bin/
+RUN chmod +x ./bin/docker-entrypoint.sh ./bin/claude-proxy-supervisor.sh
 
 EXPOSE 3456
 
