@@ -94,10 +94,11 @@ let sessionDirOverride: string | null = null
 let skipLocking = false
 
 /** Set an explicit session store directory. Takes priority over env var.
- *  Pass null to clear. For testing only. */
-export function setSessionStoreDir(dir: string | null): void {
+ *  Pass null to clear. For testing only.
+ *  @param opts.skipLocking — skip file locking (default true for test isolation) */
+export function setSessionStoreDir(dir: string | null, opts?: { skipLocking?: boolean }): void {
   sessionDirOverride = dir
-  skipLocking = dir !== null
+  skipLocking = dir !== null && (opts?.skipLocking ?? true)
 }
 
 function getStorePath(): string {

@@ -2,20 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { clearSharedSessions, lookupSharedSession, storeSharedSession } from "../proxy/sessionStore"
+import { clearSharedSessions, lookupSharedSession, storeSharedSession, setSessionStoreDir } from "../proxy/sessionStore"
 
 describe("Shared session store locking", () => {
   let tmpDir: string
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "session-store-locking-test-"))
-    process.env.CLAUDE_PROXY_SESSION_DIR = tmpDir
+    setSessionStoreDir(tmpDir, { skipLocking: false })
     clearSharedSessions()
   })
 
   afterEach(() => {
+    setSessionStoreDir(null)
     rmSync(tmpDir, { recursive: true, force: true })
-    delete process.env.CLAUDE_PROXY_SESSION_DIR
   })
 
   it("preserves all entries during concurrent writes", async () => {
@@ -63,7 +63,7 @@ describe("Shared session store locking", () => {
 
     const badDirPath = join(tmpDir, "not-a-dir")
     writeFileSync(badDirPath, "file")
-    process.env.CLAUDE_PROXY_SESSION_DIR = badDirPath
+    setSessionStoreDir(badDirPath)
     storeSharedSession("write-failure", "claude-write")
     clearSharedSessions()
 
