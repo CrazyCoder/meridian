@@ -6,6 +6,7 @@
  */
 
 import type { AgentAdapter } from "./adapter"
+import type { SdkBeta } from "@anthropic-ai/claude-agent-sdk"
 import { createOpencodeMcpServer } from "../mcpTools"
 import { createPassthroughMcpServer, PASSTHROUGH_MCP_NAME } from "./passthroughTools"
 
@@ -42,6 +43,14 @@ export interface QueryContext {
   adapter: AgentAdapter
   /** Callback to receive stderr lines from the Claude subprocess */
   onStderr?: (line: string) => void
+  /** Effort level — controls thinking depth (low/medium/high/max) */
+  effort?: 'low' | 'medium' | 'high' | 'max'
+  /** Thinking configuration — adaptive, enabled with budget, or disabled */
+  thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' }
+  /** API-side task budget in tokens — model paces tool use within this limit */
+  taskBudget?: { total: number }
+  /** Beta features to enable */
+  betas?: string[]
 }
 
 /**
@@ -54,6 +63,7 @@ export function buildQueryOptions(ctx: QueryContext) {
     prompt, model, workingDirectory, systemContext, claudeExecutable,
     passthrough, stream, sdkAgents, passthroughMcp, cleanEnv,
     resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, adapter, onStderr,
+    effort, thinking, taskBudget, betas,
   } = ctx
 
   const blockedTools = [...adapter.getBlockedBuiltinTools(), ...adapter.getAgentIncompatibleTools()]
@@ -104,6 +114,10 @@ export function buildQueryOptions(ctx: QueryContext) {
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       ...(isUndo ? { forkSession: true, ...(undoRollbackUuid ? { resumeSessionAt: undoRollbackUuid } : {}) } : {}),
       ...(sdkHooks ? { hooks: sdkHooks } : {}),
+      ...(effort ? { effort: effort } : {}),
+      ...(thinking ? { thinking: thinking } : {}),
+      ...(taskBudget ? { taskBudget: taskBudget } : {}),
+      ...(betas && betas.length > 0 ? { betas: betas as SdkBeta[] } : {}),
     }
   }
 }
