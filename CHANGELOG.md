@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.26.4](https://github.com/rynfar/meridian/compare/v1.26.3...v1.26.4) (2026-04-03)
+
+
+### Bug Fixes
+
+* use MERIDIAN_SESSION_DIR env var in shared store test for parallel-safe isolation ([43d1de6](https://github.com/rynfar/meridian/commit/43d1de6eb74802c5bebf34c3244e0ba998c48f36))
+
 ## [1.26.3](https://github.com/rynfar/meridian/compare/v1.26.2...v1.26.3) (2026-04-03)
 
 
