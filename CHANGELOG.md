@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.26.6](https://github.com/rynfar/meridian/compare/v1.26.5...v1.26.6) (2026-04-03)
+
+
+### Bug Fixes
+
+* correct ci.yml YAML (remove stray XML artifact) ([#251](https://github.com/rynfar/meridian/issues/251)) ([207d8a3](https://github.com/rynfar/meridian/commit/207d8a3ccc55dc53d15c885d805097bd4a273ea0))
+* force executable to node in buildQueryOptions ([6e33926](https://github.com/rynfar/meridian/commit/6e33926d65d7cd3082d17f893654ae67f20504ce))
+
 ## [1.26.5](https://github.com/rynfar/meridian/compare/v1.26.4...v1.26.5) (2026-04-03)
 
 
