@@ -5,7 +5,7 @@
  * No disk I/O in the hot path. Data resets on proxy restart.
  */
 
-import type { RequestMetric, TelemetrySummary } from "./types"
+import type { RequestMetric, TelemetrySummary, ITelemetryStore } from "./types"
 import { computeSummary } from "./percentiles"
 
 const DEFAULT_CAPACITY = 1000
@@ -18,7 +18,7 @@ function getCapacity(): number {
   return parsed
 }
 
-export class TelemetryStore {
+export class MemoryTelemetryStore implements ITelemetryStore {
   private buffer: (RequestMetric | null)[]
   private head = 0 // next write position
   private count = 0
@@ -96,4 +96,7 @@ export class TelemetryStore {
 }
 
 /** Singleton store instance used by the proxy. */
-export const telemetryStore = new TelemetryStore()
+export const telemetryStore = new MemoryTelemetryStore()
+
+/** @deprecated Use MemoryTelemetryStore */
+export { MemoryTelemetryStore as TelemetryStore }

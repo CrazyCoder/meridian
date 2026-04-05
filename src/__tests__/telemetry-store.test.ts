@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "bun:test"
-import { TelemetryStore } from "../telemetry/store"
+import { MemoryTelemetryStore } from "../telemetry/store"
 import type { RequestMetric } from "../telemetry/types"
 
 function makeMetric(overrides: Partial<RequestMetric> = {}): RequestMetric {
@@ -23,11 +23,11 @@ function makeMetric(overrides: Partial<RequestMetric> = {}): RequestMetric {
   }
 }
 
-describe("TelemetryStore", () => {
-  let store: TelemetryStore
+describe("MemoryTelemetryStore", () => {
+  let store: MemoryTelemetryStore
 
   beforeEach(() => {
-    store = new TelemetryStore(10)
+    store = new MemoryTelemetryStore(10)
   })
 
   it("records and retrieves metrics", () => {
@@ -95,11 +95,11 @@ describe("TelemetryStore", () => {
   })
 })
 
-describe("TelemetryStore.summarize", () => {
-  let store: TelemetryStore
+describe("MemoryTelemetryStore.summarize", () => {
+  let store: MemoryTelemetryStore
 
   beforeEach(() => {
-    store = new TelemetryStore(100)
+    store = new MemoryTelemetryStore(100)
   })
 
   it("returns empty summary when no metrics exist", () => {
