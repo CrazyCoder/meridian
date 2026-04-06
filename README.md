@@ -14,7 +14,24 @@
 Meridian turns your Claude Max subscription into a local Anthropic API. Any tool that speaks the Anthropic or OpenAI protocol — OpenCode, OpenClaw, Crush, Cline, Aider, Pi, Droid, Open WebUI — connects to Meridian and gets Claude, powered by your existing subscription through the official Claude Code SDK.
 
 > [!IMPORTANT]
-> **Extra Usage billing fix (v0.x.x):** Previous versions defaulted Sonnet to `sonnet[1m]` (1M context), which is [always billed as Extra Usage](https://code.claude.com/docs/en/model-config#extended-context) on Max plans — even when regular usage isn't exhausted. Sonnet now defaults to 200k. If you're on an older version, update or set `MERIDIAN_SONNET_MODEL=sonnet` as a workaround. See [#255](https://github.com/rynfar/meridian/issues/255) for details.
+> ### Meridian is unaffected by the April 5, 2025 third-party blocks
+>
+> On April 5, 2025, Anthropic began blocking third-party tools that bypass Claude Code by intercepting OAuth tokens and replaying them against internal API endpoints. Tools that extract `~/.claude/` credentials, proxy raw OAuth bearer tokens, or patch Claude Code binaries to redirect traffic may no longer function.
+>
+> **Meridian does not do any of this.** Its architecture is fundamentally different:
+>
+> - **SDK-native.** Every request calls [`query()`](https://docs.anthropic.com/en/docs/claude-code/sdk) from `@anthropic-ai/claude-agent-sdk` — the same function Anthropic documents for programmatic Claude Code access. No OAuth tokens are extracted, intercepted, or replayed.
+> - **Real Claude Code sessions.** The SDK spawns the actual Claude Code process, manages its own authentication, and handles all communication with Anthropic's servers. Meridian's traffic doesn't *look like* Claude Code — it *is* Claude Code.
+> - **Documented API surface only.** Session resume, MCP tool servers, agent definitions, thinking configuration, permission modes, tool blocking — every feature Meridian uses is a published, documented SDK option. Nothing is reverse-engineered or patched.
+> - **Native benefits and controls preserved.** Prompt caching, conversation persistence, context window management, and compaction all function exactly as they do in Claude Code — because the SDK manages them directly. This means Anthropic's engineering investments in efficiency and their rate-limiting controls work as designed. Max subscription tokens flow through the correct channel, governed by the same guardrails Anthropic built into Claude Code. Meridian doesn't bypass these mechanisms; it depends on them.
+>
+> A small number of adjustments were made in response to the April 5th changes — notably stripping `anthropic-beta` headers that could trigger unintended Extra Usage billing on Max subscriptions ([#281](https://github.com/rynfar/meridian/issues/281)). We are also evaluating system prompt handling to ensure nothing conflicts with Claude Code's expectations. These are compatibility adjustments, not workarounds. Our philosophy is to let Claude Code be the foundation and never fight the SDK — we work with it and add our own layer on top.
+>
+> **Our position is straightforward.** Anthropic asks developers to use Claude Code as the harness for Max subscription access — we do. We call their SDK, respect its authentication flow, use its documented features, and operate within its designed boundaries. We are not circumventing Claude Code; we are building on top of it.
+>
+> What Meridian adds is a **presentation and interoperability layer**. We translate Claude Code's output into the standard Anthropic API format so developers can connect the editors, terminals, and workflows they prefer. The SDK does the work; Meridian formats the result. Developers should have the right to choose their own interface and integrate with their own tooling — that's not circumvention, it's the reason SDKs exist.
+>
+> For Meridian to stop working, Anthropic would need to restrict the Claude Code SDK itself or remove documented features that legitimate SDK consumers depend on. We don't believe that's the intent. We're building within Anthropic's ecosystem and constraints because we genuinely value their tools and models. We simply want the freedom to choose how we experience them — and we hope Anthropic sees that as the kind of ecosystem engagement their SDK was designed to enable.
 
 ## Quick Start
 
