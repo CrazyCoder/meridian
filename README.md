@@ -55,7 +55,7 @@ Meridian runs on `http://127.0.0.1:3456`. Point any Anthropic-compatible tool at
 ANTHROPIC_API_KEY=x ANTHROPIC_BASE_URL=http://127.0.0.1:3456 opencode
 ```
 
-The API key value doesn't matter — Meridian authenticates through your Claude Max session, not API keys.
+The API key value is a placeholder — Meridian authenticates through the Claude Code SDK, not API keys. Most Anthropic-compatible tools require this field to be set, but any value works.
 
 ## Why Meridian?
 
@@ -503,10 +503,10 @@ npm run build  # build with bun + tsc
 ## FAQ
 
 **Is this allowed by Anthropic's terms?**
-Meridian uses the official Claude Code SDK — the same SDK Anthropic publishes for programmatic access. It authenticates through your existing Claude Max session using OAuth.
+Meridian uses the official Claude Code SDK — the same SDK Anthropic publishes and documents for programmatic access. It does not intercept credentials, modify binaries, or bypass any authentication. All requests flow through the SDK's own authentication and rate-limiting mechanisms.
 
 **How is this different from using an API key?**
-API keys are billed per token. Claude Max is a flat monthly fee. Meridian lets you use that subscription from any compatible tool.
+API keys provide direct API access billed per token. Claude Max includes programmatic access through the Claude Code SDK. Meridian translates SDK responses into the standard Anthropic API format, allowing compatible tools to connect through Claude Code.
 
 **What happens if my OAuth token expires?**
 Tokens expire roughly every 8 hours. Meridian detects the expiry, refreshes the token automatically, and retries the request — so requests continue transparently. If the refresh fails (e.g. the refresh token has expired after weeks of inactivity), Meridian returns a clear error telling you to run `claude login`.
