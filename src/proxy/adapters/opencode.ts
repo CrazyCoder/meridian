@@ -45,6 +45,11 @@ export const openCodeAdapter: AgentAdapter = {
     return ALLOWED_MCP_TOOLS
   },
 
+  getCoreToolNames(): readonly string[] {
+    // Tools Claude uses on nearly every turn — always loaded, never deferred.
+    return ["read", "write", "edit", "bash", "glob", "grep"]
+  },
+
   usesPassthrough(): boolean {
     const envVal = process.env.MERIDIAN_PASSTHROUGH ?? process.env.CLAUDE_PROXY_PASSTHROUGH
     if (envVal === "0" || envVal === "false" || envVal === "no") {

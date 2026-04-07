@@ -57,6 +57,11 @@ describe("buildQueryOptions", () => {
     expect(result.options.maxTurns).toBe(3)
   })
 
+  it("sets maxTurns to 3 in passthrough mode with deferred tools (extra turn for ToolSearch)", () => {
+    const result = buildQueryOptions(makeContext({ passthrough: true, hasDeferredTools: true }))
+    expect(result.options.maxTurns).toBe(3)
+  })
+
   it("includes system prompt as preset in normal mode", () => {
     const result = buildQueryOptions(makeContext({ systemContext: "Be helpful" }))
     const sp = (result.options as any).systemPrompt

@@ -583,7 +583,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // can actually call them (not just see them as text descriptions).
       let passthroughMcp: ReturnType<typeof createPassthroughMcpServer> | undefined
       if (passthrough && Array.isArray(body.tools) && body.tools.length > 0) {
-        passthroughMcp = createPassthroughMcpServer(body.tools)
+        passthroughMcp = createPassthroughMcpServer(body.tools, adapter.getCoreToolNames?.())
       }
       const hasDeferredTools = passthroughMcp?.hasDeferredTools ?? false
 

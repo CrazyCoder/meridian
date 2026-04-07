@@ -92,7 +92,9 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
       //         before the response is complete, causing HTTP 500s.
       // On resume: the SDK may spend a turn rehydrating session state before
       // the model responds, so allow 3 turns to prevent "max turns (2)" errors.
-      maxTurns: passthrough ? (resumeSessionId ? 3 : 2) : 200,
+      // With deferred tools: ToolSearch consumes a turn before the actual tool
+      // call, so allow 3 turns to give room for search + call + handoff.
+      maxTurns: passthrough ? ((resumeSessionId || hasDeferredTools) ? 3 : 2) : 200,
       cwd: workingDirectory,
       model,
       pathToClaudeCodeExecutable: claudeExecutable,

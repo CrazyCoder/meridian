@@ -98,6 +98,16 @@ export interface AgentAdapter {
   usesPassthrough?(): boolean
 
   /**
+   * Core tool names that should always be loaded (never deferred).
+   * When auto-defer is active (tool count exceeds threshold), these tools
+   * are marked alwaysLoad while everything else is deferred to reduce
+   * system prompt size.
+   *
+   * Return undefined to disable auto-defer for this agent.
+   */
+  getCoreToolNames?(): readonly string[]
+
+  /**
    * Whether this agent's client can render thinking blocks.
    *
    * When true, thinking/redacted_thinking blocks are forwarded in

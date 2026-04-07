@@ -52,15 +52,40 @@ function jsonSchemaToZod(schema: any): z.ZodTypeAny {
   return z.any()
 }
 
+/** Default threshold: auto-defer when tool count exceeds this.
+ *  Override with MERIDIAN_DEFER_TOOL_THRESHOLD env var. Set to 0 to disable. */
+const DEFAULT_DEFER_THRESHOLD = 15
+
+export function getAutoDeferThreshold(): number {
+  const raw = process.env.MERIDIAN_DEFER_TOOL_THRESHOLD
+  if (raw === undefined) return DEFAULT_DEFER_THRESHOLD
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_DEFER_THRESHOLD
+  return parsed
+}
+
 /**
  * Create an MCP server with tool definitions matching OpenCode's request.
+ *
+ * Auto-defer: when the tool count exceeds the threshold and coreToolNames
+ * is provided, non-core tools are registered without alwaysLoad so the SDK
+ * defers them. Core tools are marked alwaysLoad to stay in the prompt.
+ * Client-provided defer_loading: true also triggers deferral for specific tools.
  */
 export function createPassthroughMcpServer(
-  tools: Array<{ name: string; description?: string; input_schema?: any; defer_loading?: boolean }>
+  tools: Array<{ name: string; description?: string; input_schema?: any; defer_loading?: boolean }>,
+  coreToolNames?: readonly string[]
 ) {
   const server = createSdkMcpServer({ name: PASSTHROUGH_MCP_NAME })
   const toolNames: string[] = []
-  const hasDeferredTools = tools.some(t => t.defer_loading === true)
+
+  // Auto-defer: if tool count exceeds threshold and adapter provides core tools
+  const threshold = getAutoDeferThreshold()
+  const autoDefer = !!(threshold > 0 && coreToolNames && coreToolNames.length > 0 && tools.length > threshold)
+  const coreSet = autoDefer ? new Set(coreToolNames.map(n => n.toLowerCase())) : undefined
+
+  // hasDeferredTools is true when: client explicitly defers any tool, OR auto-defer kicks in
+  const hasDeferredTools = tools.some(t => t.defer_loading === true) || autoDefer
 
   // Sort tools alphabetically by name to ensure deterministic MCP registration
   // order. Non-deterministic ordering changes the SDK system prompt between
@@ -80,28 +105,54 @@ export function createPassthroughMcpServer(
           ? (zodSchema as any).shape
           : { input: z.any() }
 
-      server.instance.tool(
+      server.instance.registerTool(
         tool.name,
-        tool.description || tool.name,
-        shape,
-        async () => ({ content: [{ type: "text" as const, text: "passthrough" }] }),
-        hasDeferredTools && !tool.defer_loading ? { alwaysLoad: true } : undefined
+        {
+          description: tool.description || tool.name,
+          inputSchema: shape,
+          // Mark tool as alwaysLoad when it should stay in the prompt:
+          // - Client explicitly did NOT set defer_loading on this tool, OR
+          // - Auto-defer is active and this tool is in the core set
+          ...(hasDeferredTools ? (shouldAlwaysLoad(tool, coreSet) ? { _meta: { "anthropic/alwaysLoad": true } } : {}) : {}),
+        },
+        async () => ({ content: [{ type: "text" as const, text: "passthrough" }] })
       )
       toolNames.push(`${PASSTHROUGH_MCP_PREFIX}${tool.name}`)
     } catch {
       // If schema conversion fails, register with permissive schema
-      server.instance.tool(
+      server.instance.registerTool(
         tool.name,
-        tool.description || tool.name,
-        { input: z.string().optional() },
-        async () => ({ content: [{ type: "text" as const, text: "passthrough" }] }),
-        hasDeferredTools && !tool.defer_loading ? { alwaysLoad: true } : undefined
+        {
+          description: tool.description || tool.name,
+          inputSchema: { input: z.string().optional() },
+          ...(hasDeferredTools ? (shouldAlwaysLoad(tool, coreSet) ? { _meta: { "anthropic/alwaysLoad": true } } : {}) : {}),
+        },
+        async () => ({ content: [{ type: "text" as const, text: "passthrough" }] })
       )
       toolNames.push(`${PASSTHROUGH_MCP_PREFIX}${tool.name}`)
     }
   }
 
   return { server, toolNames, hasDeferredTools }
+}
+
+/**
+ * Determine if a tool should be marked alwaysLoad (kept in prompt, not deferred).
+ * A tool is always-loaded when:
+ * - Client explicitly did NOT set defer_loading on it AND no auto-defer, OR
+ * - Auto-defer is active and the tool name is in the core set, OR
+ * - Client explicitly set defer_loading: false (opt out of deferral)
+ */
+function shouldAlwaysLoad(
+  tool: { name: string; defer_loading?: boolean },
+  coreSet: Set<string> | undefined
+): boolean {
+  // Client explicitly deferred this tool — never alwaysLoad
+  if (tool.defer_loading === true) return false
+  // Auto-defer active: only core tools get alwaysLoad
+  if (coreSet) return coreSet.has(tool.name.toLowerCase())
+  // No auto-defer: client-triggered deferral — non-deferred tools get alwaysLoad
+  return true
 }
 
 /**
