@@ -59,10 +59,17 @@ export function detectTokenAnomalies(
 
   // Cache miss: resume request with no cache reads
   if (current.isResume && current.cacheHitRate <= CACHE_MISS_THRESHOLD && current.inputTokens > 0) {
+    // No previous metric for this session = first request after proxy restart.
+    // SDK cache is in-memory and doesn't survive restarts, so a one-time
+    // cache miss is expected. Only flag as critical if we have a previous
+    // metric (meaning the cache should have been warm).
+    const isFirstAfterRestart = !previous
     anomalies.push({
       type: "cache_miss",
-      severity: "critical",
-      detail: `Cache hit rate ${Math.round(current.cacheHitRate * 100)}% on resume (expected >50%). Prompt caching likely invalidated — check tool ordering or system prompt changes.`,
+      severity: isFirstAfterRestart ? "warn" : "critical",
+      detail: isFirstAfterRestart
+        ? `Cache hit rate ${Math.round(current.cacheHitRate * 100)}% on resume — normal after proxy restart, cache will re-prime on next turn.`
+        : `Cache hit rate ${Math.round(current.cacheHitRate * 100)}% on resume (expected >50%). Prompt caching likely invalidated — check tool ordering or system prompt changes.`,
     })
   }
 
