@@ -112,6 +112,40 @@ describe("Telemetry routes", () => {
     // Should not crash, just caps internally
   })
 
+  it("GET /telemetry/logs filters by token category", async () => {
+    const { diagnosticLog } = await import("../telemetry")
+    diagnosticLog.clear()
+
+    diagnosticLog.log({ level: "warn", category: "token", message: "cache miss detected", requestId: "r1" })
+    diagnosticLog.log({ level: "info", category: "session", message: "session resumed", requestId: "r2" })
+
+    const res = await app.fetch(new Request("http://localhost/telemetry/logs?category=token"))
+    const body = await res.json() as any[]
+    expect(body.length).toBe(1)
+    expect(body[0].category).toBe("token")
+  })
+
+  it("GET /telemetry/requests includes token fields when recorded", async () => {
+    telemetryStore.record(makeMetric({
+      requestId: "tok-1",
+      inputTokens: 12000,
+      outputTokens: 800,
+      cacheReadInputTokens: 10000,
+      cacheCreationInputTokens: 500,
+      cacheHitRate: 0.83,
+    }))
+
+    const res = await app.fetch(new Request("http://localhost/telemetry/requests"))
+    const body = await res.json() as any[]
+    const metric = body[0]
+
+    expect(metric.inputTokens).toBe(12000)
+    expect(metric.outputTokens).toBe(800)
+    expect(metric.cacheReadInputTokens).toBe(10000)
+    expect(metric.cacheCreationInputTokens).toBe(500)
+    expect(metric.cacheHitRate).toBeCloseTo(0.83, 2)
+  })
+
   it("GET /telemetry/summary includes token usage stats", async () => {
     telemetryStore.record(makeMetric({
       inputTokens: 1000, outputTokens: 200,
