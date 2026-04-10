@@ -310,7 +310,7 @@ Add a custom provider to `~/forge/.forge.toml`:
 id            = "meridian"
 url           = "http://127.0.0.1:3456/v1/messages"
 models        = "http://127.0.0.1:3456/v1/models"
-api_key_vars  = "MERIDIAN_API_KEY"
+api_key_vars  = "MERIDIAN_FORGE_KEY"
 response_type = "Anthropic"
 auth_methods  = ["api_key"]
 
@@ -319,10 +319,10 @@ provider_id = "meridian"
 model_id    = "claude-opus-4-6"
 ```
 
-Set the API key env var (any value — Meridian authenticates through the SDK, not API keys):
+Set the API key env var. Any value works unless you've enabled authentication with `MERIDIAN_API_KEY`, in which case use your auth key here:
 
 ```bash
-export MERIDIAN_API_KEY=unused
+export MERIDIAN_FORGE_KEY=x
 ```
 
 Then log in and select the model:
@@ -449,6 +449,25 @@ Agents are identified from request headers automatically:
 ### Adding a New Agent
 
 Implement the `AgentAdapter` interface in `src/proxy/adapters/`. See [`adapters/opencode.ts`](src/proxy/adapters/opencode.ts) for a reference.
+
+## API Key Authentication
+
+By default, Meridian binds to `127.0.0.1` and requires no authentication — anyone on localhost can use it. If you expose Meridian over a network (Tailscale, LAN, Docker with port mapping), you can enable API key authentication to prevent unauthorized access.
+
+```bash
+MERIDIAN_API_KEY=your-secret-key meridian
+```
+
+When set:
+- All API routes (`/v1/messages`, `/v1/chat/completions`, etc.) and admin routes (`/telemetry`, `/metrics`, `/profiles`) require a matching key
+- `/` and `/health` remain open (monitoring tools need unauthenticated health checks)
+- Keys are accepted via `x-api-key` header or `Authorization: Bearer` header
+
+Clients just set their `ANTHROPIC_API_KEY` to the shared secret — since most tools already send this header, no workflow changes are needed:
+
+```bash
+ANTHROPIC_API_KEY=your-secret-key ANTHROPIC_BASE_URL=http://meridian-host:3456 opencode
+```
 
 ## Configuration
 
