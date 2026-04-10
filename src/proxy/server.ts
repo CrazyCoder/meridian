@@ -23,6 +23,7 @@ import { checkPluginConfigured } from "./setup"
 import { mapModelToClaudeModel, resolveClaudeExecutableAsync, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable } from "./models"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, translateAnthropicSseEvent, buildModelList } from "./openai"
 import { getLastUserMessage } from "./messages"
+import { requireAuth, authEnabled } from "./auth"
 import { detectAdapter } from "./adapters/detect"
 import { buildQueryOptions, type QueryContext } from "./query"
 import { resolveProfile, listProfiles, setActiveProfile, getActiveProfileId, getEffectiveProfiles, restoreActiveProfile } from "./profiles"
@@ -204,6 +205,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   const app = new Hono()
 
   app.use("*", cors())
+
+  // Optional API key auth — protects all routes except / and /health
+  // when MERIDIAN_API_KEY is set. No-op when unset.
+  app.use("/v1/*", requireAuth)
+  app.use("/messages", requireAuth)
+  app.use("/telemetry/*", requireAuth)
+  app.use("/telemetry", requireAuth)
+  app.use("/metrics", requireAuth)
+  app.use("/profiles/*", requireAuth)
+  app.use("/profiles", requireAuth)
+  app.use("/auth/*", requireAuth)
 
   app.get("/", (c) => {
     // API clients get JSON, browsers get the landing page
