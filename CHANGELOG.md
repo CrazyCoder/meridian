@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.37.4](https://github.com/rynfar/meridian/compare/meridian-v1.37.3...meridian-v1.37.4) (2026-04-15)
+
+
+### Bug Fixes
+
+* cache passthrough MCP server per session to preserve prompt cache ([#367](https://github.com/rynfar/meridian/issues/367)) ([cb1a3b8](https://github.com/rynfar/meridian/commit/cb1a3b84c2ceea7adc3290998da82b68077a5301))
+* preserve &lt;system-reminder&gt; content for non-Droid adapters ([#370](https://github.com/rynfar/meridian/issues/370)) ([d981414](https://github.com/rynfar/meridian/commit/d981414aeb1eba5f0ae5efc54a47c2e03be6ddb7))
+* set include-component-in-tag so release-please finds prior tags ([#371](https://github.com/rynfar/meridian/issues/371)) ([a01c392](https://github.com/rynfar/meridian/commit/a01c392c7daea17ed84a07a63bb5f16e32001413))
+
 ## [1.37.3](https://github.com/rynfar/meridian/compare/meridian-v1.37.2...meridian-v1.37.3) (2026-04-14)
 
 
