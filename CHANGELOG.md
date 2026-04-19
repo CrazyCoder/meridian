@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.37.6](https://github.com/rynfar/meridian/compare/meridian-v1.37.5...meridian-v1.37.6) (2026-04-19)
+
+
+### Bug Fixes
+
+* multimodal image handling for OpenAI chat completions and nested tool_result ([#392](https://github.com/rynfar/meridian/issues/392)) ([39f0f14](https://github.com/rynfar/meridian/commit/39f0f140d1894ff71edc39908430fb647ac435a2))
+
 ## [1.37.5](https://github.com/rynfar/meridian/compare/meridian-v1.37.4...meridian-v1.37.5) (2026-04-18)
 
 
