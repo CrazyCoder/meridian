@@ -144,7 +144,11 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
       // the model responds, so allow 3 turns to prevent "max turns (2)" errors.
       // With deferred tools: ToolSearch consumes a turn before the actual tool
       // call, so allow 3 turns to give room for search + call + handoff.
-      maxTurns: passthrough ? ((resumeSessionId || hasDeferredTools) ? 3 : 2) : 200,
+      // With advisor: the SDK executes the advisor server-side (call + result +
+      // final answer), requiring additional turns beyond the base passthrough limit.
+      maxTurns: passthrough
+        ? ((resumeSessionId || hasDeferredTools) ? 3 : 2) + (ctx.advisorModel ? 3 : 0)
+        : 200,
       cwd: workingDirectory,
       model,
       pathToClaudeCodeExecutable: claudeExecutable,

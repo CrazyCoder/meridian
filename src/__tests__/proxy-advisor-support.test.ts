@@ -158,8 +158,8 @@ describe("Advisor response — stop_reason preservation", () => {
   it("still uses end_turn when upstream does not set stop_reason", async () => {
     const msg = assistantMessage([{ type: "text", text: "Done." }])
     // Default assistantMessage sets stop_reason to "end_turn" via the helper,
-    // but let's explicitly remove it to test the fallback
-    delete msg.message.stop_reason
+    // but let's explicitly clear it to test the fallback
+    ;(msg.message as { stop_reason: string | null }).stop_reason = null as unknown as string
     mockMessages = [msg]
 
     const app = createTestApp()

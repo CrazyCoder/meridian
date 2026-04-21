@@ -2,7 +2,7 @@
  * Test helpers for mocking the Claude Agent SDK and creating test fixtures.
  */
 
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
+import type { SDKMessage, SDKAssistantMessage } from "@anthropic-ai/claude-agent-sdk"
 
 // --- SDK Message Factories ---
 
@@ -93,7 +93,7 @@ export function messageStop(): SDKMessage {
 }
 
 /** Create an assistant message (non-streaming complete message) */
-export function assistantMessage(content: Array<Record<string, unknown>>): SDKMessage {
+export function assistantMessage(content: Array<Record<string, unknown>>): SDKAssistantMessage {
   return {
     type: "assistant",
     message: {
@@ -108,7 +108,7 @@ export function assistantMessage(content: Array<Record<string, unknown>>): SDKMe
     parent_tool_use_id: null,
     uuid: crypto.randomUUID(),
     session_id: "test-session",
-  } as unknown as SDKMessage
+  } as unknown as SDKAssistantMessage
 }
 
 // --- Request Factories ---
