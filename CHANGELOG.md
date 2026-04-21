@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.38.1](https://github.com/rynfar/meridian/compare/meridian-v1.38.0...meridian-v1.38.1) (2026-04-21)
+
+
+### Bug Fixes
+
+* normalize context-usage to last iteration ([67a559f](https://github.com/rynfar/meridian/commit/67a559fd8ba39463398ed22f18c133d5bd82196b))
+* normalize context-usage to last iteration ([0170adc](https://github.com/rynfar/meridian/commit/0170adcdfed101d94cbac4d8ed0e051f373bab07))
+
 ## [1.38.0](https://github.com/rynfar/meridian/compare/meridian-v1.37.8...meridian-v1.38.0) (2026-04-21)
 
 
