@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.38.0](https://github.com/rynfar/meridian/compare/meridian-v1.37.8...meridian-v1.38.0) (2026-04-21)
+
+
+### Features
+
+* plugin system (phase 1 adapter refactor + phase 2 plugin loading, UI, docs) ([#400](https://github.com/rynfar/meridian/issues/400)) ([08cdee8](https://github.com/rynfar/meridian/commit/08cdee8c09dfe737309ad320f2ed0e708fd74842))
+
 ## [1.37.8](https://github.com/rynfar/meridian/compare/meridian-v1.37.7...meridian-v1.37.8) (2026-04-19)
 
 
