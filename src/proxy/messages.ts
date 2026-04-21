@@ -43,6 +43,35 @@ export function normalizeContent(content: any): string {
 }
 
 /**
+ * Extract the advisor model from a tools array.
+ * Returns the model string if an advisor tool definition is found, undefined otherwise.
+ * The advisor tool is identified by a type starting with "advisor_".
+ */
+export function extractAdvisorModel(tools: unknown): string | undefined {
+  if (!Array.isArray(tools)) return undefined
+  for (const tool of tools) {
+    if (!tool || typeof tool !== "object") continue
+    const candidate = tool as Record<string, unknown>
+    if (typeof candidate.type === "string" && candidate.type.startsWith("advisor_") && typeof candidate.model === "string" && candidate.model.length > 0) {
+      return candidate.model
+    }
+  }
+  return undefined
+}
+
+/**
+ * Remove advisor tool definitions from a tools array.
+ * Returns a new array with advisor tools filtered out.
+ */
+export function stripAdvisorTools(tools: unknown[]): unknown[] {
+  return tools.filter((tool) => {
+    if (!tool || typeof tool !== "object") return true
+    const candidate = tool as Record<string, unknown>
+    return !(typeof candidate.type === "string" && candidate.type.startsWith("advisor_"))
+  })
+}
+
+/**
  * Extract only the last user message (for session resume — SDK already has history).
  */
 export function getLastUserMessage(messages: Array<{ role: string; content: any }>): Array<{ role: string; content: any }> {

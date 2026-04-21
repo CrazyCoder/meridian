@@ -80,6 +80,8 @@ export interface QueryContext {
   sdkDebug?: boolean
   /** Additional directories Claude can access */
   additionalDirectories?: string[]
+  /** Advisor model for server-side advisor tool support */
+  advisorModel?: string
 }
 
 /**
@@ -196,6 +198,7 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
       ...(fallbackModel ? { fallbackModel } : {}),
       ...(sdkDebug ? { debug: true } : {}),
       ...(additionalDirectories && additionalDirectories.length > 0 ? { additionalDirectories } : {}),
+      ...(ctx.advisorModel ? { advisorModel: ctx.advisorModel } : {}),
     }
   }
 }

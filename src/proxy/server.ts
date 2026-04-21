@@ -44,7 +44,7 @@ import { refreshOAuthToken } from "./tokenRefresh"
 import { checkPluginConfigured } from "./setup"
 import { mapModelToClaudeModel, resolveClaudeExecutableAsync, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable } from "./models"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, translateAnthropicSseEvent, buildModelList } from "./openai"
-import { getLastUserMessage } from "./messages"
+import { extractAdvisorModel, getLastUserMessage, stripAdvisorTools } from "./messages"
 import { requireAuth, authEnabled } from "./auth"
 import { detectAdapter } from "./adapters/detect"
 import { buildQueryOptions, type QueryContext } from "./query"
@@ -744,6 +744,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // previously sent them, reuse the cached set to preserve prompt cache.
       let passthroughMcp: ReturnType<typeof createPassthroughMcpServer> | undefined
       let requestTools = Array.isArray(body.tools) ? body.tools : []
+      // Extract advisor model from tools and strip advisor tool definitions
+      // before passing to passthrough MCP — the SDK handles advisors natively
+      // via the advisorModel query option.
+      const advisorModel = extractAdvisorModel(requestTools)
+      if (advisorModel) {
+        requestTools = stripAdvisorTools(requestTools)
+      }
       if (passthrough && requestTools.length === 0 && profileSessionId) {
         const cached = sessionToolCache.get(profileSessionId)
         if (cached && cached.length > 0) {
@@ -849,6 +856,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
           claudeLog("upstream.start", { mode: "non_stream", model })
           let lastUsage: TokenUsage | undefined
+          let lastStopReason: string | undefined
 
           try {
             // Lazy-resolve executable if not already set (e.g. when using createProxyServer directly)
@@ -888,6 +896,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     additionalDirectories: sdkFeatures.additionalDirectories
                       ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
                       : undefined,
+                    advisorModel,
                   }))) {
                     // Only count real assistant content — not SDK error messages
                     // (which arrive as type:"assistant" with an error field set).
@@ -928,6 +937,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       additionalDirectories: sdkFeatures.additionalDirectories
                         ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
                         : undefined,
+                      advisorModel,
                     }))
                     return
                   }
@@ -1063,6 +1073,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // Capture token usage from the assistant message
                 const msgUsage = message.message.usage as TokenUsage | undefined
                 if (msgUsage) lastUsage = { ...lastUsage, ...msgUsage }
+                if (typeof message.message.stop_reason === "string") {
+                  lastStopReason = message.message.stop_reason
+                }
               }
             }
 
@@ -1113,9 +1126,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             }
           }
 
-          // Determine stop_reason based on content: tool_use if any tool blocks, else end_turn
+          // Determine stop_reason: use content-based heuristic for standard cases,
+          // but preserve non-standard upstream values like pause_turn (advisor flows)
           const hasToolUse = contentBlocks.some((b) => b.type === "tool_use")
-          const stopReason = hasToolUse ? "tool_use" : "end_turn"
+          const heuristicStopReason = hasToolUse ? "tool_use" : "end_turn"
+          const stopReason = lastStopReason && lastStopReason !== "end_turn" && lastStopReason !== "tool_use"
+            ? lastStopReason
+            : heuristicStopReason
 
           // Append file change summary:
           // - Internal mode: fileChanges populated by PostToolUse hook
@@ -1310,6 +1327,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       additionalDirectories: sdkFeatures.additionalDirectories
                         ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
                         : undefined,
+                      advisorModel,
                     }))) {
                       if ((event as any).type === "stream_event") {
                         didYieldClientEvent = true
@@ -1347,6 +1365,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                         additionalDirectories: sdkFeatures.additionalDirectories
                           ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
                           : undefined,
+                        advisorModel,
                       }))
                       return
                     }

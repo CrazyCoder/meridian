@@ -2,7 +2,7 @@
  * Unit tests for message parsing utilities.
  */
 import { describe, it, expect } from "bun:test"
-import { normalizeContent, getLastUserMessage } from "../proxy/messages"
+import { normalizeContent, getLastUserMessage, extractAdvisorModel, stripAdvisorTools } from "../proxy/messages"
 
 describe("normalizeContent", () => {
   it("returns string content as-is", () => {
@@ -105,5 +105,58 @@ describe("getLastUserMessage", () => {
     const result = getLastUserMessage(messages)
     expect(result).toHaveLength(1)
     expect(result[0]!.content).toBe("only")
+  })
+})
+
+describe("extractAdvisorModel", () => {
+  it("extracts model from advisor tool definition", () => {
+    const tools = [
+      { name: "Read", description: "Read a file" },
+      { type: "advisor_20260301", name: "advisor", model: "claude-opus-4-7" },
+    ]
+    expect(extractAdvisorModel(tools)).toBe("claude-opus-4-7")
+  })
+
+  it("returns undefined when no advisor tool is present", () => {
+    const tools = [{ name: "Read" }, { name: "Write" }]
+    expect(extractAdvisorModel(tools)).toBeUndefined()
+  })
+
+  it("returns undefined for non-array input", () => {
+    expect(extractAdvisorModel(undefined)).toBeUndefined()
+    expect(extractAdvisorModel(null)).toBeUndefined()
+    expect(extractAdvisorModel("not-array")).toBeUndefined()
+  })
+
+  it("returns undefined when model is missing or empty", () => {
+    expect(extractAdvisorModel([{ type: "advisor_20260301", name: "advisor" }])).toBeUndefined()
+    expect(extractAdvisorModel([{ type: "advisor_20260301", name: "advisor", model: "" }])).toBeUndefined()
+  })
+
+  it("matches any advisor_ type prefix", () => {
+    expect(extractAdvisorModel([{ type: "advisor_20270101", name: "advisor", model: "claude-opus-5" }])).toBe("claude-opus-5")
+  })
+})
+
+describe("stripAdvisorTools", () => {
+  it("removes advisor tool definitions from array", () => {
+    const tools = [
+      { name: "Read", description: "Read a file" },
+      { type: "advisor_20260301", name: "advisor", model: "claude-opus-4-7" },
+      { name: "Write", description: "Write a file" },
+    ]
+    const result = stripAdvisorTools(tools)
+    expect(result).toHaveLength(2)
+    expect(result[0]).toEqual({ name: "Read", description: "Read a file" })
+    expect(result[1]).toEqual({ name: "Write", description: "Write a file" })
+  })
+
+  it("returns all tools when no advisor tool is present", () => {
+    const tools = [{ name: "Read" }, { name: "Write" }]
+    expect(stripAdvisorTools(tools)).toHaveLength(2)
+  })
+
+  it("handles empty array", () => {
+    expect(stripAdvisorTools([])).toHaveLength(0)
   })
 })
