@@ -90,6 +90,83 @@ let claudeExecutable = ""
 
 const MULTIMODAL_TYPES = new Set(["image", "document", "file"])
 
+/**
+ * Debug-only: dump the request as Meridian hands it to the SDK, *after* the
+ * plugin pipeline (incl. opencode-scrub / pi-scrub) has run. Useful to verify
+ * what bytes actually reach Anthropic and grep for adapter-identifying strings
+ * the scrub may have missed.
+ *
+ * Gated by MERIDIAN_DUMP_REQUESTS=1. Output dir: MERIDIAN_DUMP_DIR
+ * (default: /tmp/meridian-debug). Optional MERIDIAN_DUMP_ADAPTER limits to
+ * a single adapter (e.g. "opencode") so a noisy mix doesn't fill the dir.
+ *
+ * One file per request, ~100KB-1MB each. Disabled by default; safe for prod.
+ */
+function dumpRequestForInspection(args: {
+  requestId: string
+  adapter: string
+  profileId: string
+  profileType: string
+  model: string
+  passthrough: boolean
+  resumeSessionId?: string
+  systemContextPreScrub?: string
+  systemContextPostScrub: string
+  textPrompt?: string
+  structuredMessages?: any[]
+  bodyTools?: any[]
+  betas?: string[]
+  effort?: string
+  thinking?: any
+  taskBudget?: any
+  callSite: "stream" | "non_stream"
+}): void {
+  if (!process.env.MERIDIAN_DUMP_REQUESTS) return
+  const adapterFilter = process.env.MERIDIAN_DUMP_ADAPTER
+  if (adapterFilter && adapterFilter !== args.adapter) return
+  try {
+    const fs = require("fs") as typeof import("fs")
+    const path = require("path") as typeof import("path")
+    const dir = process.env.MERIDIAN_DUMP_DIR || "/tmp/meridian-debug"
+    fs.mkdirSync(dir, { recursive: true })
+    const ts = new Date().toISOString().replace(/[:.]/g, "-")
+    const file = path.join(dir, `${ts}_${args.requestId}_${args.callSite}.json`)
+    const pre = args.systemContextPreScrub ?? ""
+    const post = args.systemContextPostScrub ?? ""
+    const payload = {
+      timestamp: new Date().toISOString(),
+      requestId: args.requestId,
+      callSite: args.callSite,
+      adapter: args.adapter,
+      profileId: args.profileId,
+      profileType: args.profileType,
+      resolvedModel: args.model,
+      passthrough: args.passthrough,
+      resumeSessionId: args.resumeSessionId,
+      systemContextPreScrub: pre,
+      systemContextPostScrub: post,
+      systemContextPreLength: pre.length,
+      systemContextPostLength: post.length,
+      systemContextScrubChanged: pre !== post,
+      textPrompt: args.textPrompt,
+      textPromptLength: args.textPrompt?.length ?? 0,
+      structuredMessages: args.structuredMessages,
+      bodyToolNames: Array.isArray(args.bodyTools)
+        ? args.bodyTools.map((t: any) => t?.name).filter(Boolean)
+        : undefined,
+      bodyTools: args.bodyTools,
+      betas: args.betas,
+      effort: args.effort,
+      thinking: args.thinking,
+      taskBudget: args.taskBudget,
+    }
+    fs.writeFileSync(file, JSON.stringify(payload, null, 2))
+    console.error(`[PROXY] ${args.requestId} dumped post-scrub request to ${file}`)
+  } catch (e) {
+    console.error(`[PROXY] ${args.requestId} dump failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
 function hasMultimodalContent(content: any): boolean {
   if (!Array.isArray(content)) return false
   return content.some((block: any) => {
@@ -441,6 +518,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           }
         }
 
+        // Snapshot the raw system context before the pipeline runs so the
+        // request dump can show what the scrub plugin actually changed.
+        const preScrubSystemContext = systemContext
         // Run the transform pipeline — adapter transforms populate SDK configuration
         const adapterTransforms = getAdapterTransforms(adapter.name)
         const pipeline = buildPipeline(adapterTransforms, pluginTransforms)
@@ -883,6 +963,25 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // only "assistant" messages represent actual response content.
                 let didYieldContent = false
                 try {
+                  dumpRequestForInspection({
+                    requestId: requestMeta.requestId,
+                    adapter: adapter.name,
+                    profileId: profile.id,
+                    profileType: profile.type,
+                    model,
+                    passthrough,
+                    resumeSessionId,
+                    systemContextPreScrub: preScrubSystemContext,
+                    systemContextPostScrub: systemContext,
+                    textPrompt,
+                    structuredMessages,
+                    bodyTools: body.tools,
+                    betas,
+                    effort,
+                    thinking,
+                    taskBudget,
+                    callSite: "non_stream",
+                  })
                   for await (const event of query(buildQueryOptions({
                     prompt: makePrompt(), model, workingDirectory, systemContext, claudeExecutable,
                     passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
@@ -1305,6 +1404,25 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   // not prevent retry. Only stream_event types become SSE output.
                   let didYieldClientEvent = false
                   try {
+                    dumpRequestForInspection({
+                      requestId: requestMeta.requestId,
+                      adapter: adapter.name,
+                      profileId: profile.id,
+                      profileType: profile.type,
+                      model,
+                      passthrough,
+                      resumeSessionId,
+                      systemContextPreScrub: preScrubSystemContext,
+                      systemContextPostScrub: systemContext,
+                      textPrompt,
+                      structuredMessages,
+                      bodyTools: body.tools,
+                      betas,
+                      effort,
+                      thinking,
+                      taskBudget,
+                      callSite: "stream",
+                    })
                     for await (const event of query(buildQueryOptions({
                       prompt: makePrompt(), model, workingDirectory, systemContext, claudeExecutable,
                       passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, hasDeferredTools,
