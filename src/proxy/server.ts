@@ -566,8 +566,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           console.error(`[PROXY] ${requestMeta.requestId} stripped anthropic-beta(s) for Max profile: ${betaFilter.stripped.join(", ")}`)
         }
 
+        // OpenCode wraps effort as body.output_config.effort instead of the
+        // top-level body.effort that the SDK option uses. Unwrap both so
+        // variant: max / xhigh from oh-my-opencode.json actually applies.
         let effort = effortHeader
           || body.effort
+          || body.output_config?.effort
           || undefined
         let thinking: QueryContext['thinking'] | undefined = body.thinking || undefined
         if (thinkingHeader !== undefined) {
