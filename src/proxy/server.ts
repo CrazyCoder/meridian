@@ -119,6 +119,7 @@ function dumpRequestForInspection(args: {
   effort?: string
   thinking?: any
   taskBudget?: any
+  sdkAgents?: Record<string, any>
   callSite: "stream" | "non_stream"
 }): void {
   if (!process.env.MERIDIAN_DUMP_REQUESTS) return
@@ -159,6 +160,8 @@ function dumpRequestForInspection(args: {
       effort: args.effort,
       thinking: args.thinking,
       taskBudget: args.taskBudget,
+      sdkAgentNames: args.sdkAgents ? Object.keys(args.sdkAgents) : undefined,
+      sdkAgents: args.sdkAgents,
     }
     fs.writeFileSync(file, JSON.stringify(payload, null, 2))
     console.error(`[PROXY] ${args.requestId} dumped post-scrub request to ${file}`)
@@ -690,7 +693,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         })
 
       // SDK agent definitions and system context from the transform pipeline.
-      const sdkAgents = pipelineCtx.sdkAgents
+      // Kill switch: MERIDIAN_DISABLE_SDK_AGENTS=1 strips the `agents` option
+      // before it reaches the SDK. Suspected Anthropic Extra-Usage trigger on
+      // opus when the SDK's programmatic call carries custom subagent defs —
+      // claude CLI direct (no agents) succeeds with the same Max sub.
+      const sdkAgents = process.env.MERIDIAN_DISABLE_SDK_AGENTS === "1"
+        ? {}
+        : pipelineCtx.sdkAgents
+      if (process.env.MERIDIAN_DISABLE_SDK_AGENTS === "1" && Object.keys(pipelineCtx.sdkAgents).length > 0) {
+        console.error(`[PROXY] ${requestMeta.requestId} sdkAgents stripped (${Object.keys(pipelineCtx.sdkAgents).length} agents) — MERIDIAN_DISABLE_SDK_AGENTS=1`)
+      }
       const validAgentNames = Object.keys(sdkAgents)
       if ((process.env.MERIDIAN_DEBUG ?? process.env.CLAUDE_PROXY_DEBUG) && validAgentNames.length > 0) {
         claudeLog("debug.agents", { names: validAgentNames, count: validAgentNames.length })
@@ -980,6 +992,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     effort,
                     thinking,
                     taskBudget,
+                    sdkAgents,
                     callSite: "non_stream",
                   })
                   for await (const event of query(buildQueryOptions({
@@ -1421,6 +1434,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       effort,
                       thinking,
                       taskBudget,
+                      sdkAgents,
                       callSite: "stream",
                     })
                     for await (const event of query(buildQueryOptions({
