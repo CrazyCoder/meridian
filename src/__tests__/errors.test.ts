@@ -193,12 +193,19 @@ describe("classifyError", () => {
       expect(isExtraUsageRequiredError("extra usage is required for 1m context")).toBe(true)
     })
 
+    it("detects the 2026-04+ wording with no '1m' substring", () => {
+      expect(isExtraUsageRequiredError(
+        "Claude Code returned an error result: API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You're out of extra usage. Add more at claude.ai/settings/usage and keep going.\"}}"
+      )).toBe(true)
+      expect(isExtraUsageRequiredError("you're out of extra usage")).toBe(true)
+    })
+
     it("returns false for unrelated errors", () => {
       expect(isExtraUsageRequiredError("rate limit exceeded")).toBe(false)
       expect(isExtraUsageRequiredError("authentication failed")).toBe(false)
     })
 
-    it("returns false when only 'extra usage' but no '1m'", () => {
+    it("returns false when only 'extra usage' but no '1m' or 'out of'", () => {
       expect(isExtraUsageRequiredError("extra usage enabled")).toBe(false)
     })
 

@@ -166,8 +166,18 @@ export function isRateLimitError(errMsg: string): boolean {
  * Detect errors caused by the 1M context window requiring Extra Usage.
  * Max subscribers without Extra Usage enabled get this error when using
  * sonnet[1m] or opus[1m]. The fix is to fall back to the base model.
+ *
+ * Anthropic has used at least two phrasings for this error:
+ *   - older: "extra usage is required for 1m context"
+ *   - newer (2026-04+): "You're out of extra usage. Add more at claude.ai/..."
+ *
+ * The newer message no longer mentions "1m"; we match it on the budget-
+ * exhaustion phrase instead so the cooldown still triggers and Meridian
+ * falls back to the base (non-1m) model for the next hour.
  */
 export function isExtraUsageRequiredError(errMsg: string): boolean {
   const lower = errMsg.toLowerCase()
-  return lower.includes("extra usage") && lower.includes("1m")
+  if (lower.includes("extra usage") && lower.includes("1m")) return true
+  if (lower.includes("out of extra usage")) return true
+  return false
 }
