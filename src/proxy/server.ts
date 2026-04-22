@@ -576,22 +576,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           || body.effort
           || body.output_config?.effort
           || undefined
-        // Claude Code CLI's --effort flag accepts only low/medium/high/max.
-        // OpenCode/oh-my-opencode also exposes "xhigh" (between high and max)
-        // for newer model tiers. Map xhigh -> max (best approximation since
-        // the CLI offers no intermediate level); drop other unknown values
-        // with a warning rather than crash the subprocess on
-        // "option '--effort <level>' argument 'X' is invalid".
-        const VALID_EFFORTS = new Set(["low", "medium", "high", "max"])
-        if (effort && !VALID_EFFORTS.has(effort)) {
-          if (effort === "xhigh") {
-            console.error(`[PROXY] ${requestMeta.requestId} effort=xhigh mapped to max (CLI accepts only low/medium/high/max)`)
-            effort = "max"
-          } else {
-            console.error(`[PROXY] ${requestMeta.requestId} unknown effort=${effort} dropped (CLI accepts only low/medium/high/max)`)
-            effort = undefined
-          }
-        }
         let thinking: QueryContext['thinking'] | undefined = body.thinking || undefined
         if (thinkingHeader !== undefined) {
           try {
