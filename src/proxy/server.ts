@@ -483,7 +483,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           console.error(`[PROXY] ${requestMeta.requestId} stripped anthropic-beta(s) for Max profile: ${betaFilter.stripped.join(", ")}`)
         }
 
-        const effort = effortHeader
+        let effort = effortHeader
           || body.effort
           || undefined
         let thinking: QueryContext['thinking'] | undefined = body.thinking || undefined
@@ -514,6 +514,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           if (betaFilter.stripped.length > 0) {
             console.error(`[PROXY] ${requestMeta.requestId} thinking disabled (thinking beta stripped by ${getBetaPolicyFromEnv()} policy)`)
           }
+        }
+        // The `effort` SDK option requires the `effort-2025-11-24` beta header.
+        // When that beta is stripped (claude-max + strip-all/allow-safe), the
+        // SDK still tries to apply effort, which Anthropic gates behind Extra
+        // Usage and surfaces as "out of extra usage" — even on plain opus 200k.
+        // Mirror the thinking-strip logic: drop effort when its beta is gone.
+        const effortBetaStripped = betaFilter.stripped.some(b => b.startsWith("effort"))
+        if (effortBetaStripped && effort) {
+          console.error(`[PROXY] ${requestMeta.requestId} effort=${effort} dropped (effort beta stripped by ${getBetaPolicyFromEnv()} policy)`)
+          effort = undefined
         }
         const parsedBudget = taskBudgetHeader ? Number.parseInt(taskBudgetHeader, 10) : NaN
         const taskBudget = Number.isFinite(parsedBudget)
