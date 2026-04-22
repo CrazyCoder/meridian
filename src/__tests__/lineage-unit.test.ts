@@ -10,6 +10,7 @@ import {
   measurePrefixOverlap,
   measureSuffixOverlap,
   verifyLineage,
+  normalizeContextUsage,
   MIN_SUFFIX_FOR_COMPACTION,
   type SessionState,
 } from "../proxy/session/lineage"
@@ -377,5 +378,41 @@ describe("verifyLineage", () => {
     // Must NOT be compaction — the suffix is at the wrong position
     expect(result.type).not.toBe("compaction")
     expect(result.type).toBe("diverged")
+  })
+})
+
+describe("normalizeContextUsage", () => {
+  it("returns the last iteration when iterations are present", () => {
+    const result = normalizeContextUsage({
+      input_tokens: 9000,
+      output_tokens: 1200,
+      iterations: [
+        { input_tokens: 9000, output_tokens: 1200, type: "message" },
+        { input_tokens: 1200, output_tokens: 80, type: "message" },
+      ],
+    })
+    expect(result.input_tokens).toBe(1200)
+    expect(result.output_tokens).toBe(80)
+    expect(result.type).toBe("message")
+  })
+
+  it("returns top-level usage when no iterations field", () => {
+    const result = normalizeContextUsage({
+      input_tokens: 500,
+      output_tokens: 50,
+    })
+    expect(result.input_tokens).toBe(500)
+    expect(result.output_tokens).toBe(50)
+  })
+
+  it("falls back to top-level usage when iterations is empty", () => {
+    const usage = {
+      input_tokens: 500,
+      output_tokens: 50,
+      iterations: [],
+    }
+    const result = normalizeContextUsage(usage)
+    expect(result.input_tokens).toBe(500)
+    expect(result.output_tokens).toBe(50)
   })
 })
