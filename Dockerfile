@@ -28,13 +28,14 @@ COPY --from=build --chown=claude:claude /app/node_modules ./node_modules
 COPY --from=build --chown=claude:claude /app/dist ./dist
 COPY --from=build --chown=claude:claude /app/package.json ./
 
-# Create a 'claude' wrapper that delegates to the SDK's cli.js.
-# This replaces the global @anthropic-ai/claude-code install which
-# ships a native binary that crashes under QEMU ARM emulation.
-# The SDK's cli.js supports all commands the proxy needs (auth status, etc.).
-RUN mkdir -p /app/bin/shims \
-    && printf '#!/bin/sh\nexec node /app/node_modules/@anthropic-ai/claude-agent-sdk/cli.js "$@"\n' > /app/bin/shims/claude \
-    && chmod +x /app/bin/shims/claude
+# SDK >= 0.2.98 ships a separate @anthropic-ai/claude-code package. Its
+# bin/claude.exe starts out as a 500-byte stub; postinstall (install.cjs)
+# copies the platform-specific native binary over it. bun does not run
+# postinstalls by default — invoke it explicitly here. The SDK's subprocess
+# launcher rejects shell shims, so the shim must point at the real binary.
+RUN node /app/node_modules/@anthropic-ai/claude-code/install.cjs \
+    && mkdir -p /app/bin/shims \
+    && ln -sf /app/node_modules/@anthropic-ai/claude-code/bin/claude.exe /app/bin/shims/claude
 ENV PATH="/app/bin/shims:$PATH"
 COPY --chown=claude:claude bin/docker-entrypoint.sh bin/claude-proxy-supervisor.sh ./bin/
 RUN chmod +x ./bin/docker-entrypoint.sh ./bin/claude-proxy-supervisor.sh
