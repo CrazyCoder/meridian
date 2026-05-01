@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.41.0](https://github.com/rynfar/meridian/compare/meridian-v1.40.0...meridian-v1.41.0) (2026-05-01)
+
+
+### Features
+
+* **agentDefs:** fall back to input_schema enum for Task subagent extraction ([ae98e0a](https://github.com/rynfar/meridian/commit/ae98e0a01738d7b8f8f93b0ebe5f8c9d4e50179c))
+* **agentDefs:** input_schema enum fallback for non-OpenCode Task tools (closes [#447](https://github.com/rynfar/meridian/issues/447)) ([189a3eb](https://github.com/rynfar/meridian/commit/189a3eb67329a278c35f3f4b616c00462f40c7da))
+* **proxy:** continuous OAuth usage % via Anthropic's private /api/oauth/usage endpoint ([#439](https://github.com/rynfar/meridian/issues/439)) ([8442e11](https://github.com/rynfar/meridian/commit/8442e117a306f1d3d327dd56114ac4f37a088431))
+* **proxy:** SDK termination diagnostics + max_turns recovery ([#454](https://github.com/rynfar/meridian/issues/454)) ([9dcd3f8](https://github.com/rynfar/meridian/commit/9dcd3f88cef6aadcdd7cf478cb2507f0e664efa5))
+* **proxy:** tool calls + thinking in OpenAI translator (closes [#451](https://github.com/rynfar/meridian/issues/451)) ([a684343](https://github.com/rynfar/meridian/commit/a684343aa91ce2338fe078488e1de1655e79ef66))
+
+
+### Bug Fixes
+
+* **agentDefs:** clone definitions when registering case variants and aliases ([1b8633c](https://github.com/rynfar/meridian/commit/1b8633c3666ed05155df121ba18c7ef57788df9d))
+* **agentDefs:** clone definitions when registering case variants and aliases (closes [#448](https://github.com/rynfar/meridian/issues/448)) ([8f236c4](https://github.com/rynfar/meridian/commit/8f236c43eeb91e53cf350052d86d3d1dc598e38a))
+* **build:** add postbuild script to fix Bun bundler export artifacts ([31e31c3](https://github.com/rynfar/meridian/commit/31e31c3654c2d72017920c7eb56c825be12bdeaa))
+* **build:** postbuild script for Bun bundler export artifacts (closes [#442](https://github.com/rynfar/meridian/issues/442)) ([6bc3735](https://github.com/rynfar/meridian/commit/6bc3735bf45e376ee5c16095bc16d20fda8ac22a))
+* **docker:** install claude-code native binary in runtime stage ([81424ce](https://github.com/rynfar/meridian/commit/81424ce3d205922166899224f69ca38bfd4451b5))
+* **docker:** install claude-code native binary in runtime stage (closes [#438](https://github.com/rynfar/meridian/issues/438)) ([485b5da](https://github.com/rynfar/meridian/commit/485b5daee68e1d6c5ad4b2506ce2be60be09aff3))
+* **tools:** block additional Claude Code SDK built-in tools ([cefd828](https://github.com/rynfar/meridian/commit/cefd828295fe1f2036fcf93a4b27de9871d17e41))
+
 ## [1.40.0](https://github.com/rynfar/meridian/compare/meridian-v1.39.1...meridian-v1.40.0) (2026-04-26)
 
 
