@@ -6,20 +6,20 @@
  * references in code-split chunks. This script cleans up both issues in dist/.
  *
  * Run automatically via the `postbuild` npm script.
+ *
+ * Exposes `fixBunExports(distDir)` for unit testing — see
+ * src/__tests__/fix-bun-exports.test.ts for fixtures that lock in the
+ * supported Bun output patterns.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { glob } from "glob";
 
-const distDir = new URL("../dist/", import.meta.url).pathname;
-const files = await glob("**/*.js", { cwd: distDir });
-let totalFixed = 0;
-
 /**
  * Extract symbol names from an export block string, filtering out
  * __INVALID__REF__ which is a Bun bundler artifact.
  */
-function extractExportSymbols(block) {
+export function extractExportSymbols(block) {
   return block
     .replace(/^export\s*\{/, "")
     .replace(/\}\s*;?\s*$/, "")
@@ -28,9 +28,11 @@ function extractExportSymbols(block) {
     .filter((s) => s && s !== "__INVALID__REF__");
 }
 
-for (const rel of files) {
-  const path = distDir + rel;
-  const src = readFileSync(path, "utf-8");
+/**
+ * Patch a single file's source string, returning either the cleaned text
+ * or the original (unchanged) string. Pure: takes input, returns output.
+ */
+export function patchSource(src) {
   let out = src;
 
   // 1. Remove __INVALID__REF__ imports
@@ -49,11 +51,15 @@ for (const rel of files) {
   if (blocks.length > 0) {
     const canonicalSymbols = new Set(extractExportSymbols(blocks[0][0]));
 
-    // Remove __INVALID__REF__ from the canonical block if present
+    // Remove __INVALID__REF__ from the canonical block if present.
+    // Rebuild from parsed symbols rather than chained regex replaces so the
+    // formatting stays clean — the original chained-replace approach swallowed
+    // the newline before `}` and produced output like `realThing};`.
     if (blocks[0][0].includes("__INVALID__REF__")) {
-      const cleaned = blocks[0][0]
-        .replace(/\s*__INVALID__REF__\s*,\s*/, "")
-        .replace(/,\s*__INVALID__REF__\s*/, "");
+      const symbols = extractExportSymbols(blocks[0][0]);
+      const cleaned = symbols.length > 0
+        ? `export {\n  ${symbols.join(",\n  ")}\n};`
+        : "";
       out = out.replace(blocks[0][0], cleaned);
     }
 
@@ -73,15 +79,36 @@ for (const rel of files) {
   // 3. Clean up multiple consecutive blank lines left behind
   out = out.replace(/\n{3,}/g, "\n\n");
 
-  if (out !== src) {
-    writeFileSync(path, out);
-    totalFixed++;
-    console.log(`  fixed: ${rel}`);
-  }
+  return out;
 }
 
-if (totalFixed > 0) {
-  console.log(`fix-bun-exports: patched ${totalFixed} file(s)`);
-} else {
-  console.log("fix-bun-exports: no issues found");
+/**
+ * Walk `distDir` and patch every .js file in place. Returns the number of
+ * files actually changed.
+ */
+export async function fixBunExports(distDir) {
+  const files = await glob("**/*.js", { cwd: distDir });
+  let totalFixed = 0;
+  for (const rel of files) {
+    const path = distDir + rel;
+    const src = readFileSync(path, "utf-8");
+    const out = patchSource(src);
+    if (out !== src) {
+      writeFileSync(path, out);
+      totalFixed++;
+      console.log(`  fixed: ${rel}`);
+    }
+  }
+  return totalFixed;
+}
+
+// CLI entry — only runs when invoked directly, not when imported by tests.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const distDir = new URL("../dist/", import.meta.url).pathname;
+  const totalFixed = await fixBunExports(distDir);
+  if (totalFixed > 0) {
+    console.log(`fix-bun-exports: patched ${totalFixed} file(s)`);
+  } else {
+    console.log("fix-bun-exports: no issues found");
+  }
 }
