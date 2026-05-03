@@ -246,6 +246,101 @@ describe("refreshOAuthToken", () => {
 })
 
 // ---------------------------------------------------------------------------
+// ensureFreshToken — proactive refresh before SDK call
+// ---------------------------------------------------------------------------
+
+describe("ensureFreshToken", () => {
+  let originalFetch: typeof globalThis.fetch
+  beforeEach(() => { originalFetch = globalThis.fetch })
+  afterEach(async () => {
+    globalThis.fetch = originalFetch
+    const { resetInflightRefresh } = await import("../proxy/tokenRefresh")
+    resetInflightRefresh()
+  })
+
+  function makeStoreWithExpiry(expiresAt: number) {
+    return makeStore({ ...MOCK_CREDENTIALS, claudeAiOauth: { ...MOCK_CREDENTIALS.claudeAiOauth, expiresAt } })
+  }
+
+  it("returns true without refreshing when token is far from expiry", async () => {
+    const { ensureFreshToken } = await import("../proxy/tokenRefresh")
+    const fetchSpy = mock(() => Promise.reject(new Error("fetch should not be called")))
+    mockFetch(fetchSpy)
+    const { store, writes } = makeStoreWithExpiry(Date.now() + 60 * 60 * 1000) // +1h, well outside default 5min buffer
+
+    const ok = await ensureFreshToken(store)
+    expect(ok).toBe(true)
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(writes).toHaveLength(0)
+  })
+
+  it("refreshes when token is inside the buffer (near-expiry)", async () => {
+    const { ensureFreshToken } = await import("../proxy/tokenRefresh")
+    const fetchSpy = mock(() => Promise.resolve(makeSuccessResponse(MOCK_TOKEN_RESPONSE)))
+    mockFetch(fetchSpy)
+    const { store, getStored } = makeStoreWithExpiry(Date.now() + 60 * 1000) // +1min, well inside default 5min buffer
+
+    const ok = await ensureFreshToken(store)
+    expect(ok).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(getStored()?.claudeAiOauth.accessToken).toBe("new-access-token")
+  })
+
+  it("refreshes when token is already expired", async () => {
+    const { ensureFreshToken } = await import("../proxy/tokenRefresh")
+    const fetchSpy = mock(() => Promise.resolve(makeSuccessResponse(MOCK_TOKEN_RESPONSE)))
+    mockFetch(fetchSpy)
+    const { store, getStored } = makeStoreWithExpiry(Date.now() - 60 * 60 * 1000) // -1h
+
+    const ok = await ensureFreshToken(store)
+    expect(ok).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(getStored()?.claudeAiOauth.accessToken).toBe("new-access-token")
+  })
+
+  it("returns false when no credentials stored", async () => {
+    const { ensureFreshToken } = await import("../proxy/tokenRefresh")
+    const fetchSpy = mock(() => Promise.reject(new Error("fetch should not be called")))
+    mockFetch(fetchSpy)
+    const { store } = makeStore(null)
+    const ok = await ensureFreshToken(store)
+    expect(ok).toBe(false)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it("returns false when expiresAt missing", async () => {
+    const { ensureFreshToken } = await import("../proxy/tokenRefresh")
+    const fetchSpy = mock(() => Promise.reject(new Error("fetch should not be called")))
+    mockFetch(fetchSpy)
+    // expiresAt = 0 is falsy via `!expiresAt`
+    const { store } = makeStoreWithExpiry(0)
+    const ok = await ensureFreshToken(store)
+    expect(ok).toBe(false)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it("returns false when refresh request fails", async () => {
+    const { ensureFreshToken } = await import("../proxy/tokenRefresh")
+    mockFetch(() => Promise.resolve(new Response("invalid_grant", { status: 400 })))
+    const { store } = makeStoreWithExpiry(Date.now() - 1000)
+    const ok = await ensureFreshToken(store)
+    expect(ok).toBe(false)
+  })
+
+  it("respects custom bufferMs", async () => {
+    const { ensureFreshToken } = await import("../proxy/tokenRefresh")
+    const fetchSpy = mock(() => Promise.resolve(makeSuccessResponse(MOCK_TOKEN_RESPONSE)))
+    mockFetch(fetchSpy)
+    // Token expires in 2h. Default 5-min buffer → no refresh; 3-h buffer → refresh.
+    const { store } = makeStoreWithExpiry(Date.now() + 2 * 60 * 60 * 1000)
+    expect(await ensureFreshToken(store, 60 * 1000)).toBe(true)            // 1-min buffer: skip
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(await ensureFreshToken(store, 3 * 60 * 60 * 1000)).toBe(true)   // 3-h buffer: refresh
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // createPlatformCredentialStore
 // ---------------------------------------------------------------------------
 

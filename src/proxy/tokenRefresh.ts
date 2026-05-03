@@ -303,6 +303,32 @@ async function doRefresh(store: CredentialStore): Promise<boolean> {
   return true
 }
 
+/**
+ * Refresh the access token if it is within `bufferMs` of expiry.
+ *
+ * Cheap to call before every SDK request: when the token isn't due yet this
+ * is just one credential-store read. When it is due, the underlying
+ * `refreshOAuthToken()` call is in-flight-deduplicated so concurrent callers
+ * share one network round-trip.
+ *
+ * Returns true when the token is fresh after the call (already valid OR
+ * successfully refreshed), false on any failure (no credentials, no
+ * expiresAt, refresh request failed). False is non-fatal — the caller
+ * proceeds with whatever token is on disk and falls back to the reactive
+ * refresh-on-401 path if Anthropic rejects it.
+ */
+export async function ensureFreshToken(
+  store?: CredentialStore,
+  bufferMs = 5 * 60 * 1000,
+): Promise<boolean> {
+  const s = store ?? createPlatformCredentialStore()
+  const credentials = await s.read()
+  const expiresAt = credentials?.claudeAiOauth?.expiresAt
+  if (!expiresAt) return false
+  if (expiresAt - Date.now() > bufferMs) return true
+  return refreshOAuthToken(s)
+}
+
 /** Reset in-flight state — for testing only. */
 export function resetInflightRefresh(): void {
   inflightRefresh = null
