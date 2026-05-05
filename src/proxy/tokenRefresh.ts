@@ -335,6 +335,14 @@ export async function ensureFreshToken(
 
 let scheduledRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let scheduledRefreshActive = false
+// Generation counter — bumped on every start/stop. Each scheduleNext chain
+// captures the generation it began with and re-checks it after every await;
+// if the global generation has moved on, the chain has been superseded and
+// must bail rather than arm a follow-up timer. Without this, a stop()+start()
+// that interleaves with an in-flight read leaves the first chain alive,
+// arming a timer that overwrites scheduledRefreshTimer (so stop() can't
+// clear it) and keeps firing in parallel with the live chain.
+let scheduledRefreshGeneration = 0
 
 /**
  * Start a self-rescheduling timer that refreshes the access token shortly
@@ -364,12 +372,14 @@ export function startBackgroundRefresh(
 ): void {
   if (scheduledRefreshActive) return
   scheduledRefreshActive = true
-  void scheduleNext(store ?? createPlatformCredentialStore(), bufferMs, failureRetryMs)
+  const gen = ++scheduledRefreshGeneration
+  void scheduleNext(store ?? createPlatformCredentialStore(), bufferMs, failureRetryMs, gen)
 }
 
 /** Stop the background scheduler. Idempotent. */
 export function stopBackgroundRefresh(): void {
   scheduledRefreshActive = false
+  scheduledRefreshGeneration++
   if (scheduledRefreshTimer) clearTimeout(scheduledRefreshTimer)
   scheduledRefreshTimer = null
 }
@@ -378,17 +388,20 @@ async function scheduleNext(
   store: CredentialStore,
   bufferMs: number,
   failureRetryMs: number,
+  gen: number,
 ): Promise<void> {
-  if (!scheduledRefreshActive) return
+  if (!scheduledRefreshActive || gen !== scheduledRefreshGeneration) return
 
   const credentials = await store.read().catch(() => null)
+  if (!scheduledRefreshActive || gen !== scheduledRefreshGeneration) return
+
   const expiresAt = credentials?.claudeAiOauth?.expiresAt
 
   if (!expiresAt) {
     // Operator hasn't logged in yet (no credentials) or credentials are
     // missing the field. Re-poll periodically — once `claude login` writes
     // the file, the next tick picks it up.
-    armTimer(failureRetryMs, store, bufferMs, failureRetryMs)
+    armTimer(failureRetryMs, store, bufferMs, failureRetryMs, gen)
     return
   }
 
@@ -397,14 +410,14 @@ async function scheduleNext(
     // Already due (or past) — fire now, schedule the follow-up based on the
     // new expiresAt (or retry in failureRetryMs if refresh failed).
     const ok = await refreshOAuthToken(store)
+    if (!scheduledRefreshActive || gen !== scheduledRefreshGeneration) return
     claudeLog("token_refresh.scheduled", { ok, immediate: true })
     console.error(`[token_refresh] scheduled refresh (immediate) ok=${ok}`)
-    if (!scheduledRefreshActive) return
-    armTimer(ok ? 0 : failureRetryMs, store, bufferMs, failureRetryMs)
+    armTimer(ok ? 0 : failureRetryMs, store, bufferMs, failureRetryMs, gen)
     return
   }
 
-  armTimer(dueIn, store, bufferMs, failureRetryMs)
+  armTimer(dueIn, store, bufferMs, failureRetryMs, gen)
 }
 
 function armTimer(
@@ -412,14 +425,15 @@ function armTimer(
   store: CredentialStore,
   bufferMs: number,
   failureRetryMs: number,
+  gen: number,
 ): void {
   scheduledRefreshTimer = setTimeout(async () => {
-    if (!scheduledRefreshActive) return
+    if (!scheduledRefreshActive || gen !== scheduledRefreshGeneration) return
     // The dueIn re-check inside scheduleNext distinguishes "fire-now" from
     // "reschedule-only" ticks: when the disk-state recompute lands inside
     // the buffer window, scheduleNext emits the immediate-refresh log line;
     // otherwise it just arms the next timer silently.
-    void scheduleNext(store, bufferMs, failureRetryMs)
+    void scheduleNext(store, bufferMs, failureRetryMs, gen)
   }, delayMs)
   if (scheduledRefreshTimer && (scheduledRefreshTimer as { unref?: () => void }).unref) {
     (scheduledRefreshTimer as { unref: () => void }).unref()

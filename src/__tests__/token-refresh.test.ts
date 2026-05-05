@@ -481,6 +481,81 @@ describe("startBackgroundRefresh", () => {
 
     expect(fetchCalls).toBe(0)
   })
+
+  // Regression: stop() + start() while a scheduleNext() is mid-await must
+  // not leave an orphan refresh chain behind. Without generation tracking
+  // the first chain's read resolves *after* the second start() bumps the
+  // active flag, both chains arm follow-up timers, only the latest is
+  // tracked in scheduledRefreshTimer, and the orphan keeps firing — every
+  // subsequent tick produces 2× the work.
+  it("does not leak a parallel refresh chain across stop/start while a read is in flight", async () => {
+    const { startBackgroundRefresh, stopBackgroundRefresh } = await import("../proxy/tokenRefresh")
+
+    // First two reads (one per generation's scheduleNext) park on a manual
+    // gate so we can force both chains to be in flight simultaneously.
+    // Subsequent reads (doRefresh's internal read, follow-up timer reads)
+    // resolve synchronously so the chains can run to completion.
+    const pendingReads: Array<(creds: typeof MOCK_CREDENTIALS) => void> = []
+    let readCalls = 0
+
+    let stored: typeof MOCK_CREDENTIALS = {
+      ...MOCK_CREDENTIALS,
+      claudeAiOauth: { ...MOCK_CREDENTIALS.claudeAiOauth, expiresAt: Date.now() - 1000 },
+    }
+
+    mockFetch(() => Promise.resolve(makeSuccessResponse({
+      access_token: "new-access-token",
+      refresh_token: "new-refresh-token",
+      expires_in: 3600,
+    })))
+
+    const store: CredentialStore = {
+      read: () => {
+        readCalls++
+        if (readCalls <= 2) {
+          return new Promise(resolve => pendingReads.push(resolve))
+        }
+        return Promise.resolve(JSON.parse(JSON.stringify(stored)))
+      },
+      async write(c) {
+        stored = c as typeof MOCK_CREDENTIALS
+        return true
+      },
+    }
+
+    // gen-1 begins, scheduleNext-1 hits await store.read() and parks.
+    startBackgroundRefresh(store, 100, 60_000)
+    await tick(10)
+    expect(readCalls).toBe(1)
+
+    // stop() while gen-1's read is still pending.
+    stopBackgroundRefresh()
+
+    // start() bumps a new generation; scheduleNext-2 also parks on read.
+    startBackgroundRefresh(store, 100, 60_000)
+    await tick(10)
+    expect(readCalls).toBe(2)
+
+    // Release both parked reads with the (still expired) credentials. Both
+    // chains advance into refreshOAuthToken (dedup'd to one fetch via
+    // inflightRefresh, which writes the new long-lived expiry into stored).
+    // Each chain that survives then arms a 0-delay timer; when the timer
+    // fires, scheduleNext re-runs and store.read() is called again.
+    pendingReads[0]({ ...stored, claudeAiOauth: { ...stored.claudeAiOauth } })
+    pendingReads[1]({ ...stored, claudeAiOauth: { ...stored.claudeAiOauth } })
+
+    await tick(80)
+
+    // Read accounting:
+    //   1, 2 — initial scheduleNext reads (one per generation, gated)
+    //   3    — doRefresh's read inside refreshOAuthToken (single, dedup'd)
+    //   4..  — one follow-up read per scheduleNext chain that armed a timer
+    // With the fix only the live generation arms a follow-up → 4 total.
+    // With the bug both chains arm follow-ups → 5 total.
+    expect(readCalls).toBe(4)
+
+    stopBackgroundRefresh()
+  })
 })
 
 // ---------------------------------------------------------------------------
