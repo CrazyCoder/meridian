@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.45.0](https://github.com/rynfar/meridian/compare/meridian-v1.44.1...meridian-v1.45.0) (2026-07-01)
+
+
+### Features
+
+* add MERIDIAN_1M_CONTEXT_SUPPORT toggle to disable 1M auto-selection ([#555](https://github.com/rynfar/meridian/issues/555)) ([82bb517](https://github.com/rynfar/meridian/commit/82bb5179fee3979439af00a75c92a75a80ce7d87))
+* **models:** add Claude Fable 5 (claude-fable-5) support ([#561](https://github.com/rynfar/meridian/issues/561)) ([8d48272](https://github.com/rynfar/meridian/commit/8d482726f7aa0c470a09754d690fff6cc55201c1))
+
+
+### Bug Fixes
+
+* **thinking:** drop effort when the thinking beta is stripped ([#559](https://github.com/rynfar/meridian/issues/559)) ([e2eb805](https://github.com/rynfar/meridian/commit/e2eb80520ca9caff82be921a6fc409444cbbac24))
+* **thinking:** honor explicit "disabled" setting over client requests ([#562](https://github.com/rynfar/meridian/issues/562)) ([45e08a9](https://github.com/rynfar/meridian/commit/45e08a919cb442bde2aff57547bc14b3a421a466))
+
+## [1.44.1](https://github.com/rynfar/meridian/compare/meridian-v1.44.0...meridian-v1.44.1) (2026-06-25)
+
+
+### Bug Fixes
+
+* implement passthrough for the pi adapter ([#544](https://github.com/rynfar/meridian/issues/544)) ([dc1bf2f](https://github.com/rynfar/meridian/commit/dc1bf2f2384c39fef98d63b051119b457149032f))
+
 ## [1.44.0](https://github.com/rynfar/meridian/compare/meridian-v1.43.0...meridian-v1.44.0) (2026-06-16)
 
 

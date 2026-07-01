@@ -6,6 +6,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { query } from "@anthropic-ai/claude-agent-sdk"
 import { rateLimitStore } from "./rateLimitStore"
+import { guardUpstreamIdle, UpstreamIdleError } from "./streamIdleGuard"
 import { fetchOAuthUsage } from "./oauthUsage"
 import { resolveSdkWorkingDirectory } from "./cwd"
 import type { Context } from "hono"
@@ -95,6 +96,12 @@ export type { LineageResult }
 const exec = promisify(execCallback)
 
 let claudeExecutable = ""
+
+// Max gap between real upstream messages before we treat the stream as stalled.
+// Must be > slowest legitimate TTFB / server-side thinking pause, and < the
+// "feels dead" threshold. Pylon's turn watchdog (120s warn / 180s abort) is the
+// looser backstop, so this fires first.
+const UPSTREAM_IDLE_MS = 90_000
 
 function credentialStoreForProfile(profile: ResolvedProfile): CredentialStore | undefined {
   if (profile.type !== "claude-max") return undefined
@@ -475,7 +482,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         let model = mapModelToClaudeModel(requestedModel, authStatus?.subscriptionType, agentMode)
         const envOverrides = requestedModel.startsWith("claude-opus-")
           ? { ANTHROPIC_DEFAULT_OPUS_MODEL: requestedModel }
-          : undefined
+          : requestedModel.startsWith("claude-fable-")
+            ? { ANTHROPIC_DEFAULT_FABLE_MODEL: requestedModel }
+            : undefined
         // workingDirectory = SDK subprocess cwd (must exist on the proxy host).
         // clientWorkingDirectory = the client's local path (may not exist here);
         // used for per-project fingerprint bucketing and a system-prompt hint
@@ -595,7 +604,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // `output_config.effort`. normalizeEffort gates the value to Claude's
         // vocabulary so an unknown level (e.g. OpenAI's "minimal") falls back to
         // the model default instead of erroring at the SDK boundary.
-        const effort = normalizeEffort(
+        let effort = normalizeEffort(
           effortHeader
           || body.effort
           || body.reasoning_effort
@@ -611,11 +620,23 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         }
         // SDK feature toggles — resolved once per request for use in thinking
         // defaults, settingSources, and buildQueryOptions below.
-        const { getFeaturesForAdapter } = require("./sdkFeatures") as typeof import("./sdkFeatures")
+        const { getFeaturesForAdapter, getExplicitThinking } = require("./sdkFeatures") as typeof import("./sdkFeatures")
         const sdkFeatures = getFeaturesForAdapter(adapter.name)
 
-        // Default thinking from SDK features config when client didn't set it
-        if (!thinking) {
+        // Resolve thinking against the per-adapter setting.
+        //
+        // An *explicitly* configured "disabled" is authoritative: it overrides
+        // any client-supplied thinking (body.thinking / x-opencode-thinking) and
+        // drops effort, since effort only tunes thinking depth. This mirrors the
+        // beta-stripped hard-disable below. We check the raw setting (not the
+        // merged value) because the default is also "disabled" — and that default
+        // must stay a no-op so clients can still request thinking per-request.
+        // "adaptive"/"enabled" act as a default only when the client sent nothing.
+        if (getExplicitThinking(adapter.name) === "disabled") {
+          thinking = { type: "disabled" }
+          effort = undefined
+          plog(`[PROXY] ${requestMeta.requestId} thinking disabled (per-adapter setting)`)
+        } else if (!thinking) {
           if (sdkFeatures.thinking === "adaptive") thinking = { type: "adaptive" }
           else if (sdkFeatures.thinking === "enabled") thinking = { type: "enabled" }
         }
@@ -626,6 +647,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const thinkingBetaStripped = betaFilter.stripped.some(b => b.startsWith("interleaved-thinking"))
         if (thinkingBetaStripped) {
           thinking = { type: "disabled" }
+          // effort only tunes thinking depth and reaches the SDK independently
+          // (query.ts), so it can re-trigger reasoning even with thinking
+          // disabled — drop it too, keeping thinking blocks out of session state.
+          effort = undefined
           if (betaFilter.stripped.length > 0) {
             plog(`[PROXY] ${requestMeta.requestId} thinking disabled (thinking beta stripped by ${getBetaPolicyFromEnv()} policy)`)
           }
@@ -1726,8 +1751,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               let nextClientBlockIndex = 0
               const sdkToClientIndex = new Map<number, number>()
 
+              const guardedResponse = guardUpstreamIdle(response, UPSTREAM_IDLE_MS, (sinceLastMs) =>
+                claudeLog("upstream.stalled", {
+                  mode: "stream",
+                  model,
+                  sinceLastMs,
+                  streamEventsSeen,
+                  firstChunkAt: firstChunkAt ?? null,
+                }),
+              )
               try {
-                for await (const message of response) {
+                for await (const message of guardedResponse) {
                   if (streamClosed) {
                     break
                   }
@@ -2172,7 +2206,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 error: errMsg,
                 ...(stderrOutput ? { stderr: stderrOutput } : {})
               })
-              const streamErr = classifyError(errMsg)
+              const streamErr = error instanceof UpstreamIdleError
+                ? {
+                    status: 504,
+                    type: "upstream_timeout",
+                    message: `Upstream stalled: no data for ${error.sinceLastMs}ms`,
+                  }
+                : classifyError(errMsg)
               claudeLog("proxy.anthropic.error", { error: errMsg, classified: streamErr.type })
 
               // Surface the SDK termination reason (max_turns / process_exit / aborted)
@@ -3095,7 +3135,7 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
       console.log(`Meridian running at http://${finalConfig.host}:${info.port}`)
       console.log(`Telemetry dashboard: http://${finalConfig.host}:${info.port}/telemetry`)
       const pins = resolveSdkModelDefaults()
-      console.log(`Model pins: opus=${pins.ANTHROPIC_DEFAULT_OPUS_MODEL} sonnet=${pins.ANTHROPIC_DEFAULT_SONNET_MODEL} haiku=${pins.ANTHROPIC_DEFAULT_HAIKU_MODEL}`)
+      console.log(`Model pins: fable=${pins.ANTHROPIC_DEFAULT_FABLE_MODEL} opus=${pins.ANTHROPIC_DEFAULT_OPUS_MODEL} sonnet=${pins.ANTHROPIC_DEFAULT_SONNET_MODEL} haiku=${pins.ANTHROPIC_DEFAULT_HAIKU_MODEL}`)
       // Surface the resolved Claude executable + which step picked it.
       // When users hit "wrong claude got picked" failure modes (e.g. a
       // bun-shimmed `claude` on PATH, see #478), this single line is what
