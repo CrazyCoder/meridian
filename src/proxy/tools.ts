@@ -11,7 +11,7 @@
  * (which have correct param names for the calling agent).
  */
 export const BLOCKED_BUILTIN_TOOLS = [
-  "Read", "Write", "Edit", "MultiEdit",
+  "Read", "Write", "Edit",
   "Bash", "Glob", "Grep", "NotebookEdit",
   "WebFetch", "WebSearch", "TodoWrite"
 ]

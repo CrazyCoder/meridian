@@ -21,7 +21,7 @@ export interface AgentIdentity {
    * Extract a session ID from the request.
    * Returns undefined if the agent doesn't provide session tracking.
    */
-  getSessionId(c: Context): string | undefined
+  getSessionId(c: Context, body?: unknown): string | undefined
 
   /**
    * Extract the SDK subprocess working directory from the request body.

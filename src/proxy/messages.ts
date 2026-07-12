@@ -80,3 +80,155 @@ export function getLastUserMessage(messages: Array<{ role: string; content: any 
   }
   return messages.slice(-1)
 }
+
+/**
+ * Remove fields the Claude Agent SDK attaches to streamed events that are not
+ * part of the public Anthropic streaming schema.
+ *
+ * The SDK adds `context_management` (advisory metadata about upstream context
+ * edits) to `message_delta`. The real Anthropic API does not return it on a
+ * normal (non-beta) request, and stock clients — e.g. langchain-anthropic —
+ * assume any present field is a typed SDK model and call `.model_dump()` on it,
+ * crashing on the raw dict (#525). The context edit already happened upstream,
+ * so the field is safe to drop.
+ *
+ * Mutates and returns the event for convenient inline use in the SSE forward
+ * path; a no-op when the field is absent, so it is safe to call on every event.
+ */
+export function stripNonStandardStreamFields<T>(event: T): T {
+  if (event && typeof event === "object") {
+    const e = event as Record<string, unknown>
+    delete e.context_management
+    const delta = e.delta
+    if (delta && typeof delta === "object") {
+      delete (delta as Record<string, unknown>).context_management
+    }
+  }
+  return event
+}
+
+/** Content block types that carry non-text data the model must "see". */
+export const MULTIMODAL_TYPES = new Set(["image", "document", "file"])
+
+/**
+ * Consolidate multimodal blocks (image/document/file) from earlier user turns
+ * onto the final user turn of a structured (AsyncIterable) prompt.
+ *
+ * When the Claude Agent SDK is handed multiple user messages as a streaming
+ * iterable, it only surfaces multimodal blocks from the LAST user turn to the
+ * model — images sitting in earlier turns (e.g. an image a `read` tool returned
+ * mid-conversation) are silently dropped, and the model answers "I cannot see
+ * the image" (#553). Moving those blocks onto the final array-content user turn
+ * makes them visible; accompanying text is left in place.
+ *
+ * Notes:
+ *  - The target is the last entry whose `message.content` is an ARRAY. Flattened
+ *    assistant turns are string content and can never hold image blocks, so a
+ *    conversation ending on an assistant turn still lands images on the last
+ *    real user turn.
+ *  - Blocks structurally identical to ones already on the target are not
+ *    re-appended (avoids duplicating a client-re-attached image).
+ *
+ * Pure: returns a new array; the input and its messages are not mutated. No-op
+ * when there are fewer than two array-content user turns or nothing to carry.
+ */
+export function consolidateMultimodalOntoLastUser<
+  T extends { message: { content: unknown } }
+>(structured: T[]): T[] {
+  let targetIdx = -1
+  for (let i = structured.length - 1; i >= 0; i--) {
+    if (Array.isArray(structured[i]!.message.content)) {
+      targetIdx = i
+      break
+    }
+  }
+  if (targetIdx < 0) return structured
+
+  const carried: unknown[] = []
+  const result = structured.map((entry, i) => {
+    const content = entry.message.content
+    if (i === targetIdx || !Array.isArray(content)) return entry
+    const kept = content.filter((block: any) => {
+      if (block && typeof block === "object" && MULTIMODAL_TYPES.has(block.type)) {
+        carried.push(block)
+        return false
+      }
+      return true
+    })
+    if (kept.length === content.length) return entry
+    return { ...entry, message: { ...entry.message, content: kept } }
+  })
+
+  if (carried.length === 0) return structured
+
+  const target = result[targetIdx]!
+  const existing = target.message.content as unknown[]
+  const seen = new Set(existing.map((b) => JSON.stringify(b)))
+  const toAppend = carried.filter((b) => {
+    const key = JSON.stringify(b)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  result[targetIdx] = {
+    ...target,
+    message: { ...target.message, content: [...existing, ...toAppend] },
+  }
+  return result
+}
+
+/** A tool call the assistant made earlier in the conversation. */
+export interface ToolCallInfo {
+  name: string
+  /** Compact human-readable target (file path, command, pattern...), if any. */
+  target: string | undefined
+}
+
+/** Input keys that identify what a tool call operated on, in priority order. */
+const TOOL_TARGET_KEYS = ["filePath", "file_path", "path", "command", "pattern", "query", "url"] as const
+
+/**
+ * Index every assistant tool_use block in a conversation by id.
+ *
+ * Used to attribute tool_result blocks during full-history replay: the
+ * flattened replay drops assistant tool_use blocks (issues #111/#386 — verbose
+ * `[Tool Use: ...]` strings taught the model to imitate fake tool syntax), so
+ * without attribution the model sees raw tool outputs as bare user text with
+ * no cause — it then denies having made the calls at all ("a file I never
+ * created", #552).
+ */
+export function buildToolUseIndex(
+  messages: Array<{ role: string; content: any }>
+): Map<string, ToolCallInfo> {
+  const index = new Map<string, ToolCallInfo>()
+  for (const m of messages) {
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue
+    for (const block of m.content) {
+      if (block?.type !== "tool_use" || !block.id || typeof block.name !== "string") continue
+      let target: string | undefined
+      const input = block.input
+      if (input && typeof input === "object") {
+        for (const key of TOOL_TARGET_KEYS) {
+          const v = (input as Record<string, unknown>)[key]
+          if (typeof v === "string" && v) {
+            target = v.length > 80 ? v.slice(0, 77) + "..." : v
+            break
+          }
+        }
+      }
+      index.set(block.id, { name: block.name, target })
+    }
+  }
+  return index
+}
+
+/**
+ * Render a compact attribution label for a replayed tool result, e.g.
+ * `[write tmp/test2.txt]` or `[bash echo hi]`. Deliberately terse and
+ * bracket-formatted differently from the banned `[Tool Use: ...]` /
+ * `[Tool Result ...]` shapes (#111/#386) so the model reads it as context,
+ * not as tool-call syntax to imitate.
+ */
+export function describeToolCall(info: ToolCallInfo): string {
+  return info.target ? `[${info.name} ${info.target}]` : `[${info.name}]`
+}

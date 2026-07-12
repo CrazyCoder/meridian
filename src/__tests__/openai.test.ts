@@ -1149,6 +1149,34 @@ describe("createSseTranslator", () => {
     expect(chunks[4]!.choices[0]!.delta.tool_calls![0]!.index).toBe(0)
     expect(chunks[5]!.choices[0]!.finish_reason).toBe("tool_calls")
   })
+
+  it("buildUsageChunk returns null when includeUsage was not requested", () => {
+    const translate = createSseTranslator(CTX)
+    translate({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 10, output_tokens: 5 } })
+    expect(translate.buildUsageChunk()).toBeNull()
+  })
+
+  it("buildUsageChunk returns null when no message_delta.usage was observed", () => {
+    const translate = createSseTranslator({ ...CTX, includeUsage: true })
+    translate({ type: "message_delta", delta: { stop_reason: "end_turn" } })
+    expect(translate.buildUsageChunk()).toBeNull()
+  })
+
+  it("buildUsageChunk returns a populated trailing chunk with empty choices when requested", () => {
+    const translate = createSseTranslator({ ...CTX, includeUsage: true })
+    translate({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 132, output_tokens: 37 } })
+    const chunk = translate.buildUsageChunk()
+    expect(chunk).not.toBeNull()
+    expect(chunk!.choices).toEqual([])
+    expect(chunk!.usage).toEqual({ prompt_tokens: 132, completion_tokens: 37, total_tokens: 169 })
+  })
+
+  it("buildUsageChunk uses the latest message_delta.usage if multiple arrive", () => {
+    const translate = createSseTranslator({ ...CTX, includeUsage: true })
+    translate({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { input_tokens: 100, output_tokens: 10 } })
+    translate({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 100, output_tokens: 42 } })
+    expect(translate.buildUsageChunk()!.usage).toEqual({ prompt_tokens: 100, completion_tokens: 42, total_tokens: 142 })
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -1198,6 +1226,34 @@ describe("buildModelList", () => {
     expect(opus46.context_window).toBe(200_000)
     expect(opus47.context_window).toBe(200_000)
     expect(opus48.context_window).toBe(200_000)
+  })
+
+  // #498: Home Assistant 2026.5's Anthropic integration reads
+  // capabilities.image_input to decide whether image attachments are allowed;
+  // an absent capabilities field rejected all images locally.
+  it("populates capabilities on every model (image_input.supported)", () => {
+    for (const model of buildModelList(true)) {
+      expect(model.capabilities).toBeDefined()
+      expect(model.capabilities!.image_input.supported).toBe(true)
+      expect(model.capabilities!.pdf_input.supported).toBe(true)
+    }
+  })
+
+  it("matches the Anthropic Models API capabilities shape", () => {
+    const caps = buildModelList(true)[0]!.capabilities!
+    // Top-level capability groups present per the /v1/models schema.
+    expect(caps.batch.supported).toBe(true)
+    expect(caps.citations.supported).toBe(true)
+    expect(caps.code_execution.supported).toBe(true)
+    expect(caps.structured_outputs.supported).toBe(true)
+    // Nested groups carry their own `supported` flag plus sub-strategies.
+    expect(caps.context_management.supported).toBe(true)
+    expect(caps.context_management.clear_tool_uses_20250919.supported).toBe(true)
+    expect(caps.effort.supported).toBe(true)
+    expect(caps.effort.high.supported).toBe(true)
+    expect(caps.thinking.supported).toBe(true)
+    expect(caps.thinking.types.adaptive.supported).toBe(true)
+    expect(caps.thinking.types.enabled.supported).toBe(true)
   })
 
   it("haiku is always 200k regardless of subscription", () => {

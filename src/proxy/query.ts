@@ -6,9 +6,10 @@
  */
 
 import { join } from "node:path"
-import type { Options, SdkBeta, SettingSource } from "@anthropic-ai/claude-agent-sdk"
+import type { Options, OutputFormat, SdkBeta, SettingSource } from "@anthropic-ai/claude-agent-sdk"
 import { createOpencodeMcpServer } from "../mcpTools"
 import { createPassthroughMcpServer, PASSTHROUGH_MCP_NAME } from "./passthroughTools"
+import { envInt } from "../env"
 import type { Effort } from "./effort"
 
 /**
@@ -87,6 +88,8 @@ export interface QueryContext {
   thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens?: number } | { type: 'disabled' }
   /** API-side task budget in tokens — model paces tool use within this limit */
   taskBudget?: { total: number }
+  /** Native JSON-schema output contract for the Claude Agent SDK */
+  outputFormat?: OutputFormat
   /** Beta features to enable */
   betas?: string[]
   /** SDK setting sources — controls CLAUDE.md and user settings loading */
@@ -147,7 +150,16 @@ function computePassthroughMaxTurns(
   advisorModel: string | undefined,
 ): number {
   const hasResume = !!resumeSessionId
-  const base = hasResume && hasDeferredTools ? 4 : 3
+  const defaultBase = hasResume && hasDeferredTools ? 4 : 3
+  // The base is the SDK's internal-loop budget before it must return control.
+  // It's normally enough (the capture path drops re-emitted duplicates and
+  // stops the loop when the model starts repeating), but wide parallel tool
+  // calls — which the SDK surfaces one assistant turn each — can need more
+  // headroom, and orchestration clients hit it on deep chains (#494). Allow
+  // MERIDIAN_PASSTHROUGH_MAX_TURNS / CLAUDE_PROXY_PASSTHROUGH_MAX_TURNS to
+  // raise (or lower) the base; the resume/advisor bumps below are unchanged.
+  const configured = envInt("PASSTHROUGH_MAX_TURNS", defaultBase)
+  const base = configured > 0 ? configured : defaultBase
   const advisorBump = advisorModel ? 3 : 0
   return base + advisorBump
 }
@@ -210,13 +222,13 @@ function resolveSystemPrompt(
   return {}
 }
 
-export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
+export function buildQueryOptions(ctx: QueryContext, abortController?: AbortController): BuildQueryResult {
   const {
     prompt, model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
     passthrough, stream, sdkAgents, passthroughMcp, cleanEnv, hasDeferredTools,
     resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, blockedTools, incompatibleTools,
     mcpServerName, allowedMcpTools, onStderr,
-    effort, thinking, taskBudget, betas, settingSources, codeSystemPrompt, clientSystemPrompt,
+    effort, thinking, taskBudget, outputFormat, betas, settingSources, codeSystemPrompt, clientSystemPrompt,
     memory, dreaming, sharedMemory, maxBudgetUsd, fallbackModel, sdkDebug, additionalDirectories,
   } = ctx
   const cwdNote = buildCwdNote(workingDirectory, clientWorkingDirectory)
@@ -237,6 +249,7 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
       cwd: workingDirectory,
       model,
       pathToClaudeCodeExecutable: claudeExecutable,
+      ...(abortController ? { abortController } : {}),
       ...(stream ? { includePartialMessages: true } : {}),
       permissionMode: "bypassPermissions" as const,
       allowDangerouslySkipPermissions: true,
@@ -311,6 +324,7 @@ export function buildQueryOptions(ctx: QueryContext): BuildQueryResult {
       ...(effort ? { effort } : {}),
       ...(thinking ? { thinking } : {}),
       ...(taskBudget ? { taskBudget } : {}),
+      ...(outputFormat ? { outputFormat } : {}),
       ...(betas && betas.length > 0 ? { betas: betas as SdkBeta[] } : {}),
       ...(maxBudgetUsd && maxBudgetUsd > 0 ? { maxBudgetUsd } : {}),
       ...(fallbackModel ? { fallbackModel } : {}),
