@@ -64,6 +64,8 @@ import { getAdapterTransforms } from "./transforms/registry"
 import { loadPlugins, getActiveTransforms } from "./plugins/loader"
 import type { LoadedPlugin } from "./plugins/types"
 import { resolveProfile, listProfiles, setActiveProfile, getActiveProfileId, getEffectiveProfiles, restoreActiveProfile, type ResolvedProfile } from "./profiles"
+import { getRoutingMode } from "./routing"
+import { getSetting } from "./settings"
 import { filterBetasForProfile, getBetaPolicyFromEnv } from "./betas"
 import { createFileChangeHook, extractFileChangesFromMessages, formatFileChangeSummary, type FileChange } from "./fileChanges"
 import { detectTokenAnomalies, formatAnomalyAlerts, type TokenSnapshot } from "./tokenHealth"
@@ -273,13 +275,17 @@ function buildFreshPrompt(
     return (async function* () { for (const msg of prompt) yield msg })()
   }
 
+  // Same anti-imitation convention as the structured branch above and the
+  // main prompt builder: user turns plain, assistant turns bracketed.
+  // 'Human:'/'Assistant:' transcript lines teach the model to complete the
+  // transcript itself (#496 self-talk).
   return messages
     .map((m) => {
-      const role = m.role === "assistant" ? "Assistant" : "Human"
-      const content = m.role === "assistant"
-        ? flattenAssistantContent(m.content)
-        : flattenUserContent(m.content, sanitizeOpts, toolIndex)
-      return content ? `${role}: ${content}` : ""
+      if (m.role === "assistant") {
+        const assistantText = flattenAssistantContent(m.content)
+        return assistantText ? `[Assistant: ${assistantText}]` : ""
+      }
+      return flattenUserContent(m.content, sanitizeOpts, toolIndex)
     })
     .filter(Boolean)
     .join("\n\n") || ""
@@ -498,11 +504,20 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         }
         const outputFormat = parsedOutputFormat.value
 
-        // Resolve profile: header > active > default > first configured
+        // Resolve profile: header > sticky (routing="sticky" only) > active >
+        // default > first configured. Sticky routing (#383) assigns each
+        // client session to a profile via rendezvous hashing so multi-account
+        // setups keep per-account prompt caches warm; the same session key
+        // Meridian already uses for session tracking is the assignment key,
+        // so a session and its subagent/fork requests land on one account.
+        const routingMode = getRoutingMode(process.env.MERIDIAN_ROUTING ?? getSetting("routing"))
         const profile = resolveProfile(
           finalConfig.profiles,
           finalConfig.defaultProfile,
-          c.req.header("x-meridian-profile") || undefined
+          c.req.header("x-meridian-profile") || undefined,
+          routingMode === "sticky"
+            ? { routingMode, stickySessionKey: adapter.getSessionId(c, body) }
+            : undefined
         )
 
         const authStatus = await getClaudeAuthStatusAsync(
@@ -603,11 +618,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           }
         }
 
-        // Run the transform pipeline — adapter transforms populate SDK configuration
-        const adapterTransforms = getAdapterTransforms(adapter.name)
+        // Run the transform pipeline — adapter transforms populate SDK configuration.
+        // INVARIANT (#476): behavior keyed by adapter name — transforms, plugin
+        // scoping, and agent-specific branches — resolves via the BASE name so
+        // existing transforms and ecosystem plugins keep applying to adapter
+        // instances. Only features and telemetry labels use the instance name.
+        const adapterBase = adapter.baseName ?? adapter.name
+        const adapterTransforms = getAdapterTransforms(adapterBase)
         const pipeline = buildPipeline(adapterTransforms, pluginTransforms)
         const pipelineCtx = runTransformHook(pipeline, "onRequest", createRequestContext({
-          adapter: adapter.name,
+          adapter: adapterBase,
           body,
           headers: c.req.raw.headers,
           model,
@@ -616,7 +636,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           tools: body.tools,
           stream: body.stream ?? false,
           workingDirectory,
-        }), adapter.name)
+        }), adapterBase)
 
         // Allow transform pipeline to override streaming preference (e.g. LiteLLM requires non-streaming)
         const stream = pipelineCtx.prefersStreaming !== undefined ? pipelineCtx.prefersStreaming : (body.stream ?? false)
@@ -668,7 +688,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // SDK feature toggles — resolved once per request for use in thinking
         // defaults, settingSources, and buildQueryOptions below.
         const { getFeaturesForAdapter, getExplicitThinking } = require("./sdkFeatures") as typeof import("./sdkFeatures")
-        const sdkFeatures = getFeaturesForAdapter(adapter.name)
+        // Instances (#476): base-resolved features with the instance's own
+        // overrides layered on top.
+        const sdkFeatures = { ...getFeaturesForAdapter(adapterBase), ...(adapter.instanceFeatures ?? {}) }
 
         // Resolve thinking against the per-adapter setting.
         //
@@ -679,7 +701,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // merged value) because the default is also "disabled" — and that default
         // must stay a no-op so clients can still request thinking per-request.
         // "adaptive"/"enabled" act as a default only when the client sent nothing.
-        if (getExplicitThinking(adapter.name) === "disabled") {
+        if ((adapter.instanceFeatures?.thinking ?? getExplicitThinking(adapterBase)) === "disabled") {
           thinking = { type: "disabled" }
           effort = undefined
           plog(`[PROXY] ${requestMeta.requestId} thinking disabled (per-adapter setting)`)
@@ -753,7 +775,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // resume the backing SDK session. Older clients may omit metadata, so
         // preserve fingerprint resume instead of treating their tool results
         // as unrelated headerless workflow requests.
-        const isClientDrivenLoop = adapter.name !== "claude-code" && !agentSessionId && lastIsToolResult
+        const isClientDrivenLoop = adapterBase !== "claude-code" && !agentSessionId && lastIsToolResult
         const isIndependentSession =
           requestSource?.startsWith("fork-") || requestSource?.startsWith("subagent-") || isClientDrivenLoop || false
         let lineageResult = isIndependentSession
@@ -765,7 +787,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // lookup. A new 1-message session can collide with a stored N-message
         // session and be classified as "undo." Downgrade to "diverged" to
         // prevent leaking the old session's conversation history.
-        if (lineageResult.type === "undo" && adapter.name === "opencode" && !agentSessionId) {
+        if (lineageResult.type === "undo" && adapterBase === "opencode" && !agentSessionId) {
           lineageResult = { type: "diverged" }
         }
         const isResume = lineageResult.type === "continuation" || lineageResult.type === "compaction"
@@ -785,7 +807,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const lineageType = lineageResult.type === "diverged" && !cachedSession ? "new" : lineageResult.type
         const msgCount = Array.isArray(body.messages) ? body.messages.length : 0
         const toolCount = body.tools?.length ?? 0
-        const requestLogLine = `${requestMeta.requestId} adapter=${adapter.name}${requestSource ? ` source=${requestSource}` : ""} model=${model} stream=${stream} tools=${toolCount} lineage=${lineageType} session=${resumeSessionId?.slice(0, 8) || "new"}${isUndo && undoRollbackUuid ? ` rollback=${undoRollbackUuid.slice(0, 8)}` : ""}${agentMode ? ` agent=${agentMode}` : ""} active=${activeSessions}/${MAX_CONCURRENT_SESSIONS} msgCount=${msgCount}`
+        const requestLogLine = `${requestMeta.requestId} adapter=${adapter.name}${requestSource ? ` source=${requestSource}` : ""}${profile.id !== "default" ? ` profile=${profile.id}${routingMode === "sticky" ? "(sticky)" : ""}` : ""} model=${model} stream=${stream} tools=${toolCount} lineage=${lineageType} session=${resumeSessionId?.slice(0, 8) || "new"}${isUndo && undoRollbackUuid ? ` rollback=${undoRollbackUuid.slice(0, 8)}` : ""}${agentMode ? ` agent=${agentMode}` : ""} active=${activeSessions}/${MAX_CONCURRENT_SESSIONS} msgCount=${msgCount}`
         plog(`[PROXY] ${requestLogLine} msgs=${msgSummary}`)
         diagnosticLog.session(`${requestLogLine}`, requestMeta.requestId)
 
@@ -916,13 +938,21 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // resolve even when the originating call sits before a resume-delta
         // boundary (#552).
         const toolIndex = buildToolUseIndex(allMessages ?? messagesToConvert ?? [])
+        // NEVER render 'Human:'/'Assistant:' transcript lines — the model
+        // imitates that format, emitting 'Human: ...' turns itself and
+        // self-approving actions (#496 self-talk). Match the structured
+        // path's proven convention instead: user turns plain, assistant
+        // turns bracketed as '[Assistant: ...]'. On resume, drop assistant
+        // messages entirely — the resumed SDK session already contains
+        // those turns; replaying them as user text is the imitation seed.
         textPrompt = messagesToConvert
           ?.map((m: { role: string; content: any }) => {
-            const role = m.role === "assistant" ? "Assistant" : "Human"
-            const content = m.role === "assistant"
-              ? flattenAssistantContent(m.content)
-              : flattenUserContent(m.content, sanitizeOpts, toolIndex)
-            return content ? `${role}: ${content}` : ""
+            if (m.role === "assistant") {
+              if (isResume) return ""
+              const assistantText = flattenAssistantContent(m.content)
+              return assistantText ? `[Assistant: ${assistantText}]` : ""
+            }
+            return flattenUserContent(m.content, sanitizeOpts, toolIndex)
           })
           .filter(Boolean)
           .join("\n\n") || ""
@@ -943,9 +973,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // (e.g., oracle on GPT-5.2, explore on Gemini via oh-my-opencode).
       // Adapter can override the global passthrough env var per-agent.
       // Droid always uses internal mode; OpenCode defers to the env var.
-      const passthrough = pipelineCtx.passthrough !== undefined
-        ? pipelineCtx.passthrough
-        : envBool("PASSTHROUGH")
+      // Instance passthrough override (#476) beats the adapter transform's
+      // default, which beats the global env var.
+      const passthrough = adapter.instancePassthrough !== undefined
+        ? adapter.instancePassthrough
+        : pipelineCtx.passthrough !== undefined
+          ? pipelineCtx.passthrough
+          : envBool("PASSTHROUGH")
       // SDK setting sources — controls CLAUDE.md and user settings loading.
       const settingSources: import("@anthropic-ai/claude-agent-sdk").SettingSource[] =
         envBool("LOAD_CONTEXT") || sdkFeatures.claudeMd === "full"
@@ -3080,6 +3114,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     return c.json({
       profiles: enriched,
       activeProfile: getActiveProfileId() || finalConfig.defaultProfile || profiles[0]?.id || "default",
+      // Additive (#383): current routing mode so UIs can surface it.
+      routing: getRoutingMode(process.env.MERIDIAN_ROUTING ?? getSetting("routing")),
     })
   })
 

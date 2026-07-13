@@ -99,6 +99,8 @@ Then in `~/.config/opencode/opencode.json`:
 
 > **Important:** Do not use `meridian setup` on NixOS. It writes an absolute Nix store path (e.g. `/nix/store/...-meridian-1.x.x/lib/...`) into your OpenCode config, which will break on the next `nixos-rebuild switch` or `home-manager switch` when the store path changes. Use one of the approaches above instead.
 
+> **Note:** The bundled Claude Code binary (`claude.exe`) is patched with `autoPatchelfHook` at build time, so it runs on NixOS out of the box. If you previously enabled `programs.nix-ld.enable = true` as a workaround for `Could not start dynamically linked executable` (#501), that is no longer required for Meridian.
+
 **Home Manager service** -- run Meridian as a user systemd service:
 
 ```nix
@@ -163,7 +165,8 @@ The Claude Code SDK provides programmatic access to Claude. But your favorite co
 - **Auto token refresh** — expired OAuth tokens are refreshed automatically; requests continue without interruption
 - **Passthrough mode** — forward tool calls to the client instead of executing internally
 - **Multimodal** — images, documents, file attachments, and multimodal tool results pass through to Claude
-- **Multi-profile** — switch between Claude accounts instantly, no restart needed
+- **Multi-profile** — switch between Claude accounts instantly, no restart needed; opt-in [sticky session routing](#sticky-session-routing) distributes sessions across accounts while keeping per-account prompt caches warm
+- **Adapter instances** — run several configurations of the same adapter side by side (per-instance thinking, system prompt, passthrough) selected by header or match rules — see [Adapter instances](#adapter-instances)
 - **Telemetry dashboard** — real-time performance metrics at `/telemetry`, including token usage and prompt cache efficiency ([`MONITORING.md`](MONITORING.md))
 - **Telemetry persistence** — opt-in SQLite storage for telemetry data that survives proxy restarts, with configurable retention
 - **Prometheus metrics** — `GET /metrics` endpoint for scraping request counters and duration histograms
@@ -288,6 +291,22 @@ curl -H "x-meridian-profile: work" ...
 
 You can also switch profiles from the web UI at `http://127.0.0.1:3456/profiles` — a dropdown appears in the nav bar on all pages when profiles are configured.
 
+### Sticky session routing
+
+With multiple profiles (e.g. two Claude Max subscriptions), Meridian can distribute sessions across profiles automatically while preserving **session affinity** — Anthropic's prompt caching is per-account, so a session must stay on one account to keep its ~99% cache hit rate:
+
+```bash
+MERIDIAN_ROUTING=sticky meridian     # or set "routing": "sticky" in ~/.config/meridian/settings.json
+```
+
+- Each session is assigned to a profile by rendezvous hashing of its session id — **deterministic and stateless**, so assignments survive proxy restarts with no state to lose
+- Adding/removing a profile only reassigns the sessions belonging to the changed arm — everything else keeps its warm cache
+- A session's subagent/fork requests share its assignment (same session id → same account)
+- The `x-meridian-profile` header still overrides everything, per request
+- Default is `active` (all traffic to the active profile — the pre-existing behavior); sticky is opt-in
+
+Request logs show the assignment (`profile=work(sticky)`), and `GET /profiles/list` reports the current `routing` mode.
+
 ### Profile commands
 
 | Command | Description |
@@ -330,6 +349,11 @@ Profile shapes:
 - `oauthToken` — long-lived token from `claude setup-token`; sets `CLAUDE_CODE_OAUTH_TOKEN`, no config dir needed
 
 When `MERIDIAN_PROFILES` is set, it takes precedence over disk-configured profiles. When unset, Meridian auto-discovers profiles from `~/.config/meridian/profiles.json` on each request.
+
+Related environment variables:
+
+- `MERIDIAN_ROUTING=sticky` — enable [sticky session routing](#sticky-session-routing) across profiles (default `active`)
+- `MERIDIAN_ADAPTER_INSTANCES='{...}'` — define [adapter instances](#adapter-instances) inline instead of via `~/.config/meridian/adapter-instances.json`
 
 ## Agent Setup
 
@@ -579,6 +603,27 @@ Requests flow through the Claude Code adapter which:
 - Parses the client's real working directory from its `Primary working directory:` system-prompt line so Claude answers path-related questions with your local path, not the proxy host's.
 - Leaves the SDK subprocess cwd on the proxy host (Claude Code's local paths don't exist there).
 - Runs in passthrough mode by default — Claude Code executes its own tools on the machine it runs on; Meridian just forwards tool_use blocks.
+
+### Adapter instances
+
+Run several configurations of the same adapter side by side — e.g. a passthrough variant with thinking enabled and one without, or a dedicated config for a specific client. Define instances in `~/.config/meridian/adapter-instances.json` (or the `MERIDIAN_ADAPTER_INSTANCES` env var as a JSON string):
+
+```jsonc
+{
+  "oc-thinky":  { "base": "opencode", "features": { "thinking": "enabled" } },
+  "lite-plain": { "base": "passthrough", "passthrough": true,
+                  "match": { "userAgentPrefix": "litellm/" } },
+  "team-webui": { "base": "opencode", "features": { "codeSystemPrompt": false },
+                  "match": { "header": { "x-team": "alpha" } } }
+}
+```
+
+- **`base`** — which built-in adapter provides the behavior (tool handling, session tracking, transforms). Existing plugins and transforms scoped to the base adapter apply to its instances automatically.
+- **`features`** — per-instance overrides of the [SDK feature toggles](#sdk-feature-toggles-experimental) (thinking, system prompts, memory, ...) layered over the base's settings. Same keys as the settings UI.
+- **`passthrough`** — per-instance passthrough mode, overriding the adapter default and `MERIDIAN_PASSTHROUGH`.
+- **`match`** — optional automatic selection: exact header values and/or a User-Agent prefix. Match rules outrank built-in User-Agent detection (that's their purpose). Without `match`, select the instance per request with `x-meridian-agent: <instance-name>`.
+
+Built-in adapter names are reserved and can't be shadowed. With no instances configured, detection is exactly the built-in chain. Config file changes apply within ~5s, no restart needed.
 
 ### Any Anthropic-compatible tool
 
