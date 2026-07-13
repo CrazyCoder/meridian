@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.48.0](https://github.com/rynfar/meridian/compare/meridian-v1.47.0...meridian-v1.48.0) (2026-07-13)
+
+
+### Features
+
+* **adapters:** add Cherry Studio adapter with built-in web search ([#481](https://github.com/rynfar/meridian/issues/481)) ([#608](https://github.com/rynfar/meridian/issues/608)) ([32667c8](https://github.com/rynfar/meridian/commit/32667c804fecadc7d811e27f672454591735e920))
+
+
+### Bug Fixes
+
+* **ci:** read Docker release version from package.json ([#605](https://github.com/rynfar/meridian/issues/605)) ([3fa2d71](https://github.com/rynfar/meridian/commit/3fa2d716cea26ec9fc66cfcf266865374be95f9f))
+* **tools:** fail fast on native Anthropic server tools (web_search/web_fetch) ([#607](https://github.com/rynfar/meridian/issues/607)) ([920a318](https://github.com/rynfar/meridian/commit/920a318b76bd73fecb74eaad7eeb7f44bc20bf59))
+
+
+### Performance
+
+* **passthrough:** eliminate the billed digest turn after tool capture ([#609](https://github.com/rynfar/meridian/issues/609)) ([741f645](https://github.com/rynfar/meridian/commit/741f6456ce55ff458e4b9c58afa62a6a50220c02))
+
+## [1.47.0](https://github.com/rynfar/meridian/compare/meridian-v1.46.0...meridian-v1.47.0) (2026-07-13)
+
+
+### Features
+
+* **dashboard:** add Usage tab with session, weekly, and weekly-pace ([#604](https://github.com/rynfar/meridian/issues/604)) ([e0853af](https://github.com/rynfar/meridian/commit/e0853af63cc5a5cd82bc85ba93ef98e362808497))
+
+
+### Bug Fixes
+
+* **ci:** derive Docker semver from tag_name, not the empty version output ([#601](https://github.com/rynfar/meridian/issues/601)) ([144a7ce](https://github.com/rynfar/meridian/commit/144a7ce4623fb9ff838039d875b749aa72f0eb86))
+
 ## [1.46.0](https://github.com/rynfar/meridian/compare/meridian-v1.45.4...meridian-v1.46.0) (2026-07-13)
 
 
