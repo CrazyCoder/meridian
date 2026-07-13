@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.48.1](https://github.com/rynfar/meridian/compare/meridian-v1.48.0...meridian-v1.48.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* **replay:** preserve edit content and agency in fresh-replay history ([#610](https://github.com/rynfar/meridian/issues/610)) ([33760c4](https://github.com/rynfar/meridian/commit/33760c4c054d4b8acbadffdc8e04a400cc71ea65))
+
 ## [1.48.0](https://github.com/rynfar/meridian/compare/meridian-v1.47.0...meridian-v1.48.0) (2026-07-13)
 
 
