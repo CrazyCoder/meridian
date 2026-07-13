@@ -143,6 +143,33 @@ describe("mapModelToClaudeModel", () => {
     })
   })
 
+  describe("mythos 5 (rides the fable tier)", () => {
+    afterEach(() => {
+      resetExtendedContextUnavailable()
+      delete process.env.MERIDIAN_1M_CONTEXT_SUPPORT
+    })
+
+    it("maps mythos to fable[1m] for primary agents instead of falling through to sonnet", () => {
+      expect(mapModelToClaudeModel("claude-mythos-5")).toBe("fable[1m]")
+      expect(mapModelToClaudeModel("mythos")).toBe("fable[1m]")
+      expect(mapModelToClaudeModel("claude-mythos-5", "max", "primary")).toBe("fable[1m]")
+    })
+
+    it("gives subagents base fable", () => {
+      expect(mapModelToClaudeModel("claude-mythos-5", "max", "subagent")).toBe("fable")
+    })
+
+    it("downgrades to base fable during the Extra Usage cooldown", () => {
+      recordExtendedContextUnavailable()
+      expect(mapModelToClaudeModel("claude-mythos-5", "max")).toBe("fable")
+    })
+
+    it("downgrades to base fable when MERIDIAN_1M_CONTEXT_SUPPORT=0", () => {
+      process.env.MERIDIAN_1M_CONTEXT_SUPPORT = "0"
+      expect(mapModelToClaudeModel("claude-mythos-5", "max")).toBe("fable")
+    })
+  })
+
   describe("subagent mode", () => {
     it("gives subagents base sonnet regardless of subscription", () => {
       expect(mapModelToClaudeModel("claude-sonnet-4-6", "max", "subagent")).toBe("sonnet")

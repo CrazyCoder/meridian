@@ -507,11 +507,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           ? { ANTHROPIC_DEFAULT_OPUS_MODEL: requestedModel }
           : requestedModel.startsWith("claude-fable-")
             ? { ANTHROPIC_DEFAULT_FABLE_MODEL: requestedModel }
-            : requestedModel.startsWith("claude-sonnet-")
-              ? { ANTHROPIC_DEFAULT_SONNET_MODEL: requestedModel }
-              : requestedModel.startsWith("claude-haiku-")
-                ? { ANTHROPIC_DEFAULT_HAIKU_MODEL: requestedModel }
-                : undefined
+            // Mythos shares the fable SDK alias (no separate mythos alias
+            // exists), so an explicit claude-mythos-* id resolves through
+            // ANTHROPIC_DEFAULT_FABLE_MODEL and reaches the API verbatim.
+            : requestedModel.startsWith("claude-mythos-")
+              ? { ANTHROPIC_DEFAULT_FABLE_MODEL: requestedModel }
+              : requestedModel.startsWith("claude-sonnet-")
+                ? { ANTHROPIC_DEFAULT_SONNET_MODEL: requestedModel }
+                : requestedModel.startsWith("claude-haiku-")
+                  ? { ANTHROPIC_DEFAULT_HAIKU_MODEL: requestedModel }
+                  : undefined
         // workingDirectory = SDK subprocess cwd (must exist on the proxy host).
         // clientWorkingDirectory = the client's local path (may not exist here);
         // used for per-project fingerprint bucketing and a system-prompt hint

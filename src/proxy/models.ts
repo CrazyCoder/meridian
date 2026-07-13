@@ -112,7 +112,14 @@ export function mapModelToClaudeModel(model: string, subscriptionType?: string |
   // fable[1m] request returns normally, no Extra Usage error). Mirrors the opus
   // handling: [1m] for primary agents, base model for subagents, honoring the
   // shared Extra Usage cooldown so a future billing change auto-downgrades.
-  if (model.includes("fable")) {
+  //
+  // Mythos rides the fable tier: Claude Mythos 5 (claude-mythos-5, Project
+  // Glasswing) shares Fable 5's underlying model, context window, and API
+  // surface, and the Claude Agent SDK has no separate "mythos" alias. Routing
+  // it here (instead of the sonnet fallthrough) keeps explicit mythos requests
+  // on the right tier; server.ts pins ANTHROPIC_DEFAULT_FABLE_MODEL to the
+  // requested claude-mythos-* id so the concrete model passes through verbatim.
+  if (model.includes("fable") || model.includes("mythos")) {
     if (use1m && !isSubagent && !isExtendedContextKnownUnavailable()) return "fable[1m]"
     return "fable"
   }

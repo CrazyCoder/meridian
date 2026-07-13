@@ -2,105 +2,81 @@
   description = "Meridian – Local Anthropic API powered by your Claude Max subscription";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    systems.url = "github:nix-systems/default";
     bun2nix = {
       url = "github:nix-community/bun2nix/2.0.8";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.systems.follows = "systems";
+      inputs = {
+        flake-parts.follows = "flake-parts";
+        nixpkgs.follows = "nixpkgs";
+        systems.follows = "systems";
+      };
     };
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    systems.url = "github:nix-systems/default";
   };
 
   outputs =
-    {
-      self,
+    inputs@{
+      bun2nix,
+      flake-parts,
+      home-manager,
       nixpkgs,
       systems,
-      bun2nix,
+      ...
     }:
-    let
-      eachSystem = nixpkgs.lib.genAttrs (import systems);
-      pkgsFor = eachSystem (
-        system:
-        import nixpkgs {
-          inherit system;
-          overlays = [ bun2nix.overlays.default ];
-        }
-      );
-    in
-    {
-      packages = eachSystem (
-        system:
-        let
-          pkgs = pkgsFor.${system};
-        in
-        {
-          meridian = pkgs.stdenvNoCC.mkDerivation {
-            pname = "meridian";
-            version =
-              (builtins.fromJSON (builtins.readFile ./package.json)).version;
+    flake-parts.lib.mkFlake { inherit inputs; } (
+      {
+        moduleWithSystem,
+        self,
+        withSystem,
+        ...
+      }:
+      {
+        imports = [ home-manager.flakeModules.home-manager ];
 
-            src = pkgs.lib.cleanSource ./.;
+        systems = import systems;
 
-            nativeBuildInputs = [
-              pkgs.bun2nix.hook
-              pkgs.bun
-              pkgs.nodejs_22
-              pkgs.makeWrapper
-            ];
-
-            bunDeps = pkgs.bun2nix.fetchBunDeps {
-              bunNix = ./bun.nix;
+        perSystem =
+          {
+            config,
+            pkgs,
+            system,
+            ...
+          }:
+          {
+            _module.args.pkgs = import nixpkgs {
+              inherit system;
+              overlays = [ bun2nix.overlays.default ];
             };
 
-            bunInstallFlags = [ "--linker=hoisted" ];
-
-            buildPhase = ''
-              runHook preBuild
-              bun run build
-              runHook postBuild
-            '';
-
-            installPhase = ''
-              runHook preInstall
-
-              mkdir -p $out/lib/meridian
-              cp -r dist $out/lib/meridian/
-              cp -r node_modules $out/lib/meridian/
-              cp -r plugin $out/lib/meridian/
-              cp package.json $out/lib/meridian/
-
-              mkdir -p $out/bin
-              makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/meridian \
-                --add-flags "$out/lib/meridian/dist/cli.js"
-
-              runHook postInstall
-            '';
-
-            # The dist/ output is pre-bundled JS run by node via a wrapper; there
-            # are no native binaries or shebangs that need patching. Skipping
-            # fixup also avoids unnecessary work on a large node_modules tree.
-            dontFixup = true;
-
-            meta = {
-              description = "Local Anthropic API powered by your Claude Max subscription";
-              homepage = "https://github.com/rynfar/meridian";
-              license = pkgs.lib.licenses.mit;
-              mainProgram = "meridian";
-              platforms = pkgs.lib.platforms.unix;
+            packages = {
+              default = config.packages.meridian;
+              meridian = pkgs.callPackage ./nix/package.nix { };
             };
           };
 
-          default = self.packages.${system}.meridian;
-        }
-      );
+        flake = {
+          homeModules = {
+            default = self.homeModules.meridian;
+            meridian = moduleWithSystem (
+              { self', ... }: flake-parts.lib.importApply ./nix/hm-module.nix self'.packages
+            );
+          };
 
-      overlays.default = final: prev: {
-        meridian = self.packages.${final.system}.meridian;
-      };
-
-      homeManagerModules.default = import ./nix/hm-module.nix {
-        meridianPackages = self.packages;
-      };
-    };
+          overlays = {
+            default = self.overlays.meridian;
+            meridian =
+              _: prev:
+              withSystem prev.stdenv.hostPlatform.system ({ self', ... }: { inherit (self'.packages) meridian; });
+          };
+        };
+      }
+    );
 }
