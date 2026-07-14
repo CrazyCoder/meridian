@@ -999,6 +999,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       const capturedToolUses: Array<{ id: string; name: string; input: any }> = []
       const capturedSignatures = new Set<string>()
       const capturedToolNames = new Set<string>()
+      // Calls the hook DROPPED (exact duplicate / forced-single overflow /
+      // legacy same-tool repeat). The model was told these were NOT forwarded,
+      // so the client must never see them — the merge strips them from the
+      // response. Without this, a forced-single parallel emission returned
+      // BOTH tool_use blocks (unparseable for generateObject) and the
+      // model/client views diverged (#552 misattribution family).
+      const droppedToolUseIds = new Set<string>()
       let sawDuplicateToolUse = false
       // Early stop: the moment every forwarded tool call's deny is persisted
       // (observed as a `user` tool_result in the stream), abort the query so
@@ -1132,12 +1139,20 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 //      collecting — a genuine parallel call to a DIFFERENT tool
                 //      may still follow (robust to duplicate-before-distinct
                 //      ordering). This is the #528 duplication.
-                //   2. Same tool re-called with NEW args: the model fabricated a
-                //      result for the blocked call and continued (a sequential-
-                //      dependency loop, e.g. fetch→fetch→fetch). Stop after the
-                //      distinct set — the client will supply the real result and
-                //      drive the next call. (Genuine parallel uses DISTINCT tool
-                //      names — get_weather + get_time — which are kept.)
+                //   2. Same tool re-called with NEW args — LEGACY (kill switch
+                //      only). #571 assumed genuine parallelism uses DISTINCT
+                //      tool names, but "read three files" makes the model emit
+                //      parallel same-tool calls in ONE assistant message; the
+                //      drop + mid-hook SIGTERM cut the already-streamed second
+                //      block (#552 "red reads": `read {}` aborted), skipped the
+                //      session store, and pushed the follow-up onto a fresh
+                //      replay full of "[your read ...]: Tool execution aborted"
+                //      lines the model then disowned. With early stop, the
+                //      fabricated-loop turns this rule guarded against never
+                //      generate (the query stops the moment every deny is
+                //      persisted), so same-tool-new-args calls are genuine
+                //      parallelism and are captured. The drop remains only
+                //      when the operator disables early stop.
                 //   3. Forced single tool (tool_choice:{type:"tool"} / structured
                 //      output): keep only the first call.
                 // Cases 2 and 3 set sawDuplicateToolUse, the signal the non-
@@ -1145,11 +1160,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // instead of draining the whole turn budget.
                 const signature = toolUseSignature(toolName, toolInput)
                 const isExactDuplicate = capturedSignatures.has(signature)
-                const isSameToolRepeat = !isExactDuplicate && capturedToolNames.has(toolName)
+                const isSameToolRepeat = !earlyStopEnabled && !isExactDuplicate && capturedToolNames.has(toolName)
                 const exceedsForcedSingle = forceSingleToolUse && capturedToolUses.length >= 1
                 if (isExactDuplicate) {
+                  droppedToolUseIds.add(input.tool_use_id)
                   claudeLog("passthrough.duplicate_tool_use_dropped", { name: toolName })
                 } else if (isSameToolRepeat || exceedsForcedSingle) {
+                  droppedToolUseIds.add(input.tool_use_id)
                   sawDuplicateToolUse = true
                   claudeLog("passthrough.extra_tool_use_dropped", {
                     name: toolName,
@@ -1661,6 +1678,19 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           // its content blocks, replace the input with the normalized version.
           // If the SDK omitted it (blocked tools may not appear), add it.
           if (passthrough && capturedToolUses.length > 0) {
+            // Strip calls the hook dropped — the model was told they were NOT
+            // forwarded ("do not repeat" / forced-single overflow), so
+            // delivering them anyway diverges the client's view from the
+            // session history (#552) and hands generateObject multiple
+            // structured calls where it requires exactly one.
+            if (droppedToolUseIds.size > 0) {
+              for (let i = contentBlocks.length - 1; i >= 0; i--) {
+                const b = contentBlocks[i]!
+                if (b.type === "tool_use" && droppedToolUseIds.has((b as any).id)) {
+                  contentBlocks.splice(i, 1)
+                }
+              }
+            }
             const capturedById = new Map(capturedToolUses.map(tu => [tu.id, tu]))
             for (const block of contentBlocks) {
               if (block.type === "tool_use" && capturedById.has((block as any).id)) {
