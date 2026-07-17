@@ -42,18 +42,19 @@ import { withClaudeLogContext } from "../logger"
 import { createPassthroughMcpServer, stripMcpPrefix, normalizeToolInput, computeToolSetKey, toolUseSignature, PASSTHROUGH_MCP_NAME, PASSTHROUGH_MCP_PREFIX } from "./passthroughTools"
 import { detectServerTools, serverToolErrorMessage } from "./tools"
 import { createEarlyStopTracker, noteAssistantContent, noteUserContent, shouldEarlyStop } from "./passthroughEarlyStop"
+import { checkEmptyToolInputs, checkUndeliveredToolUses, type EnvelopeViolation } from "./envelopeIntegrity"
 import { resolveAgentAlias } from "./agentMatch"
 import { LRUMap } from "../utils/lruMap"
 
 import { telemetryStore, diagnosticLog, createTelemetryRoutes, landingHtml, renderPrometheusMetrics } from "../telemetry"
 import type { RequestMetric } from "../telemetry"
-import { classifyError, extractSdkTermination, formatSdkTermination, isStaleSessionError, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError } from "./errors"
+import { classifyError, extractSdkTermination, formatSdkTermination, isStaleSessionError, isBusySessionError, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError } from "./errors"
 import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, type CredentialStore } from "./tokenRefresh"
 import { checkPluginConfigured } from "./setup"
-import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable } from "./models"
+import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable } from "./models"
 import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
-import { extractAdvisorModel, getLastUserMessage, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, MULTIMODAL_TYPES, buildToolUseIndex, describeToolCall } from "./messages"
+import { extractAdvisorModel, getLastUserMessage, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, MULTIMODAL_TYPES, buildToolUseIndex, describeToolCall, frameReplayTurns } from "./messages"
 import { requireAuth, authEnabled } from "./auth"
 import { detectAdapter } from "./adapters/detect"
 import { buildQueryOptions, type QueryContext } from "./query"
@@ -278,17 +279,18 @@ function buildFreshPrompt(
   // Same anti-imitation convention as the structured branch above and the
   // main prompt builder: user turns plain, assistant turns bracketed.
   // 'Human:'/'Assistant:' transcript lines teach the model to complete the
-  // transcript itself (#496 self-talk).
-  return messages
-    .map((m) => {
+  // transcript itself (#496 self-talk). frameReplayTurns then wraps the
+  // history in the #619 context-only envelope with the live user message
+  // separated as the actual prompt.
+  return frameReplayTurns(
+    messages.map((m) => {
       if (m.role === "assistant") {
         const assistantText = flattenAssistantContent(m.content)
-        return assistantText ? `[Assistant: ${assistantText}]` : ""
+        return { role: "assistant", text: assistantText ? `[Assistant: ${assistantText}]` : "" }
       }
-      return flattenUserContent(m.content, sanitizeOpts, toolIndex)
+      return { role: "user", text: flattenUserContent(m.content, sanitizeOpts, toolIndex) }
     })
-    .filter(Boolean)
-    .join("\n\n") || ""
+  )
 }
 
 // Routine [PROXY] operational logging. Suppressed when config.silent is set so
@@ -377,6 +379,41 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   // invalidation from MCP server re-creation. Key hashes tool name + schema
   // so silently-updated tool definitions force a rebuild.
   const sessionMcpCache = new LRUMap<string, { key: string; mcp: ReturnType<typeof createPassthroughMcpServer> }>(getMaxSessionsLimit())
+
+  // In-flight session stores. The streaming drain design ends the client's
+  // response at the turn boundary (fast), while deny persistence + the early
+  // stop + storeSession continue in the background for ~a second. A client
+  // that executes its tools quickly (small file reads) can send the follow-up
+  // BEFORE the store lands — its lookup misses and the conversation falls to
+  // a fresh replay. Follow-ups briefly await their session's pending store.
+  const PENDING_STORE_WAIT_MS = 3000
+  const PENDING_STORE_AUTO_RESOLVE_MS = 10000
+
+  // #630: a --resume spawned while the session's previous subprocess is
+  // still exiting is refused ("currently running as a background agent",
+  // a consequence of #628's CLAUDE_CODE_SESSION_KIND=bg). The stale
+  // process exits within ~a second — retry the same resume with linear
+  // backoff, then fork the session as a last resort. Delay is overridable
+  // so tests don't sleep for real.
+  const BUSY_SESSION_MAX_RETRIES = 3
+  const BUSY_SESSION_RETRY_DELAY_MS = parseInt(process.env.MERIDIAN_BUSY_RETRY_DELAY_MS ?? "500", 10)
+  const pendingSessionStores = new Map<string, { promise: Promise<void>; resolve: () => void }>()
+  const registerPendingStore = (key: string): (() => void) => {
+    let resolveFn: () => void = () => {}
+    const promise = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, PENDING_STORE_AUTO_RESOLVE_MS)
+      resolveFn = () => {
+        clearTimeout(timer)
+        resolve()
+      }
+    })
+    const entry = { promise, resolve: resolveFn }
+    pendingSessionStores.set(key, entry)
+    return () => {
+      entry.resolve()
+      if (pendingSessionStores.get(key) === entry) pendingSessionStores.delete(key)
+    }
+  }
 
   const pluginDir = finalConfig.pluginDir ?? join(homedir(), ".config", "meridian", "plugins")
   const pluginConfigPath = finalConfig.pluginConfigPath ?? join(homedir(), ".config", "meridian", "plugins.json")
@@ -532,20 +569,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const requestSource = c.req.header("x-meridian-source")?.slice(0, 64) || undefined
         const requestedModel = typeof body.model === "string" ? body.model : "sonnet"
         let model = mapModelToClaudeModel(requestedModel, authStatus?.subscriptionType, agentMode)
-        const envOverrides = requestedModel.startsWith("claude-opus-")
-          ? { ANTHROPIC_DEFAULT_OPUS_MODEL: requestedModel }
-          : requestedModel.startsWith("claude-fable-")
-            ? { ANTHROPIC_DEFAULT_FABLE_MODEL: requestedModel }
-            // Mythos shares the fable SDK alias (no separate mythos alias
-            // exists), so an explicit claude-mythos-* id resolves through
-            // ANTHROPIC_DEFAULT_FABLE_MODEL and reaches the API verbatim.
-            : requestedModel.startsWith("claude-mythos-")
-              ? { ANTHROPIC_DEFAULT_FABLE_MODEL: requestedModel }
-              : requestedModel.startsWith("claude-sonnet-")
-                ? { ANTHROPIC_DEFAULT_SONNET_MODEL: requestedModel }
-                : requestedModel.startsWith("claude-haiku-")
-                  ? { ANTHROPIC_DEFAULT_HAIKU_MODEL: requestedModel }
-                  : undefined
+        // Explicitly versioned ids override their tier's canonical pin for
+        // this request (spread last in query.ts env, so they also beat
+        // operator env) — a proxy must never substitute models. Bare aliases
+        // keep the canonical pins. See explicitModelPin for the rules.
+        const envOverrides = explicitModelPin(requestedModel)
         // workingDirectory = SDK subprocess cwd (must exist on the proxy host).
         // clientWorkingDirectory = the client's local path (may not exist here);
         // used for per-project fingerprint bucketing and a system-prompt hint
@@ -778,6 +806,20 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const isClientDrivenLoop = adapterBase !== "claude-code" && !agentSessionId && lastIsToolResult
         const isIndependentSession =
           requestSource?.startsWith("fork-") || requestSource?.startsWith("subagent-") || isClientDrivenLoop || false
+        // If the previous turn's background drain is still persisting this
+        // session (streaming early stop), wait briefly so the lookup below
+        // sees the stored session instead of falling to a fresh replay.
+        if (!isIndependentSession && profileSessionId) {
+          const pendingStore = pendingSessionStores.get(profileSessionId)
+          if (pendingStore) {
+            const waitStart = Date.now()
+            await Promise.race([
+              pendingStore.promise,
+              new Promise((resolve) => setTimeout(resolve, PENDING_STORE_WAIT_MS)),
+            ])
+            claudeLog("session.pending_store_awaited", { waitedMs: Date.now() - waitStart })
+          }
+        }
         let lineageResult = isIndependentSession
           ? { type: "diverged" as const }
           : lookupSession(profileSessionId, body.messages || [], profileScopedCwd)
@@ -945,17 +987,21 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // turns bracketed as '[Assistant: ...]'. On resume, drop assistant
         // messages entirely — the resumed SDK session already contains
         // those turns; replaying them as user text is the imitation seed.
-        textPrompt = messagesToConvert
-          ?.map((m: { role: string; content: any }) => {
+        const promptTurns = (messagesToConvert ?? [])
+          .map((m: { role: string; content: any }) => {
             if (m.role === "assistant") {
-              if (isResume) return ""
+              if (isResume) return { role: "assistant", text: "" }
               const assistantText = flattenAssistantContent(m.content)
-              return assistantText ? `[Assistant: ${assistantText}]` : ""
+              return { role: "assistant", text: assistantText ? `[Assistant: ${assistantText}]` : "" }
             }
-            return flattenUserContent(m.content, sanitizeOpts, toolIndex)
+            return { role: "user", text: flattenUserContent(m.content, sanitizeOpts, toolIndex) }
           })
-          .filter(Boolean)
-          .join("\n\n") || ""
+        // Fresh (non-resume) replays get the #619 anti-self-play envelope:
+        // history framed as context-only, the live user message terminal.
+        // Resume deltas are tail-only and stay bare.
+        textPrompt = isResume
+          ? promptTurns.map((t: { text: string }) => t.text).filter(Boolean).join("\n\n") || ""
+          : frameReplayTurns(promptTurns)
       }
 
       // Create a fresh prompt value — can be called multiple times for retry
@@ -1017,6 +1063,54 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       const earlyStopEnabled = passthrough && process.env.MERIDIAN_PASSTHROUGH_EARLY_STOP !== "0"
       const earlyStop = createEarlyStopTracker()
       let earlyStopFired = false
+      // Deny-hold: the CLI dispatches each tool's PreToolUse hook AS SOON AS
+      // that block finishes streaming — while later parallel blocks are still
+      // generating — and a deny landing mid-generation makes the CLI CANCEL
+      // the in-flight API request (observed live via scripts/e2e-stream-parallel.mjs:
+      // bash's deny arrived between glob's input deltas; glob's block never
+      // received its stop and turn 2 regenerated it). That cancel is what
+      // beheads trailing parallel calls (#552 red reads: `glob {}` aborted)
+      // and re-loops the model. Fix: hold every deny response until turn-1
+      // generation completes (message_delta observed), so the cancel can
+      // never land mid-generation. Timeout is a deadlock backstop in case a
+      // CLI version serializes hook-then-stream.
+      // Envelope integrity: violations of the proxy's own output contract
+      // (dangling blocks, undelivered captured calls, empty required tool
+      // inputs). Logged loudly + counted on /telemetry so #552-family
+      // regressions trip an alarm in OUR logs instead of user transcripts.
+      const envelopeViolations: string[] = []
+      const recordEnvelopeViolations = (violations: EnvelopeViolation[]): void => {
+        for (const v of violations) {
+          envelopeViolations.push(v.type)
+          claudeLog("envelope.violation", { type: v.type, detail: v.detail })
+          diagnosticLog.error(`${requestMeta.requestId} ENVELOPE VIOLATION [${v.type}] ${v.detail}`, requestMeta.requestId)
+        }
+      }
+      const DENY_HOLD_TIMEOUT_MS = 8000
+      const pendingDenyReleases: Array<() => void> = []
+      // True while a model turn is actively generating (message_start seen,
+      // no message_delta/message_stop yet). Hooks dispatched AFTER generation
+      // completes (the CLI runs tool dispatch semi-sequentially, so later
+      // hooks can fire post-turn) must NOT hold — there is no in-flight
+      // request left to protect, and holding would only add dead time.
+      let turnGenerating = false
+      const releaseHeldDenies = (reason: string): void => {
+        turnGenerating = false
+        if (pendingDenyReleases.length === 0) return
+        claudeLog("passthrough.deny_hold_released", { reason, count: pendingDenyReleases.length })
+        for (const release of pendingDenyReleases.splice(0)) release()
+      }
+      const holdDenyUntilTurnEnd = (): Promise<void> =>
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            claudeLog("passthrough.deny_hold_timeout", { afterMs: DENY_HOLD_TIMEOUT_MS })
+            resolve()
+          }, DENY_HOLD_TIMEOUT_MS)
+          pendingDenyReleases.push(() => {
+            clearTimeout(timer)
+            resolve()
+          })
+        })
       // Forced structured output: a `tool_choice` of {type:"tool",...} (or an
       // explicit disable_parallel_tool_use) means the client — e.g. the AI
       // SDK's generateObject — wants EXACTLY ONE call to that tool. Claude
@@ -1206,6 +1300,20 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // pending call whose result never arrives and misattributes
                 // the results it does receive ("the read tool is returning
                 // the wrong file").
+                // Hold the deny until turn-1 generation completes — BOTH
+                // modes (see holdDenyUntilTurnEnd above). Returning it
+                // immediately lets the CLI cancel the in-flight generation and
+                // behead any parallel call still generating after this one
+                // (#625 streaming; #592 proved non-stream identically). The
+                // streaming path flags turnGenerating from message_start; the
+                // non-stream path pre-sets it per attempt and releases when
+                // the turn's assistant message arrives in the iterator.
+                // Skip when the query is already aborted (forced-single fired
+                // requestAbort above — the subprocess is dying; holding would
+                // only delay until the timeout).
+                if (earlyStopEnabled && turnGenerating && !requestAbort.controller.signal.aborted) {
+                  await holdDenyUntilTurnEnd()
+                }
                 if (isExactDuplicate) {
                   return {
                     decision: "block" as const,
@@ -1304,16 +1412,26 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
               let tokenRefreshed = false
               let didFreshBaseRetry = false
+              let busySessionRetries = 0
+              let busySessionFork = false
               while (true) {
                 // Track whether response content was yielded.
                 // The SDK emits metadata (session_id etc.) before the API call;
                 // only "assistant" messages represent actual response content.
                 let didYieldContent = false
+                // stderr emitted by THIS attempt's subprocess only — retries
+                // must not re-match a previous attempt's refusal text.
+                const attemptStderrStart = stderrLines.length
+                // #592: non-stream has no message_start signal — turn 1 is by
+                // definition generating from query start until its assistant
+                // message arrives (release sites: assistant arrival in the
+                // consumer loop, attempt error, loop exit).
+                turnGenerating = true
                 try {
                   for await (const event of query(buildQueryOptions({
                     prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
                     passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
-                    resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
+                    resumeSessionId, isUndo, undoRollbackUuid, forkSession: busySessionFork || undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                     effort, thinking, taskBudget, outputFormat, betas, settingSources,
                     codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
                     memory: sdkFeatures.memory, dreaming: sdkFeatures.dreaming, sharedMemory: sdkFeatures.sharedMemory,
@@ -1342,8 +1460,35 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 } catch (error) {
                   const errMsg = error instanceof Error ? error.message : String(error)
 
+                  // #592: the attempt's subprocess is gone — release any deny
+                  // still held for it so retries don't inherit dead holds.
+                  releaseHeldDenies("non_stream_attempt_error")
+
                   // Never retry after response content was yielded — response is committed
                   if (didYieldContent) throw error
+
+                  // Retry: session still registered as a running bg agent (#630).
+                  // The previous subprocess for this session (early-stop drain or
+                  // slow exit) hasn't finished dying, so the CLI refused --resume
+                  // with exit 1. Surfacing that would be a deterministic failure —
+                  // the client's identical retry hits the same window. Wait for
+                  // the stale process to exit and retry the SAME resume; if the
+                  // session stays busy, fork it (full history, fresh id).
+                  if (resumeSessionId && isBusySessionError(error, stderrLines.slice(attemptStderrStart).join("\n"))) {
+                    if (busySessionRetries < BUSY_SESSION_MAX_RETRIES) {
+                      busySessionRetries++
+                      claudeLog("session.busy_retry", { mode: "non_stream", attempt: busySessionRetries, resumeSessionId })
+                      plog(`[PROXY] ${requestMeta.requestId} session busy (bg agent), retrying resume ${busySessionRetries}/${BUSY_SESSION_MAX_RETRIES}`)
+                      await new Promise((resolve) => setTimeout(resolve, BUSY_SESSION_RETRY_DELAY_MS * busySessionRetries))
+                      continue
+                    }
+                    if (!busySessionFork) {
+                      busySessionFork = true
+                      claudeLog("session.busy_fork", { mode: "non_stream", resumeSessionId })
+                      plog(`[PROXY] ${requestMeta.requestId} session still busy after ${BUSY_SESSION_MAX_RETRIES} retries — forking session`)
+                      continue
+                    }
+                  }
 
                   // Retry: stale undo UUID — evict session and start fresh (one-shot)
                   if (isStaleSessionError(error)) {
@@ -1505,6 +1650,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 }
               }
               if (message.type === "assistant") {
+                // #592: the turn's generation is complete — held denies can
+                // return without the CLI cancelling anything in flight.
+                releaseHeldDenies("assistant_message")
                 assistantMessages += 1
                 // Capture SDK assistant UUID for undo rollback
                 if ((message as any).uuid) {
@@ -1601,6 +1749,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               }
             }
 
+            // #592: safety net — any deny still held at loop exit belongs to
+            // a turn that is no longer generating.
+            releaseHeldDenies("non_stream_loop_exit")
+
             claudeLog("upstream.completed", {
               mode: "non_stream",
               model,
@@ -1618,6 +1770,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               plog(`[PROXY] ${requestMeta.requestId} discovered=${discoveredTools.size} (${newNames}) session_total=${allNames.length}`)
             }
           } catch (error) {
+            // #592: mirror the loop-exit release on the failure path.
+            releaseHeldDenies("non_stream_error")
             const stderrOutput = stderrLines.join("\n").trim()
             if (stderrOutput && error instanceof Error && !error.message.includes(stderrOutput)) {
               error.message = `${error.message}\nSubprocess stderr: ${stderrOutput}`
@@ -1774,6 +1928,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             requestId: requestMeta.requestId,
             timestamp: Date.now(),
             adapter: adapter.name,
+            profileId: profile.id,
             requestSource,
             model,
             requestModel: body.model || undefined,
@@ -1802,7 +1957,21 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             cacheReadInputTokens: lastUsage?.cache_read_input_tokens,
             cacheCreationInputTokens: lastUsage?.cache_creation_input_tokens,
             cacheHitRate: computeCacheHitRate(lastUsage),
+            ...(envelopeViolations.length > 0 ? { envelopeViolations: [...envelopeViolations] } : {}),
           })
+
+          // Envelope integrity (non-stream): the response must not contain
+          // beheaded calls (empty required inputs) or silently drop captured
+          // calls the model was told were forwarded.
+          if (passthrough) {
+            const deliveredIds = new Set<string>(
+              contentBlocks.filter((b) => b.type === "tool_use" && typeof (b as any).id === "string").map((b) => (b as any).id as string)
+            )
+            recordEnvelopeViolations([
+              ...checkEmptyToolInputs(contentBlocks, requestTools),
+              ...checkUndeliveredToolUses(capturedToolUses, deliveredIds),
+            ])
+          }
 
           // Store session for future resume.
           // Fork/subagent requests don't write to the cache — see lookupSession
@@ -1913,6 +2082,36 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             // path closes these explicitly before its final frames.
             const openClientBlocks = new Set<number>()
 
+            // Announce this request's eventual storeSession to follow-ups: the
+            // drain design ends the client response before the store lands, so
+            // a fast follow-up must await it (see pendingSessionStores).
+            const resolvePendingStore = passthrough && earlyStopEnabled && !isIndependentSession && profileSessionId
+              ? registerPendingStore(profileSessionId)
+              : () => {}
+
+            // Envelope integrity: every path that ends the client stream must
+            // first terminate any content block whose start was forwarded but
+            // whose stop hasn't been — an unterminated block renders
+            // client-side as an argument-less aborted ("red") tool call
+            // (#552). The error-recovery path already does this; this helper
+            // extends the guarantee to ALL close paths (early stop, turn-2
+            // suppression, drain-close). With the deny-hold in place blocks
+            // normally complete before any close — this is the backstop.
+            const flushOpenClientBlocks = (source: string): void => {
+              if (openClientBlocks.size === 0) return
+              recordEnvelopeViolations([...openClientBlocks].map((idx) => ({
+                type: "dangling_block" as const,
+                detail: `content block ${idx} still open at ${source} close`,
+              })))
+              claudeLog("stream.dangling_blocks_closed", { source, count: openClientBlocks.size })
+              for (const idx of openClientBlocks) {
+                safeEnqueue(encoder.encode(
+                  `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: idx })}\n\n`
+                ), `${source}_close_dangling`)
+              }
+              openClientBlocks.clear()
+            }
+
             try {
               let currentSessionId: string | undefined
               // Same transparent retry wrapper as the non-streaming path.
@@ -1932,6 +2131,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
                 let tokenRefreshed = false
                 let didFreshBaseRetry = false
+                let busySessionRetries = 0
+                let busySessionFork = false
 
                 while (true) {
                   // Track whether client-visible SSE events were yielded.
@@ -1939,11 +2140,14 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   // before the API call — those are NOT client-visible and must
                   // not prevent retry. Only stream_event types become SSE output.
                   let didYieldClientEvent = false
+                  // stderr emitted by THIS attempt's subprocess only — retries
+                  // must not re-match a previous attempt's refusal text.
+                  const attemptStderrStart = stderrLines.length
                   try {
                     for await (const event of query(buildQueryOptions({
                       prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
                       passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
-                      resumeSessionId, isUndo, undoRollbackUuid, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
+                      resumeSessionId, isUndo, undoRollbackUuid, forkSession: busySessionFork || undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                       effort, thinking, taskBudget, outputFormat, betas, settingSources,
                       codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
                     memory: sdkFeatures.memory, dreaming: sdkFeatures.dreaming, sharedMemory: sdkFeatures.sharedMemory,
@@ -1969,6 +2173,24 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
                     // Never retry after client-visible SSE events — response is committed
                     if (didYieldClientEvent) throw error
+
+                    // Retry: session still registered as a running bg agent (#630)
+                    // — see the non-stream branch above for the full rationale.
+                    if (resumeSessionId && isBusySessionError(error, stderrLines.slice(attemptStderrStart).join("\n"))) {
+                      if (busySessionRetries < BUSY_SESSION_MAX_RETRIES) {
+                        busySessionRetries++
+                        claudeLog("session.busy_retry", { mode: "stream", attempt: busySessionRetries, resumeSessionId })
+                        plog(`[PROXY] ${requestMeta.requestId} session busy (bg agent), retrying resume ${busySessionRetries}/${BUSY_SESSION_MAX_RETRIES}`)
+                        await new Promise((resolve) => setTimeout(resolve, BUSY_SESSION_RETRY_DELAY_MS * busySessionRetries))
+                        continue
+                      }
+                      if (!busySessionFork) {
+                        busySessionFork = true
+                        claudeLog("session.busy_fork", { mode: "stream", resumeSessionId })
+                        plog(`[PROXY] ${requestMeta.requestId} session still busy after ${BUSY_SESSION_MAX_RETRIES} retries — forking session`)
+                        continue
+                      }
+                    }
 
                     // Retry: stale undo UUID — evict and start fresh (one-shot)
                     if (isStaleSessionError(error)) {
@@ -2167,6 +2389,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       if (shouldEarlyStop(earlyStop) && streamedToolUseIds.size > 0) {
                         earlyStopFired = true
                         claudeLog("passthrough.early_stop", { mode: "stream", captured: capturedToolUses.length, drained: awaitingEarlyStopDrain })
+                        flushOpenClientBlocks("early_stop")
                         safeEnqueue(encoder.encode(
                           `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: lastUsage?.output_tokens ?? 0 } })}\n\n`
                         ), "early_stop")
@@ -2207,6 +2430,21 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     const eventType = (event as any).type
                     const eventIndex = (event as any).index as number | undefined
 
+                    // Turn-generation boundary: release held deny responses.
+                    // message_delta/message_stop = the turn finished cleanly;
+                    // a SECOND message_start = the turn ended some other way
+                    // (belt-and-suspenders so holds can't leak across turns).
+                    if (
+                      eventType === "message_delta" ||
+                      eventType === "message_stop" ||
+                      (eventType === "message_start" && messageStartEmitted)
+                    ) {
+                      releaseHeldDenies(eventType)
+                    }
+                    if (eventType === "message_start") {
+                      turnGenerating = true
+                    }
+
                     // Native structured output is validated only on the SDK's
                     // final result message. Buffer its partial wire events and
                     // emit one valid Anthropic SSE message after validation.
@@ -2236,6 +2474,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       // client sees stop_reason:"tool_use" and executes the tool itself.
                       if (messageStartEmitted) {
                         if (passthrough && streamedToolUseIds.size > 0) {
+                          flushOpenClientBlocks("turn2_suppression")
                           safeEnqueue(encoder.encode(
                             `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: lastUsage?.output_tokens ?? 0 } })}\n\n`
                           ), "passthrough_turn2_stop")
@@ -2427,6 +2666,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       (event as any).delta?.stop_reason === "tool_use" &&
                       streamedToolUseIds.size > 0
                     ) {
+                      flushOpenClientBlocks("drain_close")
                       safeEnqueue(
                         encoder.encode(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`),
                         "passthrough_tool_stream_stop"
@@ -2450,6 +2690,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 }
               } finally {
                 clearInterval(heartbeat)
+                // Never leak a held deny: if the loop exits for any reason
+                // (abort, error, natural end), unblock pending hook responses.
+                releaseHeldDenies("stream_loop_exit")
               }
 
               if (outputFormat) {
@@ -2502,6 +2745,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 textEventsForwarded += 1
               }
 
+              if (passthrough) {
+                recordEnvelopeViolations(checkUndeliveredToolUses(capturedToolUses, streamedToolUseIds))
+              }
               claudeLog("upstream.completed", {
                 mode: "stream",
                 model,
@@ -2531,6 +2777,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               if (currentSessionId && !isIndependentSession && !sawDuplicateToolUse) {
                 storeSession(profileSessionId, body.messages || [], currentSessionId, profileScopedCwd, sdkUuidMap, lastUsage)
               }
+              resolvePendingStore()
 
               if (!streamClosed) {
                 // In passthrough mode, emit captured tool_use blocks as stream events
@@ -2540,6 +2787,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   for (let i = 0; i < unseenToolUses.length; i++) {
                     const tu = unseenToolUses[i]!
                     const blockIndex = eventsForwarded + i
+                    streamedToolUseIds.add(tu.id)
 
                     // content_block_start
                     safeEnqueue(encoder.encode(
@@ -2662,6 +2910,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   requestId: requestMeta.requestId,
                   timestamp: Date.now(),
                   adapter: adapter.name,
+            profileId: profile.id,
             requestSource,
                   model,
                   requestModel: body.model || undefined,
@@ -2690,6 +2939,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   cacheReadInputTokens: lastUsage?.cache_read_input_tokens,
                   cacheCreationInputTokens: lastUsage?.cache_creation_input_tokens,
                   cacheHitRate: computeCacheHitRate(lastUsage),
+                  ...(envelopeViolations.length > 0 ? { envelopeViolations: [...envelopeViolations] } : {}),
                 })
 
                 if (textEventsForwarded === 0) {
@@ -2714,6 +2964,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 return
               }
 
+              resolvePendingStore()
               const stderrOutput = stderrLines.join("\n").trim()
               if (stderrOutput && error instanceof Error && !error.message.includes(stderrOutput)) {
                 error.message = `${error.message}\nSubprocess stderr: ${stderrOutput}`
@@ -2780,12 +3031,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // a tool_use block's input deltas but before its stop) — an
                 // unterminated block renders client-side as an argument-less
                 // aborted call (#552 "red reads").
-                for (const idx of openClientBlocks) {
-                  safeEnqueue(encoder.encode(
-                    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: idx })}\n\n`
-                  ), "recover_close_dangling_block")
-                }
-                openClientBlocks.clear()
+                flushOpenClientBlocks("recovery")
 
                 // Mirror the success-path emission: send any unseen tool_uses
                 // (dedup against streamedToolUseIds), then a clean
@@ -2794,6 +3040,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 for (let i = 0; i < unseenToolUses.length; i++) {
                   const tu = unseenToolUses[i]!
                   const blockIndex = eventsForwarded + i
+                  streamedToolUseIds.add(tu.id)
                   safeEnqueue(encoder.encode(
                     `event: content_block_start\ndata: ${JSON.stringify({
                       type: "content_block_start",
@@ -2826,6 +3073,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   `event: message_stop\ndata: {"type":"message_stop"}\n\n`
                 ), "recover_message_stop")
 
+                recordEnvelopeViolations(checkUndeliveredToolUses(capturedToolUses, streamedToolUseIds))
                 // Record as success — the client got a usable response.
                 const recoverTotalMs = Date.now() - requestStartAt
                 const recoverQueueWaitMs = requestMeta.queueStartedAt - requestMeta.queueEnteredAt
@@ -2833,6 +3081,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   requestId: requestMeta.requestId,
                   timestamp: Date.now(),
                   adapter: adapter.name,
+                  profileId: profile.id,
                   requestSource,
                   model,
                   requestModel: body.model || undefined,
@@ -2854,6 +3103,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   contentBlocks: eventsForwarded + unseenToolUses.length,
                   textEvents: textEventsForwarded,
                   error: null,
+                  ...(envelopeViolations.length > 0 ? { envelopeViolations: [...envelopeViolations] } : {}),
                 })
 
                 if (!streamClosed) {
@@ -2883,6 +3133,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 requestId: requestMeta.requestId,
                 timestamp: Date.now(),
                 adapter: adapter.name,
+                profileId: profile.id,
                 requestSource,
                 model,
                 requestModel: body.model || undefined,
@@ -3054,6 +3305,35 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     const { resetAdapterFeatures } = require("./sdkFeatures") as typeof import("./sdkFeatures")
     const adapter = c.req.param("adapter")
     resetAdapterFeatures(adapter)
+    return c.json({ ok: true })
+  })
+
+  // Model pricing for the telemetry cost estimate: built-in table + user overrides
+  app.get("/settings/api/pricing", (c) => {
+    const { BUILTIN_MODEL_PRICING } = require("../telemetry/pricing") as typeof import("../telemetry/pricing")
+    const { getPricingOverrides } = require("../telemetry/pricingStore") as typeof import("../telemetry/pricingStore")
+    return c.json({ builtin: BUILTIN_MODEL_PRICING, overrides: getPricingOverrides() })
+  })
+  app.put("/settings/api/pricing/:model", async (c) => {
+    const { validatePricingUpdate, setPricingOverride } = require("../telemetry/pricingStore") as typeof import("../telemetry/pricingStore")
+    const model = c.req.param("model")
+    try {
+      // json() throws on malformed bodies — keep it inside the try so the
+      // client gets a 400, not a 500 (house pattern: /profiles/active).
+      const body = await c.req.json()
+      setPricingOverride(model, validatePricingUpdate(body))
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 400)
+    }
+    return c.json({ ok: true })
+  })
+  app.delete("/settings/api/pricing/:model", (c) => {
+    const { deletePricingOverride } = require("../telemetry/pricingStore") as typeof import("../telemetry/pricingStore")
+    try {
+      deletePricingOverride(c.req.param("model"))
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 400)
+    }
     return c.json({ ok: true })
   })
 
@@ -3297,7 +3577,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
     const completionId = `chatcmpl-${randomUUID()}`
     const created = Math.floor(Date.now() / 1000)
-    const model = (typeof rawBody.model === "string" && rawBody.model) ? rawBody.model : "claude-sonnet-4-6"
+    const model = (typeof rawBody.model === "string" && rawBody.model) ? rawBody.model : CANONICAL_SONNET_MODEL
 
     // Resolve SDK features for this request (thinking passthrough setting).
     // The OpenAI endpoint is unambiguously the `openai` adapter — matching the

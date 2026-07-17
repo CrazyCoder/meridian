@@ -1,5 +1,54 @@
 # Changelog
 
+## [1.52.0](https://github.com/rynfar/meridian/compare/meridian-v1.51.0...meridian-v1.52.0) (2026-07-17)
+
+
+### Features
+
+* add Sonnet 5 to the model list, make it the canonical sonnet ([#631](https://github.com/rynfar/meridian/issues/631)) ([#644](https://github.com/rynfar/meridian/issues/644)) ([b1cde57](https://github.com/rynfar/meridian/commit/b1cde574e78b39de7118f356d302da974c99e7ae))
+* **cli:** read MERIDIAN_PLUGIN_DIR and MERIDIAN_PLUGIN_CONFIG env vars ([59743bd](https://github.com/rynfar/meridian/commit/59743bdf586ede60e08642df1e505f2bf157fcbf))
+* env-configurable plugin loading + home-manager plugin settings ([#623](https://github.com/rynfar/meridian/issues/623) by [@connor-grady](https://github.com/connor-grady)) ([b40bfba](https://github.com/rynfar/meridian/commit/b40bfba577b8a5a777f30e1b5f33cde554e05e1b))
+* **nix:** add pluginConfig and pluginDir home-manager settings ([5cb1821](https://github.com/rynfar/meridian/commit/5cb18211634acd32d1efef38c24d1813791966e1))
+
+
+### Bug Fixes
+
+* decouple SDK settings from settingSources so memory:false works with claudeMd off ([#634](https://github.com/rynfar/meridian/issues/634)) ([#645](https://github.com/rynfar/meridian/issues/645)) ([379bd6b](https://github.com/rynfar/meridian/commit/379bd6bfa62f96ce1a6f02416aa15f6de421fbd8))
+* frame fresh-session replays in a context-only envelope ([#619](https://github.com/rynfar/meridian/issues/619)) ([#646](https://github.com/rynfar/meridian/issues/646)) ([ce1f954](https://github.com/rynfar/meridian/commit/ce1f9543a94222c08fbfc548c2889f737ebf6b94))
+* hold non-stream denies until turn end — parallel calls survive both modes ([#592](https://github.com/rynfar/meridian/issues/592)) ([#647](https://github.com/rynfar/meridian/issues/647)) ([0d50467](https://github.com/rynfar/meridian/commit/0d50467e4c05e9b127b0f6ba8883f3d01625b2b9))
+* **nix:** only export MERIDIAN_PLUGIN_CONFIG when plugins are configured ([f241032](https://github.com/rynfar/meridian/commit/f241032fa25929b899ac4d1819302bbd5c297062))
+* retry busy-session resume refusals instead of failing deterministically ([#630](https://github.com/rynfar/meridian/issues/630)) ([#643](https://github.com/rynfar/meridian/issues/643)) ([81b589c](https://github.com/rynfar/meridian/commit/81b589c654d7f640e308a079ab45aececf7ae884))
+
+## [1.51.0](https://github.com/rynfar/meridian/compare/meridian-v1.50.0...meridian-v1.51.0) (2026-07-17)
+
+
+### Features
+
+* **telemetry:** cost estimation cards with configurable model pricing ([afd3eda](https://github.com/rynfar/meridian/commit/afd3eda8a00c575c96e8cca1e7c47302edcacab7))
+* **telemetry:** per-profile usage indicators on the landing page ([#637](https://github.com/rynfar/meridian/issues/637)) ([4642813](https://github.com/rynfar/meridian/commit/4642813a2920e8d7dc193cb62382ee7c755abb55))
+* **telemetry:** redesign the landing page around per-account value ([#639](https://github.com/rynfar/meridian/issues/639)) ([7c39072](https://github.com/rynfar/meridian/commit/7c3907274edf630a67d066e20f50a2e04b612a19))
+* **telemetry:** usage-value batch — cost estimation ([#629](https://github.com/rynfar/meridian/issues/629)) + model-scoped quotas ([#624](https://github.com/rynfar/meridian/issues/624)) ([c04898b](https://github.com/rynfar/meridian/commit/c04898b279cbf23316fd8f40f19356a4705b0789))
+* **ui:** design system, site header, switchable account cards + full README audit ([#640](https://github.com/rynfar/meridian/issues/640)) ([70f526a](https://github.com/rynfar/meridian/commit/70f526a3fe753b9a9fb6c95bb136550da3db060e))
+
+
+### Bug Fixes
+
+* expose model-scoped usage limits ([546d86c](https://github.com/rynfar/meridian/commit/546d86cb09c4f90a946cf2decdd7a8e416578c0a))
+* **telemetry:** harden the cost-estimation batch ([6571bf1](https://github.com/rynfar/meridian/commit/6571bf1b1f43c6bcc4ba42015adf5abdfaf5a506))
+
+## [1.50.0](https://github.com/rynfar/meridian/compare/meridian-v1.49.1...meridian-v1.50.0) (2026-07-16)
+
+
+### Features
+
+* **telemetry:** envelope-integrity tripwires for wire-contract violations ([#632](https://github.com/rynfar/meridian/issues/632)) ([4f8db58](https://github.com/rynfar/meridian/commit/4f8db589e1be65e0c83476e6c9926bebbf84c135))
+
+
+### Bug Fixes
+
+* **passthrough:** hold denies until generation completes ([#552](https://github.com/rynfar/meridian/issues/552) streaming red reads) ([#625](https://github.com/rynfar/meridian/issues/625)) ([df48e3b](https://github.com/rynfar/meridian/commit/df48e3b9f0a374ee4e30665ee10add17da77e98e))
+* **passthrough:** suppress the SDK subprocess's scratchpad advertisement ([#627](https://github.com/rynfar/meridian/issues/627)) ([#628](https://github.com/rynfar/meridian/issues/628)) ([18d6b24](https://github.com/rynfar/meridian/commit/18d6b24da8c12a649df852027427d679fcc89fcb))
+
 ## [1.49.1](https://github.com/rynfar/meridian/compare/meridian-v1.49.0...meridian-v1.49.1) (2026-07-14)
 
 

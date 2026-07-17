@@ -17,7 +17,7 @@ export const dashboardHtml = `<!DOCTYPE html>
   :root { --total: var(--accent); }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-         background: var(--bg); color: var(--text); padding: 0; line-height: 1.5; }
+         color: var(--text); padding: 0; line-height: 1.5; }
   h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
   .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
@@ -103,8 +103,8 @@ export const dashboardHtml = `<!DOCTYPE html>
 <body>
 ` + profileBarHtml + `
 <div style="padding:24px">
-<h1>Meridian</h1>
-<div class="subtitle">Request Performance Telemetry</div>
+<h1>Telemetry</h1>
+<div class="subtitle">Request performance, cost, and wire-contract integrity</div>
 
 <div class="refresh-bar">
   <select id="window">
@@ -140,6 +140,26 @@ function ago(ts) {
   if (s < 60) return s + 's ago';
   if (s < 3600) return Math.floor(s/60) + 'm ago';
   return Math.floor(s/3600) + 'h ago';
+}
+
+function fmtTok(n) {
+  return n > 1000000 ? (n/1000000).toFixed(1) + 'M' : n > 1000 ? Math.round(n/1000) + 'k' : String(n);
+}
+
+// Model names come from client-supplied request bodies (requestModel) — escape
+// before concatenating into innerHTML so a quirky/malicious client can't
+// script the dashboard.
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, function (ch) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+  });
+}
+
+function usd(v) {
+  if (v == null) return '—';
+  if (v > 0 && v < 0.01) return '$' + v.toFixed(4);
+  if (v < 100) return '$' + v.toFixed(2);
+  return '$' + Math.round(v).toLocaleString();
 }
 
 function pctRow(label, color, phase) {
@@ -214,6 +234,7 @@ function render(s, reqs, logs, quota) {
   html += '<div class="cards">'
     + card('Requests', s.totalRequests, s.requestsPerMinute.toFixed(1) + ' req/min')
     + card('Errors', s.errorCount, s.totalRequests > 0 ? ((s.errorCount/s.totalRequests)*100).toFixed(1) + '% error rate' : '')
+    + '<div class="card"><div class="card-label">Envelope</div><div class="card-value" style="color:' + ((s.envelopeViolationCount || 0) > 0 ? 'var(--red)' : 'var(--green)') + '">' + (s.envelopeViolationCount || 0) + '</div><div class="card-detail">' + ((s.envelopeViolationCount || 0) > 0 ? 'wire-contract violations — check logs' : 'wire contract clean') + '</div></div>'
     + card('Median Total', ms(s.totalDuration.p50), 'p95: ' + ms(s.totalDuration.p95))
     + card('Median TTFB', ms(s.ttfb.p50), 'p95: ' + ms(s.ttfb.p95))
     + card('Proxy Overhead', ms(s.proxyOverhead.p50), 'p95: ' + ms(s.proxyOverhead.p95))
@@ -223,7 +244,6 @@ function render(s, reqs, logs, quota) {
   // Token usage cards
   if (s.tokenUsage) {
     const t = s.tokenUsage;
-    const fmtTok = n => n > 1000000 ? (n/1000000).toFixed(1) + 'M' : n > 1000 ? Math.round(n/1000) + 'k' : String(n);
     html += '<div class="section"><div class="section-title">Token Usage</div></div>';
     html += '<div class="cards">'
       + card('Input Tokens', fmtTok(t.totalInputTokens), '')
@@ -234,12 +254,51 @@ function render(s, reqs, logs, quota) {
       + '</div>';
   }
 
+  // Estimated cost: static API list pricing applied to the window's token usage
+  if (s.costEstimate && Object.keys(s.costEstimate.byModel).length > 0) {
+    const ce = s.costEstimate;
+    const costRows = Object.entries(ce.byModel)
+      .sort((a, b) => (b[1].estimatedUsd || 0) - (a[1].estimatedUsd || 0));
+
+    html += '<div class="section"><div class="section-title">Estimated Cost</div></div>';
+    html += '<div class="cards">'
+      + card('Est. API Cost', usd(ce.totalUsd), 'window total at API list prices');
+    for (const [model, m] of costRows) {
+      html += card(esc(model), usd(m.estimatedUsd), m.requests + ' req' + (m.requests === 1 ? '' : 's'));
+    }
+    html += '</div>';
+
+    html += '<div class="section">'
+      + '<table><thead><tr><th>Model</th><th>Requests</th><th>Input</th><th>Output</th>'
+      + '<th>Cache Read</th><th>Cache Write</th><th>Est. Cost</th></tr></thead><tbody>';
+    for (const [model, m] of costRows) {
+      html += '<tr>'
+        + '<td>' + esc(model) + (m.estimatedUsd == null ? ' <span style="font-size:10px;color:var(--yellow)">no pricing</span>' : '') + '</td>'
+        + '<td class="mono">' + m.requests + '</td>'
+        + '<td class="mono">' + fmtTok(m.inputTokens) + '</td>'
+        + '<td class="mono">' + fmtTok(m.outputTokens) + '</td>'
+        + '<td class="mono">' + fmtTok(m.cacheReadTokens) + '</td>'
+        + '<td class="mono">' + fmtTok(m.cacheCreationTokens) + '</td>'
+        + '<td class="mono">' + usd(m.estimatedUsd) + '</td>'
+        + '</tr>';
+    }
+    html += '</tbody></table>'
+      + '<div class="usage-note" style="margin-top:8px">Estimated at static Anthropic API list prices'
+      + ' (cache writes at the 5-minute TTL rate). Claude Max usage is covered by your subscription'
+      + ' (equivalent API cost, not a charge).'
+      + (ce.unpricedRequestCount > 0
+          ? ' ' + ce.unpricedRequestCount + ' request' + (ce.unpricedRequestCount === 1 ? '' : 's') + ' from unrecognized models excluded.'
+          : '')
+      + ' Rates are editable in <a href="/settings" style="color:var(--accent)">Settings</a>.'
+      + '</div></div>';
+  }
+
   // Model breakdown
   const models = Object.entries(s.byModel);
   if (models.length > 0) {
     html += '<div class="cards">';
     for (const [name, data] of models) {
-      html += card(name, data.count + ' reqs', 'avg ' + ms(data.avgTotalMs));
+      html += card(esc(name), data.count + ' reqs', 'avg ' + ms(data.avgTotalMs));
     }
     html += '</div>';
   }
@@ -291,6 +350,7 @@ function render(s, reqs, logs, quota) {
     const respW = Math.max((r.upstreamDurationMs - (r.ttfbMs || 0)) * scale, 2);
 
     const lineageBadge = r.lineageType ? '<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:' + ({continuation:'var(--green)',compaction:'var(--yellow)',undo:'var(--purple)',diverged:'var(--red)',new:'var(--muted)'}[r.lineageType] || 'var(--muted)') + ';color:var(--bg)">' + r.lineageType + '</span>' : '';
+    const envBadge = (r.envelopeViolations && r.envelopeViolations.length > 0) ? ' <span style="font-size:10px;padding:1px 5px;border-radius:3px;background:var(--red);color:var(--bg)" title="' + r.envelopeViolations.join(', ') + '">envelope×' + r.envelopeViolations.length + '</span>' : '';
     const sessionShort = r.sdkSessionId ? r.sdkSessionId.slice(0, 8) : '—';
     const msgCount = r.messageCount != null ? r.messageCount : '?';
 
@@ -301,7 +361,7 @@ function render(s, reqs, logs, quota) {
       + '<td>' + (r.adapter || '—') + sourceBadge + '</td>'
       + '<td>' + (r.requestModel || r.model) + '<br><span style="font-size:10px;color:var(--muted)">' + r.model + '</span></td>'
       + '<td>' + r.mode + (r.hasDeferredTools ? (function() { var sessDisc = r.sessionDiscoveredCount || 0; var loaded = ((r.toolCount || 0) - (r.deferredToolCount || 0)) + sessDisc; var deferred = Math.max(0, (r.deferredToolCount || 0) - sessDisc); var newDisc = r.discoveredTools || []; return '<br><span style="font-size:10px;color:var(--purple)">loaded=' + loaded + ' deferred=' + deferred + '</span>' + (newDisc.length > 0 ? '<br><span style="font-size:10px;color:var(--green)">+' + newDisc.join(', +') + '</span>' : ''); })() : '') + '</td>'
-      + '<td class="mono">' + sessionShort + ' ' + lineageBadge + '<br><span style="font-size:10px;color:var(--muted)">' + msgCount + ' msgs</span></td>'
+      + '<td class="mono">' + sessionShort + ' ' + lineageBadge + envBadge + '<br><span style="font-size:10px;color:var(--muted)">' + msgCount + ' msgs</span></td>'
       + '<td class="' + statusClass + '">' + statusText + '</td>'
       + '<td class="mono">' + ms(r.queueWaitMs) + '</td>'
       + '<td class="mono">' + ms(r.proxyOverheadMs) + '</td>'
