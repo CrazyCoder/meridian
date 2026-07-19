@@ -99,7 +99,7 @@ Then in `~/.config/opencode/opencode.json`:
 
 > **Important:** Do not use `meridian setup` on NixOS. It writes an absolute Nix store path (e.g. `/nix/store/...-meridian-1.x.x/lib/...`) into your OpenCode config, which will break on the next `nixos-rebuild switch` or `home-manager switch` when the store path changes. Use one of the approaches above instead.
 
-> **Note:** The bundled Claude Code binary (`claude.exe`) is patched with `autoPatchelfHook` at build time, so it runs on NixOS out of the box. If you previously enabled `programs.nix-ld.enable = true` as a workaround for `Could not start dynamically linked executable` (#501), that is no longer required for Meridian.
+> **Note:** Meridian's package depends on the unfree `claude-code` from nixpkgs instead of bundling its own binary. The flake accepts the unfree license when it builds the package and exports the finished derivation, so consuming it through the overlay or `packages.<system>.meridian` does not re-run nixpkgs' unfree check and needs no `allowUnfree` setting.
 
 **Home Manager service** -- run Meridian as a user systemd service:
 
@@ -122,8 +122,8 @@ Then in `~/.config/opencode/opencode.json`:
       # defaultAgent = "opencode";
       # sonnetModel = "sonnet";
       # Load plugins from the Nix store (rendered to a plugins.json manifest).
-      # Point at an entry inside a packaged derivation so its deps come along.
-      # pluginConfig = [ { path = "${pkgs.my-meridian-plugin}/lib/index.js"; } ];
+      # The official scrub plugins ship prebuilt via the meridian overlay:
+      # pluginConfig = [ { path = pkgs.meridianPlugins.opencode-scrub.path; } ];
       # pluginDir = "/path/to/extra/plugins";
     };
     # Extra env vars not covered by settings
@@ -497,6 +497,30 @@ ANTHROPIC_API_KEY=x ANTHROPIC_BASE_URL=http://127.0.0.1:3456 \
 
 > **Note:** `--no-stream` is incompatible due to a litellm parsing issue — use the default streaming mode.
 
+### Codex CLI
+
+Codex CLI ≥ 0.96 dropped `wire_api = "chat"` and speaks only the OpenAI **Responses API** (`/v1/responses`), which Meridian serves. Add a provider to `~/.codex/config.toml`:
+
+```toml
+model = "claude-sonnet-5"
+model_provider = "meridian"
+
+[model_providers.meridian]
+name = "Meridian"
+base_url = "http://127.0.0.1:3456/v1"
+wire_api = "responses"
+env_key = "MERIDIAN_KEY"    # any value unless MERIDIAN_API_KEY is set
+```
+
+```bash
+MERIDIAN_KEY=x codex "refactor this function"
+MERIDIAN_KEY=x codex exec "run the tests and summarize failures"   # non-interactive
+```
+
+Codex is a tool-driving agent — Meridian runs the `/v1/responses` endpoint in **passthrough** mode automatically (Codex executes its own shell/apply-patch tools), so no `MERIDIAN_PASSTHROUGH` change is needed. A harmless `Model metadata for 'claude-sonnet-5' not found` warning from Codex is expected — it doesn't recognize non-OpenAI model ids but works regardless.
+
+`model_reasoning_effort` is supported and won't stall the CLI, but Claude's private thinking isn't yet carried **across** turns — the Responses API's encrypted-reasoning envelope is OpenAI-specific and incompatible with Claude's signed thinking blocks, so cross-turn reasoning continuity is deferred (each turn still reasons with full context including tool results). Verified on Codex 0.144 with plain, tool-driving, and reasoning-enabled turns.
+
 ### OpenAI-compatible tools (Open WebUI, Continue, etc.)
 
 Meridian speaks the OpenAI protocol natively — no LiteLLM or translation proxy needed.
@@ -643,6 +667,27 @@ Run several configurations of the same adapter side by side — e.g. a passthrou
 
 Built-in adapter names are reserved and can't be shadowed. With no instances configured, detection is exactly the built-in chain. Config file changes apply within ~5s, no restart needed.
 
+### Claude Design MCP
+
+Meridian proxies the Claude Design MCP API (`api.anthropic.com/v1/design/*`), so MCP clients can use Claude Design tools through your local endpoint. Point your MCP client at:
+
+```
+http://127.0.0.1:3456/v1/design/mcp
+```
+
+The Design API requires OAuth scopes (`user:design:read`/`user:design:write`) that Meridian's standard login does not carry, so authorize once with the dedicated flow:
+
+```bash
+curl http://127.0.0.1:3456/design-login          # returns an authorize URL — open it in your browser
+curl -X POST http://127.0.0.1:3456/design-login \
+  -H 'content-type: application/json' \
+  -d '{"code": "<code-from-browser>"}'           # paste the code you were shown
+```
+
+The design token is stored at `~/.config/meridian/design-token.json` (mode `0600`, global across profiles) and refreshed automatically when it expires. If a design request returns `auth_error`, re-run the login flow.
+
+> Contributed by [@sittitep](https://github.com/sittitep) (#543).
+
 ### Any Anthropic-compatible tool
 
 ```bash
@@ -664,6 +709,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:3456
 | [Pi](https://github.com/mariozechner/pi-coding-agent) | ✅ Verified | models.json config (see above) — full tool support via passthrough; detected via `x-meridian-agent: pi` header |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | ✅ Verified | `ANTHROPIC_BASE_URL` — remote clients share a Max subscription over the network; client CWD preserved in system prompt |
 | [Cherry Studio](https://github.com/CherryHQ/cherry-studio) | ✅ Verified | `cherry` adapter (see above) — chat client with Claude's built-in web search via internal mode |
+| [Codex CLI](https://github.com/openai/codex) | ✅ Verified | `/v1/responses` (see above) — Responses-API provider, passthrough tool execution; verified on 0.144 (plain + tool-driving turns) |
 | [Continue](https://github.com/continuedev/continue) | 🔲 Untested | OpenAI-compatible endpoints should work — set `apiBase` to `http://127.0.0.1:3456` |
 
 Tested an agent or built a plugin? [Open an issue](https://github.com/rynfar/meridian/issues) and we'll add it.
@@ -684,12 +730,14 @@ src/proxy/
 │   ├── cherry.ts          ← Cherry Studio adapter (internal mode + web search)
 │   ├── claudecode.ts      ← Claude Code adapter (remote clients sharing a Max host)
 │   ├── openai.ts          ← OpenAI-endpoint adapter (/v1/chat/completions)
+│   ├── codex.ts           ← Codex CLI adapter (/v1/responses, forced passthrough)
 │   └── passthrough.ts     ← LiteLLM passthrough adapter
 ├── query.ts               ← SDK query options builder
 ├── errors.ts              ← Error classification
 ├── models.ts              ← Model mapping (sonnet/opus/haiku, agentMode)
 ├── tokenRefresh.ts        ← Cross-platform OAuth token refresh
 ├── openai.ts              ← OpenAI ↔ Anthropic format translation (pure)
+├── openaiResponses.ts     ← OpenAI Responses API ↔ Anthropic translation (pure)
 ├── setup.ts               ← OpenCode plugin configuration
 ├── session/
 │   ├── lineage.ts         ← Per-message hashing, mutation classification (pure)
@@ -805,7 +853,10 @@ ANTHROPIC_API_KEY=your-secret-key ANTHROPIC_BASE_URL=http://meridian-host:3456 o
 | `POST /v1/messages` | Anthropic Messages API |
 | `POST /messages` | Alias for `/v1/messages` |
 | `POST /v1/chat/completions` | OpenAI-compatible chat completions |
+| `POST /v1/responses` | OpenAI Responses API (Codex CLI ≥ 0.96) |
 | `GET /v1/models` | OpenAI-compatible model list |
+| `GET/POST /v1/design/*` | Claude Design MCP proxy (see [Claude Design MCP](#claude-design-mcp)) |
+| `GET/POST /design-login` | OAuth flow for the design scopes |
 | `GET /health` | Auth status, mode, plugin status |
 | `POST /auth/refresh` | Manually refresh the OAuth token |
 | `GET /telemetry` | Performance dashboard |
@@ -868,7 +919,9 @@ opt-in plugins instead:
 | [`@rynfar/meridian-plugin-pi-scrub`](https://github.com/rynfar/meridian-plugin-pi-scrub) | Strips Pi's coding-agent-harness prompt line that Anthropic meters as Extra Usage. |
 | [`@rynfar/meridian-plugin-opencode-scrub`](https://github.com/rynfar/meridian-plugin-opencode-scrub) | Strips OpenCode harness boilerplate from the system prompt before it reaches Claude. |
 
-Install into Meridian's config dir and register the built file in
+**Nix users:** the flake packages all three prebuilt — `pkgs.meridianPlugins.<name>` via the `meridian` overlay (or `meridian.legacyPackages.${system}.meridianPlugins`), each exposing `.path` for a `plugins.json` entry or the home-manager `pluginConfig` option. Pins are refreshed by a scheduled workflow that rebuilds every plugin before bumping.
+
+Everyone else: install into Meridian's config dir and register the built file in
 `~/.config/meridian/plugins.json`:
 
 ```bash
@@ -932,6 +985,8 @@ docker run -v ~/.claude:/home/claude/.claude -p 3456:3456 meridian
 ```
 
 Meridian refreshes OAuth tokens automatically — once the credentials are mounted, no further browser access is needed.
+
+> **macOS hosts:** mounting `~/.claude` does **not** carry credentials into the container — on macOS the CLI stores OAuth tokens in the Keychain, not in files, so the container sees an empty credential store and requests fail with an authentication error. Use an [OAuth-token profile](#oauth-token-profiles-in-docker-no-volume-mount) instead (recommended), or run `claude login` once inside the container (`docker exec -it <name> claude login`).
 
 ### Multiple profiles in Docker
 
@@ -1000,20 +1055,13 @@ meridian refresh-token
 curl -X POST http://127.0.0.1:3456/auth/refresh
 ```
 
-**I'm getting `400 You're out of extra usage` only when tools are present. What do I do?**
-First confirm the failure pattern: a tiny no-tool request succeeds, but the same client fails once it sends tool definitions. If that is the case, beta-header stripping and model fallback usually will not help because the request body still contains agentic tool context.
+**I'm getting `400 You're out of extra usage` on tool-bearing requests. What do I do?**
+This error class ([#516](https://github.com/rynfar/meridian/issues/516), historical) came from Anthropic's server-side classifier gating certain requests behind Extra Usage. It had two distinct triggers, both now addressed:
 
-For the affected adapter, try disabling the connecting client's system prompt while keeping the Claude Code prompt enabled:
+- **Harness fingerprints** — identity lines in a client's system prompt (e.g. pi's "coding agent harness" line) were metered as Extra Usage. The [official scrub plugins](#official-plugins) strip these and remain recommended for the affected harnesses.
+- **Tool-definition presence** — reported in mid-2026 as triggering independently of prompt content; as of July 2026 this no longer reproduces on Max accounts (verified with Extra Usage disabled, tools present, and an unscrubbed fingerprint prompt). It appears to have been resolved upstream in Anthropic's billing policy.
 
-```bash
-curl -X PATCH http://127.0.0.1:3456/settings/api/features/pi \
-  -H 'Content-Type: application/json' \
-  -d '{"clientSystemPrompt":false,"codeSystemPrompt":true}'
-```
-
-Replace `pi` with the adapter you use (`opencode`, `crush`, `forgecode`, `droid`, `passthrough`, or `openai`). You can make the same change in the `/settings` UI under **SDK Feature Toggles**. (The `openai` adapter — used by the `/v1/chat/completions` endpoint — already defaults `codeSystemPrompt` to off, so on that one you typically only need `clientSystemPrompt:false`.)
-
-This keeps the SDK's preset prompt and tool bridge, but removes the external client's large agent prompt from the request. That may help when the error is triggered by the combination of tool definitions plus client prompt context. The tradeoff is that the connected agent may behave more like vanilla Claude Code because its own persona and workflow instructions are no longer included. If it still fails, the remaining options are to use fewer/no tools for that client, enable Extra Usage/API billing, or switch to a local/provider-backed model for that workflow. See [#516](https://github.com/rynfar/meridian/issues/516) for the current debugging thread.
+If you still hit the error on a current release, first check `GET /v1/usage/quota` to rule out genuinely exhausted quota, then try disabling the connecting client's system prompt for the affected adapter while keeping the Claude Code prompt enabled (in the `/settings` UI under **SDK Feature Toggles**, or `PATCH /settings/api/features/<adapter>` with `{"clientSystemPrompt":false,"codeSystemPrompt":true}`) — and please report it on [#516](https://github.com/rynfar/meridian/issues/516) with your plan type, since remaining occurrences are likely account-cohort specific (Team plans are treated differently by the API).
 
 **I'm hitting rate limits on 1M context. What do I do?**
 Meridian defaults Sonnet to 200k context because Sonnet 1M is always billed as Extra Usage on Max plans — even when regular usage isn't exhausted. This is [Anthropic's intended billing model](https://code.claude.com/docs/en/model-config#extended-context), not a bug. Set `MERIDIAN_SONNET_MODEL=sonnet[1m]` to opt in if you have Extra Usage enabled and understand the billing implications. Opus defaults to 1M context, which is included with Max/Team/Enterprise subscriptions at no extra cost. Note: there is a [known upstream bug](https://github.com/anthropics/claude-code/issues/39841) where Claude Code incorrectly gates Opus 1M behind Extra Usage on Max — this is Anthropic's to fix.

@@ -57,6 +57,7 @@ src/
 │   ├── profileCli.ts          ← CLI commands for profile management (leaf, I/O)
 │   ├── agentDefs.ts           ← Subagent definition extraction from tool descriptions
 │   ├── agentMatch.ts          ← Fuzzy agent name matching
+│   ├── design.ts              ← Claude Design MCP proxy (token store/refresh, auth precedence, login flow)
 │   └── passthroughTools.ts    ← Tool forwarding mode (agent handles execution)
 ├── fileChanges.ts             ← PostToolUse hook: tracks write/edit ops, formats summary
 ├── mcpTools.ts                ← MCP tool definitions (read, write, edit, bash, glob, grep)

@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.53.0](https://github.com/rynfar/meridian/compare/meridian-v1.52.0...meridian-v1.53.0) (2026-07-19)
+
+
+### Features
+
+* **nix:** package plugins as a meridianPlugins set ([#635](https://github.com/rynfar/meridian/issues/635) by [@connor-grady](https://github.com/connor-grady)) ([f8a6077](https://github.com/rynfar/meridian/commit/f8a60770f45aae577a3957de2b07c8a4fab1d58f))
+* **nix:** package plugins as legacyPackages.meridianPlugins ([e961d33](https://github.com/rynfar/meridian/commit/e961d3398ade055f81ff588ec3bd92ead5d76522))
+* OpenAI Responses API (/v1/responses) for Codex CLI ([#475](https://github.com/rynfar/meridian/issues/475)) ([#654](https://github.com/rynfar/meridian/issues/654)) ([01baa0f](https://github.com/rynfar/meridian/commit/01baa0f4d83738fa5c302149d0e05780f2d47f2b))
+
+
+### Bug Fixes
+
+* **ci:** plugin-input bumps go through a PR, not a direct push to main ([27faabb](https://github.com/rynfar/meridian/commit/27faabb36664c967897a612d88078dfd42535e41))
+* **nix:** make the wrapper's claude-code path a default, not an override ([ea30016](https://github.com/rynfar/meridian/commit/ea30016a3fe0c8ac9548b92feb896720214f645d))
+* **plugin:** rebuild agent-mode map on config reload ([#659](https://github.com/rynfar/meridian/issues/659)) ([32b5ae6](https://github.com/rynfar/meridian/commit/32b5ae63cb707f2ed0d6cf788a5ee2bacf9c8ffa))
+* **plugin:** resolve agent mode for string agents (OpenCode &gt;= 1.17) ([#657](https://github.com/rynfar/meridian/issues/657)) ([967a8af](https://github.com/rynfar/meridian/commit/967a8af6efe9857c34b83267a1c79d98a36ee470))
+
 ## [1.52.0](https://github.com/rynfar/meridian/compare/meridian-v1.51.0...meridian-v1.52.0) (2026-07-17)
 
 

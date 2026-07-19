@@ -1,5 +1,6 @@
 import { Hono } from "hono"
 import { cors } from "hono/cors"
+import { stream } from "hono/streaming"
 import { serve } from "@hono/node-server"
 import type { Server } from "node:http"
 import { homedir } from "node:os"
@@ -50,10 +51,21 @@ import { telemetryStore, diagnosticLog, createTelemetryRoutes, landingHtml, rend
 import type { RequestMetric } from "../telemetry"
 import { classifyError, extractSdkTermination, formatSdkTermination, isStaleSessionError, isBusySessionError, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError } from "./errors"
 import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, type CredentialStore } from "./tokenRefresh"
+import {
+  createFileDesignTokenStore,
+  createDesignLogin,
+  getDesignAccessToken,
+  resolveDesignAuthHeaders,
+  buildDesignForwardHeaders,
+  filterUpstreamResponseHeaders,
+  isDesignAuthFailure,
+  DESIGN_UPSTREAM_ORIGIN,
+} from "./design"
 import { checkPluginConfigured } from "./setup"
 import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable } from "./models"
 import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
+import { translateResponsesToAnthropic, translateAnthropicToResponses, createResponsesSseTranslator, reasoningRequested, type ResponsesRequest, type AnthropicSseEvent as ResponsesAnthropicSseEvent } from "./openaiResponses"
 import { extractAdvisorModel, getLastUserMessage, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, MULTIMODAL_TYPES, buildToolUseIndex, describeToolCall, frameReplayTurns } from "./messages"
 import { requireAuth, authEnabled } from "./auth"
 import { detectAdapter } from "./adapters/detect"
@@ -445,6 +457,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   app.use("/plugins", requireAuth)
   app.use("/settings/*", requireAuth)
   app.use("/settings", requireAuth)
+  app.use("/design-login", requireAuth)
   app.use("/auth/*", requireAuth)
 
   app.get("/", (c) => {
@@ -455,7 +468,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         status: "ok",
         service: "meridian",
         format: "anthropic",
-        endpoints: ["/v1/messages", "/messages", "/v1/chat/completions", "/v1/models", "/telemetry", "/metrics", "/health"]
+        endpoints: ["/v1/messages", "/messages", "/v1/chat/completions", "/v1/responses", "/v1/models", "/v1/design/*", "/design-login", "/telemetry", "/metrics", "/health"]
       })
     }
     return c.html(landingHtml)
@@ -3656,6 +3669,119 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     })
   })
 
+  // --- OpenAI Responses API endpoint (#475) ---
+  // Serves the Codex CLI (>= 0.96), which dropped wire_api="chat" and speaks
+  // only /v1/responses. Translates Responses <-> Anthropic and forwards
+  // in-process to /v1/messages via app.fetch() (no network roundtrip),
+  // reusing auth, model mapping, session handling, and the passthrough tool
+  // loop — mirroring /v1/chat/completions. Tagged x-meridian-agent: codex so
+  // the codex adapter is selected (forces passthrough; preset OFF).
+  // See src/proxy/openaiResponses.ts for the translation logic.
+  app.post("/v1/responses", async (c) => {
+    const rawBody = await c.req.json() as ResponsesRequest
+    const anthropicBody = translateResponsesToAnthropic(rawBody)
+
+    if (!anthropicBody) {
+      return c.json(
+        { error: { type: "invalid_request_error", message: "input: Field required", code: null } },
+        400
+      )
+    }
+    if (!anthropicBody.model) {
+      return c.json(
+        { error: { type: "invalid_request_error", message: "model: Field required", code: null } },
+        400
+      )
+    }
+
+    const internalHeaders: Record<string, string> = {
+      "Content-Type": "application/json",
+      "x-meridian-agent": "codex",
+    }
+    const xApiKey = c.req.header("x-api-key")
+    if (xApiKey) internalHeaders["x-api-key"] = xApiKey
+    const authz = c.req.header("authorization")
+    if (authz) internalHeaders["authorization"] = authz
+    const xProfile = c.req.header("x-meridian-profile")
+    if (xProfile) internalHeaders["x-meridian-profile"] = xProfile
+
+    const internalReq = new Request("http://internal/v1/messages", {
+      method: "POST",
+      headers: internalHeaders,
+      body: JSON.stringify(anthropicBody),
+    })
+    const internalRes = await app.fetch(internalReq)
+
+    if (!internalRes.ok) {
+      const errBody = await internalRes.text()
+      return c.json(
+        { error: { type: "upstream_error", message: errBody, code: null } },
+        internalRes.status as 400 | 401 | 429 | 500
+      )
+    }
+
+    const responseId = `resp_${randomUUID().replace(/-/g, "")}`
+    const created = Math.floor(Date.now() / 1000)
+    const model = (typeof rawBody.model === "string" && rawBody.model) ? rawBody.model : CANONICAL_SONNET_MODEL
+    const ctx = { responseId, model, created, reasoningRequested: reasoningRequested(rawBody) }
+
+    if (!anthropicBody.stream) {
+      const anthropicRes = await internalRes.json() as Record<string, unknown>
+      return c.json(translateAnthropicToResponses(anthropicRes, ctx))
+    }
+
+    // Streaming: translate Anthropic SSE → Responses SSE.
+    const encoder = new TextEncoder()
+    const readable = new ReadableStream({
+      async start(controller) {
+        const reader = internalRes.body?.getReader()
+        if (!reader) { controller.close(); return }
+
+        const decoder = new TextDecoder()
+        let buffer = ""
+        const translate = createResponsesSseTranslator(ctx)
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split("\n")
+            buffer = lines.pop() ?? ""
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue
+              const dataStr = line.slice(6).trim()
+              if (!dataStr) continue
+              let event: Record<string, unknown>
+              try { event = JSON.parse(dataStr) as Record<string, unknown> }
+              catch { continue }
+              if (typeof event.type !== "string") continue
+              for (const emission of translate(event as unknown as ResponsesAnthropicSseEvent)) {
+                controller.enqueue(encoder.encode(`event: ${emission.event}\ndata: ${JSON.stringify(emission.data)}\n\n`))
+              }
+            }
+          }
+        } catch (err) {
+          // Emit a Responses-shaped failure so Codex doesn't hang.
+          const message = err instanceof Error ? err.message : String(err)
+          controller.enqueue(encoder.encode(
+            `event: response.failed\ndata: ${JSON.stringify({ response: { id: responseId, status: "failed", error: { message } } })}\n\n`
+          ))
+        } finally {
+          controller.close()
+        }
+      },
+    })
+
+    return new Response(readable, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+      },
+    })
+  })
+
   // --- Model Discovery ---
   // Returns available Claude models in OpenAI-compatible format.
   // Context window reflects the subscription tier (Max = 1M, others = 200k).
@@ -3904,6 +4030,91 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         recoverPreviousCommand: `claude --resume ${recovery.previousClaudeSessionId}`,
         note: "Previous session was replaced — if your current session has lost context, try the previous session ID.",
       } : {}),
+    })
+  })
+
+  // --- Claude Design MCP Proxy (#543) ---
+  // All logic lives in ./design; these routes only wire HTTP.
+  const designTokenStore = createFileDesignTokenStore()
+  const designLogin = createDesignLogin({ store: designTokenStore })
+
+  app.get("/design-login", (c) => c.json(designLogin.start()))
+
+  app.post("/design-login", async (c) => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ type: "error", error: { type: "invalid_request", message: "Request body must be JSON with a 'code' field." } }, 400)
+    }
+    const result = await designLogin.exchange(body)
+    if (result.status === 200) plog(`[PROXY] Design token stored via /design-login`)
+    return new Response(JSON.stringify(result.body), {
+      status: result.status,
+      headers: { "content-type": "application/json" },
+    })
+  })
+
+  // GET requests to the design MCP are SSE streams for server-initiated
+  // events. Anthropic's Design API pushes nothing over them, so proxying the
+  // GET upstream leaves the MCP client hanging with zero bytes. Serve a
+  // lightweight local keep-alive stream instead.
+  app.get("/v1/design/*", (c) => {
+    c.status(200)
+    c.header("content-type", "text/event-stream")
+    c.header("cache-control", "no-cache")
+    return stream(c, async (s) => {
+      while (!s.aborted) {
+        await s.write(": keepalive\n\n")
+        await s.sleep(15_000)
+      }
+    })
+  })
+
+  // POST requests proxy the MCP JSON-RPC to Anthropic's Design API with
+  // auth resolved by the design module (design token first, then profile
+  // credentials).
+  app.post("/v1/design/*", async (c) => {
+    const profile = resolveProfile(
+      finalConfig.profiles,
+      finalConfig.defaultProfile,
+      c.req.header("x-meridian-profile") || undefined
+    )
+    const url = new URL(c.req.url)
+    const upstreamUrl = `${DESIGN_UPSTREAM_ORIGIN}${url.pathname}${url.search}`
+
+    const designToken = await getDesignAccessToken({ store: designTokenStore })
+    const authHeaders = await resolveDesignAuthHeaders({
+      designToken,
+      profile,
+      credentialStore: credentialStoreForProfile(profile),
+      ensureFresh: ensureFreshToken,
+    })
+
+    const body = await c.req.arrayBuffer()
+    const forwardHeaders = buildDesignForwardHeaders((name) => c.req.header(name), authHeaders)
+
+    let upstreamRes: Response
+    try {
+      upstreamRes = await fetch(upstreamUrl, { method: "POST", headers: forwardHeaders, body })
+    } catch (err) {
+      return c.json(
+        { type: "error", error: { type: "upstream_error", message: err instanceof Error ? err.message : String(err) } },
+        502
+      )
+    }
+
+    if (isDesignAuthFailure(upstreamRes.status)) {
+      return c.json(
+        { type: "error", error: { type: "auth_error", message: "Unauthorized. Run /design-login to authorize Claude Design (adds user:design:read/write scopes)." } },
+        401
+      )
+    }
+
+    plog(`[PROXY] DESIGN upstream=${upstreamRes.status}`)
+    return new Response(upstreamRes.body, {
+      status: upstreamRes.status,
+      headers: filterUpstreamResponseHeaders(upstreamRes.headers.entries()),
     })
   })
 
