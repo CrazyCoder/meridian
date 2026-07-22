@@ -817,8 +817,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // preserve fingerprint resume instead of treating their tool results
         // as unrelated headerless workflow requests.
         const isClientDrivenLoop = adapterBase !== "claude-code" && !agentSessionId && lastIsToolResult
+        // The fork/subagent independence guard protects HEADERLESS flows from
+        // colliding on the shared (firstUserMessage, cwd) fingerprint. An
+        // explicit session key can't collide — distinct flows carry distinct
+        // keys — so keyed requests resume normally even when marked as a
+        // fork/subagent source. Without this, pylon's long-lived subagent
+        // workers fresh-replayed every turn: prompt-cache hits decayed to the
+        // static-prefix floor and turn latency grew with conversation length.
         const isIndependentSession =
-          requestSource?.startsWith("fork-") || requestSource?.startsWith("subagent-") || isClientDrivenLoop || false
+          (!agentSessionId && (requestSource?.startsWith("fork-") || requestSource?.startsWith("subagent-"))) ||
+          isClientDrivenLoop || false
         // If the previous turn's background drain is still persisting this
         // session (streaming early stop), wait briefly so the lookup below
         // sees the stored session instead of falling to a fresh replay.
@@ -3697,6 +3705,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     const internalHeaders: Record<string, string> = {
       "Content-Type": "application/json",
       "x-meridian-agent": "codex",
+    }
+    // NOTE: agent-specific (Codex) — prompt_cache_key is Codex's stable
+    // per-conversation id (mirrored as session_id in its client_metadata).
+    // Forward it as the codex adapter's session header so consecutive turns
+    // resume the same SDK session: Claude's signed thinking then persists
+    // across turns natively and the prompt cache stays warm (#655).
+    const promptCacheKey = (rawBody as { prompt_cache_key?: unknown }).prompt_cache_key
+    if (typeof promptCacheKey === "string" && promptCacheKey.length > 0) {
+      internalHeaders["x-codex-session"] = promptCacheKey
     }
     const xApiKey = c.req.header("x-api-key")
     if (xApiKey) internalHeaders["x-api-key"] = xApiKey

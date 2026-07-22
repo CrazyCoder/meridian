@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.55.0](https://github.com/rynfar/meridian/compare/meridian-v1.54.0...meridian-v1.55.0) (2026-07-21)
+
+
+### Features
+
+* **codex:** resume SDK sessions across turns via prompt_cache_key ([#655](https://github.com/rynfar/meridian/issues/655)) ([#665](https://github.com/rynfar/meridian/issues/665)) ([84cbdc5](https://github.com/rynfar/meridian/commit/84cbdc5e06bbff2bf588b5d0075378590d560337))
+* install plugins in Docker via MERIDIAN_PLUGINS ([dd6e8d3](https://github.com/rynfar/meridian/commit/dd6e8d39753abf9abddae7f48d5f306bf0829cff))
+* install plugins in Docker via MERIDIAN_PLUGINS ([#668](https://github.com/rynfar/meridian/issues/668) + fix-ups) ([9dcb3d3](https://github.com/rynfar/meridian/commit/9dcb3d337114f9dd803e994cdb4827fd74fe5e0c))
+
+
+### Bug Fixes
+
+* **docker:** anchor the plugin install root, harden failure paths ([9ce7dd9](https://github.com/rynfar/meridian/commit/9ce7dd9ba56d67e458f1e6d1af97d9e1d7af7717))
+* explicit session keys override the fork/subagent independence guard ([#669](https://github.com/rynfar/meridian/issues/669)) ([b46e08e](https://github.com/rynfar/meridian/commit/b46e08ed5358c6738e73362fd483524b6b1ef7b7))
+
+## [1.54.0](https://github.com/rynfar/meridian/compare/meridian-v1.53.0...meridian-v1.54.0) (2026-07-19)
+
+
+### Features
+
+* Claude Design MCP proxy (/v1/design/*) with dedicated OAuth flow ([e1547c3](https://github.com/rynfar/meridian/commit/e1547c3625b486bfcd1864c848babc3098719f28))
+* Claude Design MCP proxy (/v1/design/*) with dedicated OAuth flow ([#543](https://github.com/rynfar/meridian/issues/543)) ([1963c94](https://github.com/rynfar/meridian/commit/1963c94669eaa7821d7f449b195b638c653dfd67))
+
+
+### Bug Fixes
+
+* **mcp:** stop shell-interpolating grep tool input, treat exit 1 as no matches ([05513c4](https://github.com/rynfar/meridian/commit/05513c451725ce75865dfeae4f1dc1b756e17119))
+
 ## [1.53.0](https://github.com/rynfar/meridian/compare/meridian-v1.52.0...meridian-v1.53.0) (2026-07-19)
 
 
