@@ -317,6 +317,105 @@ describe("Session resume: fingerprint fallback", () => {
     expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
   })
 
+  it("does not resume a headerless client tool loop when runtime context follows the tool result", async () => {
+    const app = createTestApp()
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      messages: [{ role: "user", content: "Run the tool" }],
+    })).json()
+
+    mockMessages = [
+      assistantMessage([{ type: "text", text: "The tool returned TOOLCHECK_OK." }]),
+    ]
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      messages: [
+        { role: "user", content: "Run the tool" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_client", name: "exec", input: { command: "date" } }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_client", content: "TOOLCHECK_OK" }],
+        },
+        {
+          role: "user",
+          content: "Client runtime context for the immediately preceding user message.",
+        },
+      ],
+    })).json()
+
+    expect(capturedQueryParams.options.resume).toBeUndefined()
+    expect(capturedQueryParams.prompt).toContain("TOOLCHECK_OK")
+  })
+
+  it("does not resume headerless history after a completed tool loop and a later user request", async () => {
+    const app = createTestApp()
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      messages: [{ role: "user", content: "Run the tool" }],
+    })).json()
+
+    mockMessages = [
+      assistantMessage([{ type: "text", text: "Here is the follow-up." }]),
+    ]
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      messages: [
+        { role: "user", content: "Run the tool" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_done", name: "exec", input: { command: "date" } }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_done", content: "TOOLCHECK_OK" }],
+        },
+        { role: "assistant", content: [{ type: "text", text: "The tool succeeded." }] },
+        { role: "user", content: "Tell me more." },
+      ],
+    })).json()
+
+    expect(capturedQueryParams.options.resume).toBeUndefined()
+    expect(capturedQueryParams.prompt).toContain("TOOLCHECK_OK")
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      messages: [
+        { role: "user", content: "Run the tool" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_done", name: "exec", input: { command: "date" } }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_done", content: "TOOLCHECK_OK" }],
+        },
+        { role: "assistant", content: [{ type: "text", text: "The tool succeeded." }] },
+        { role: "user", content: "Tell me more." },
+        { role: "assistant", content: [{ type: "text", text: "Here is the follow-up." }] },
+        { role: "user", content: "Continue." },
+      ],
+    })).json()
+
+    expect(capturedQueryParams.options.resume).toBeUndefined()
+  })
+
   it("should NOT resume when first user message is different", async () => {
     const app = createTestApp()
 

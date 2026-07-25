@@ -275,7 +275,7 @@ describe("Fingerprint resume: different first messages", () => {
 })
 
 describe("Fingerprint resume: multi-turn with tool_use blocks", () => {
-  it("resumes correctly when history contains tool_use and tool_result", async () => {
+  it("fresh-replays headerless history containing tool_use and tool_result", async () => {
     const app = createTestApp()
 
     // Turn 1
@@ -298,8 +298,9 @@ describe("Fingerprint resume: multi-turn with tool_use blocks", () => {
       { role: "user", content: "now read it back" },
     ], "sdk-tools", "System prompt v2 with updated file tree")
 
-    // MUST resume even though system changed and history has tool blocks
-    expect(getCaptured()?.options?.resume).toBe("sdk-tools")
+    // Headerless full-history clients do not need SDK resume once a client tool
+    // result exists; a fresh replay keeps that result authoritative.
+    expect(getCaptured()?.options?.resume).toBeUndefined()
   })
 
   it("does NOT resume after undo even with tool_use in history", async () => {

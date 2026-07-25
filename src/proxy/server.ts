@@ -944,26 +944,32 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         //
         // Opt-in via header value: clients that don't set the header are
         // unaffected — behavior is byte-identical to today.
-        // Client-driven passthrough loop: the last message is a tool_result,
-        // i.e. the client executed a forwarded tool and is sending the result
-        // back to continue its own loop. These requests are self-contained
-        // (each carries the full growing conversation), so they need no session
-        // resume — and, being headerless, they would otherwise all collide on
-        // the same (firstUserMessage, cwd) fingerprint when a workflow engine
-        // runs several loops concurrently, causing one run to resume another
-        // run's Claude session and corrupt the conversation (premature
-        // end_turn, dropped tool calls). Treat them as independent: no
-        // fingerprint resume, no cache write. Header-keyed sessions (OpenCode's
-        // x-opencode-session, LiteLLM's x-litellm-session-id) never reach the
-        // fingerprint path, so they are unaffected.
-        const lastMessage = Array.isArray(body.messages) ? body.messages[body.messages.length - 1] : undefined
-        const lastIsToolResult = Array.isArray(lastMessage?.content)
-          && lastMessage.content.some((b: any) => b?.type === "tool_result")
+        // Client-driven passthrough history: the client executed a forwarded
+        // tool and sends the full conversation back on every request. Runtime
+        // context or later completed turns may follow the tool_result, so it is
+        // not necessarily in the final message or the latest turn suffix.
+        //
+        // These requests are self-contained (each carries the full growing
+        // conversation), so they need no session resume — and, being headerless,
+        // they would otherwise all collide on the same (firstUserMessage, cwd)
+        // fingerprint when a workflow engine runs several loops concurrently,
+        // causing one run to resume another run's Claude session and corrupt the
+        // conversation (premature end_turn, dropped tool calls). Treat them as
+        // independent: no fingerprint resume, no cache write. Header-keyed
+        // sessions (OpenCode's x-opencode-session, LiteLLM's
+        // x-litellm-session-id) never reach the fingerprint path, so they are
+        // unaffected.
+        const requestMessages = Array.isArray(body.messages) ? body.messages : []
+        const hasClientToolResult = requestMessages
+          .some((message: any) =>
+            Array.isArray(message?.content)
+            && message.content.some((block: any) => block?.type === "tool_result")
+          )
         // NOTE: Claude Code owns its tool loop but also expects Meridian to
         // resume the backing SDK session. Older clients may omit metadata, so
         // preserve fingerprint resume instead of treating their tool results
         // as unrelated headerless workflow requests.
-        const isClientDrivenLoop = adapterBase !== "claude-code" && !agentSessionId && lastIsToolResult
+        const isClientDrivenLoop = adapterBase !== "claude-code" && !agentSessionId && hasClientToolResult
         // The fork/subagent independence guard protects HEADERLESS flows from
         // colliding on the shared (firstUserMessage, cwd) fingerprint. An
         // explicit session key can't collide — distinct flows carry distinct
