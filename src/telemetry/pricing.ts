@@ -75,6 +75,7 @@ export const BUILTIN_MODEL_PRICING: Record<string, ModelPricing> = {
   "claude-fable-5": FABLE,
   "claude-mythos-5": FABLE,
   opus: OPUS,
+  "claude-opus-5": OPUS,
   "claude-opus-4-8": OPUS,
   "claude-opus-4-7": OPUS,
   "claude-opus-4-6": OPUS,

@@ -48,6 +48,7 @@ describe("pricing settings routes", () => {
     const res = await get()
     expect(res.status).toBe(200)
     const body = await res.json() as any
+    expect(body.builtin["claude-opus-5"]).toMatchObject({ inputPerMTok: 5, outputPerMTok: 25 })
     expect(body.builtin["claude-opus-4-8"]).toMatchObject({ inputPerMTok: 5, outputPerMTok: 25 })
     expect(body.overrides).toEqual({})
   })

@@ -318,12 +318,36 @@ export function extractOpenAiContent(content: string | OpenAiContentPart[]): str
     .join("")
 }
 
-function parseDataUrlImage(url: string): AnthropicImageBlock | null {
+/**
+ * Image media types the Anthropic API accepts. Anything else (svg+xml, bmp,
+ * tiff, ...) is rejected upstream with an opaque API error, so we treat it as
+ * unsupported here and let the caller substitute an omission note instead.
+ */
+const SUPPORTED_IMAGE_MEDIA_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+])
+
+/**
+ * Parse a base64 data URL into an Anthropic image block (data URLs only).
+ * Returns null for a malformed URL or an unsupported media type — callers
+ * substitute an omission note so the surrounding text still gets through.
+ *
+ * Shared by the chat-completions and Responses adapters; keep it here rather
+ * than duplicating per adapter so the allowlist has one home.
+ */
+export function parseDataUrlImage(url: string): AnthropicImageBlock | null {
   const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s.exec(url)
   if (!match) return null
-  const mediaType = match[1]
+  const rawMediaType = match[1]
   const data = match[2]
-  if (!mediaType || !data) return null
+  if (!rawMediaType || !data) return null
+  // `image/jpg` is a common misspelling in real data URLs; the API only knows
+  // `image/jpeg`, so normalize rather than drop an otherwise-valid image.
+  const mediaType = rawMediaType.toLowerCase() === "image/jpg" ? "image/jpeg" : rawMediaType.toLowerCase()
+  if (!SUPPORTED_IMAGE_MEDIA_TYPES.has(mediaType)) return null
   return {
     type: "image",
     source: {
@@ -926,6 +950,15 @@ export function buildModelList(isMaxSubscription: boolean, now = Math.floor(Date
       owned_by: "anthropic",
       display_name: "Claude Sonnet 4.6",
       context_window: 200_000,
+      capabilities: FULL_CAPABILITIES,
+    },
+    {
+      id: "claude-opus-5",
+      object: "model",
+      created: now,
+      owned_by: "anthropic",
+      display_name: "Claude Opus 5",
+      context_window: isMaxSubscription ? 1_000_000 : 200_000,
       capabilities: FULL_CAPABILITIES,
     },
     {
