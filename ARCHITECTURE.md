@@ -90,6 +90,7 @@ server.ts (HTTP layer)
     ├── adapter.ts (interface)
     ├── adapters/opencode.ts ──► messages.ts, session/fingerprint.ts, tools.ts
     ├── adapters/custom.ts ──► adapters/opencode.ts, session/fingerprint.ts
+    ├── adapters/detect.ts ──► every adapter (incl. custom.ts, for its session key)
     ├── query.ts ──► adapter.ts, mcpTools.ts, passthroughTools.ts
     ├── errors.ts
     ├── models.ts

@@ -99,9 +99,15 @@ const SESSION_CONTEXT_BLOCK_END = /^#{1,3}[ \t]+\S/m
  * throw the session key away for no reason. The `g` flag is safe on a
  * module-level regex here because `matchAll` iterates over a clone and never
  * advances this object's `lastIndex`.
+ *
+ * The value is matched greedily to the end of the line and trimmed afterwards
+ * rather than anchored with a lazy `(\S.*?)[ \t]*$`: the anchored form
+ * backtracks quadratically over a long run of interior spaces, and every
+ * request that reaches adapter detection runs this. Trimming also drops the
+ * `\r` of a CRLF prompt, which the anchored form kept.
  */
 const SESSION_CONTEXT_IDENTITY_LINE =
-  /^\*\*(Source|User|User ID|Session type):\*\*[ \t]*(\S.*?)[ \t]*$/gm
+  /^\*\*(Source|User|User ID|Session type):\*\*[ \t]*(\S[^\n]*)/gm
 
 /**
  * Derive a stable conversation key from a per-conversation context block in
@@ -138,11 +144,15 @@ export function extractSessionContextKey(body: any): string | undefined {
     ? afterHeading
     : afterHeading.slice(0, nextHeading.index)
 
+  // Every matching line is hashed, in order — not just the first of each
+  // field. A value that smuggles in a newline can therefore only ADD lines to
+  // its own key, never replace the real ones, so it cannot be shaped into
+  // another conversation's key.
   const identity: string[] = []
   let hasSource = false
   for (const [, field, value] of block.matchAll(SESSION_CONTEXT_IDENTITY_LINE)) {
     if (field === "Source") hasSource = true
-    identity.push(`${field}:${value}`)
+    identity.push(`${field}:${value!.trimEnd()}`)
   }
   if (!hasSource) return undefined
 

@@ -40,10 +40,9 @@ import { openCodeAdapter } from "./opencode"
 export const EMBEDDED_SESSION_KEY_PREFIX = "custom:"
 
 /**
- * Namespace for keys derived from a per-conversation context block. Distinct
- * from the identifier namespace above so the two can never name the same key:
- * an identifier would have to start with `ctx:` to reach this space, and the
- * value here is always a hex digest.
+ * Namespace for keys derived from a per-conversation context block. The two
+ * derived spaces can never name the same key: reaching this one would take an
+ * identifier beginning `ctx:`, and the identifier pattern admits no colon.
  */
 export const SESSION_CONTEXT_KEY_PREFIX = "custom:ctx:"
 
