@@ -80,6 +80,76 @@ export function extractEmbeddedSessionId(
 }
 
 /**
+ * Heading that introduces a per-conversation context block: the section some
+ * clients append to the system prompt to tell the model where the conversation
+ * is happening and who it is with.
+ */
+const SESSION_CONTEXT_HEADING = /^#{1,3}[ \t]+Current Session Context[ \t]*$/m
+
+/** Any following heading — marks the end of the block. */
+const SESSION_CONTEXT_BLOCK_END = /^#{1,3}[ \t]+\S/m
+
+/**
+ * The identity-bearing lines of that block: who the conversation is with and
+ * where it is happening.
+ *
+ * Deliberately an allow-list. The block also carries lines that describe
+ * capability rather than identity (connected platforms, delivery targets);
+ * those change while the conversation stays the same, and hashing them would
+ * throw the session key away for no reason. The `g` flag is safe on a
+ * module-level regex here because `matchAll` iterates over a clone and never
+ * advances this object's `lastIndex`.
+ */
+const SESSION_CONTEXT_IDENTITY_LINE =
+  /^\*\*(Source|User|User ID|Session type):\*\*[ \t]*(\S.*?)[ \t]*$/gm
+
+/**
+ * Derive a stable conversation key from a per-conversation context block in
+ * the system prompt.
+ *
+ * This is the fallback for clients that publish *where* a conversation is
+ * happening but no identifier for it. Hashing the identity lines yields a key
+ * that is byte-stable for as long as the conversation stays in the same place,
+ * and differs across chats, threads, and platforms — far more selective than
+ * the (first user message, working directory) fingerprint, which is blind to
+ * all of them.
+ *
+ * It is a chat-scoped key, not a session-scoped one: two conversations that
+ * run in the same chat one after another share it. That is safe because
+ * `verifyLineage` still has to accept the history before anything resumes — a
+ * successor conversation diverges and simply starts a fresh session.
+ *
+ * Returns undefined unless a `Source` line is present, so a client that
+ * happens to use the same heading for something else is left alone.
+ *
+ * Pure: reads the system prompt only, never message content, so conversation
+ * text cannot steer the key.
+ */
+export function extractSessionContextKey(body: any): string | undefined {
+  const systemText = getSystemPromptText(body)
+  if (!systemText) return undefined
+
+  const heading = systemText.match(SESSION_CONTEXT_HEADING)
+  if (heading?.index === undefined) return undefined
+
+  const afterHeading = systemText.slice(heading.index + heading[0].length)
+  const nextHeading = afterHeading.match(SESSION_CONTEXT_BLOCK_END)
+  const block = nextHeading?.index === undefined
+    ? afterHeading
+    : afterHeading.slice(0, nextHeading.index)
+
+  const identity: string[] = []
+  let hasSource = false
+  for (const [, field, value] of block.matchAll(SESSION_CONTEXT_IDENTITY_LINE)) {
+    if (field === "Source") hasSource = true
+    identity.push(`${field}:${value}`)
+  }
+  if (!hasSource) return undefined
+
+  return createHash("sha256").update(identity.join("\n")).digest("hex").slice(0, 16)
+}
+
+/**
  * Hash the first user message + working directory to fingerprint a conversation.
  * Used to find a cached session when no session header is present.
  * Includes workingDirectory (stable per project, unlike systemContext which

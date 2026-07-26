@@ -11,9 +11,11 @@
  * loops trips, so their prompt cache decays to the static prefix and the whole
  * history is rewritten every turn.
  *
- * These clients do publish a stable identifier — they put it in the system
- * prompt so the model can report it. Reading that gives an exact per-
- * conversation key with no client-side change.
+ * Such clients do describe the conversation in the system prompt, so the model
+ * knows what it is working on, and that description is enough to key on with no
+ * client-side change. Two forms are recognised: an identifier for the
+ * conversation itself, and — when the client publishes no identifier — the
+ * block describing where the conversation is happening.
  *
  * Behavior otherwise matches the OpenCode adapter, and `baseName` keeps it
  * resolving as such, so transforms, plugin scoping, and name-keyed branches in
@@ -23,7 +25,7 @@
 
 import type { Context } from "hono"
 import type { AgentAdapter } from "../adapter"
-import { extractEmbeddedSessionId } from "../session/fingerprint"
+import { extractEmbeddedSessionId, extractSessionContextKey } from "../session/fingerprint"
 import { openCodeAdapter } from "./opencode"
 
 /**
@@ -37,6 +39,33 @@ import { openCodeAdapter } from "./opencode"
  */
 export const EMBEDDED_SESSION_KEY_PREFIX = "custom:"
 
+/**
+ * Namespace for keys derived from a per-conversation context block. Distinct
+ * from the identifier namespace above so the two can never name the same key:
+ * an identifier would have to start with `ctx:` to reach this space, and the
+ * value here is always a hex digest.
+ */
+export const SESSION_CONTEXT_KEY_PREFIX = "custom:ctx:"
+
+/**
+ * Derive this adapter's session key from the request body.
+ *
+ * Preference order — most selective first:
+ *   1. an identifier the client publishes for the conversation itself;
+ *   2. a hash of the block describing where the conversation is happening.
+ *
+ * Detection and keying share this function on purpose: an adapter that is
+ * selected but then produces no key would be routed straight back onto the
+ * fingerprint path it exists to avoid.
+ */
+export function deriveSystemPromptSessionKey(body: unknown): string | undefined {
+  const embedded = extractEmbeddedSessionId(body)
+  if (embedded) return `${EMBEDDED_SESSION_KEY_PREFIX}${embedded}`
+
+  const context = extractSessionContextKey(body)
+  return context ? `${SESSION_CONTEXT_KEY_PREFIX}${context}` : undefined
+}
+
 export const customAdapter: AgentAdapter = {
   ...openCodeAdapter,
   name: "custom",
@@ -48,7 +77,6 @@ export const customAdapter: AgentAdapter = {
     const header = openCodeAdapter.getSessionId(c, body)
     if (header) return header
 
-    const embedded = extractEmbeddedSessionId(body)
-    return embedded ? `${EMBEDDED_SESSION_KEY_PREFIX}${embedded}` : undefined
+    return deriveSystemPromptSessionKey(body)
   },
 }

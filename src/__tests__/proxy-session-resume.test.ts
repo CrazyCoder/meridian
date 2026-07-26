@@ -677,3 +677,126 @@ describe("Session resume: embedded runtime session descriptor", () => {
     expect(capturedQueryParams.options.resume).toBeUndefined()
   })
 })
+
+/**
+ * Same guard, second descriptor form: a client that publishes no identifier for
+ * the conversation but does describe where it is happening. The derived key is
+ * chat-scoped rather than session-scoped, so these tests pin both halves of
+ * that contract — turns of one conversation resume, and a later conversation in
+ * the same chat does not inherit the earlier one's history.
+ */
+describe("Session resume: session context descriptor", () => {
+  function systemFor(source: string) {
+    return [
+      { type: "text", text: "You are a helpful assistant." },
+      {
+        type: "text",
+        text: `## Current Session Context\n\n**Source:** ${source}\n**User:** "Sam"\n`
+          + "**Connected Platforms:** local (files on this machine)\n",
+      },
+    ]
+  }
+
+  const CHAT_A = 'Chat ("DM with Sam, thread: 555285")'
+  const CHAT_B = 'Chat ("group: Ops")'
+
+  beforeEach(() => {
+    mockMessages = [assistantMessage([{ type: "text", text: "Hello" }])]
+    clearSessionCache()
+    capturedQueryParams = null
+    queryCallCount = 0
+  })
+
+  it("resumes after a completed tool loop and a later user request", async () => {
+    const app = createTestApp()
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      system: systemFor(CHAT_A),
+      messages: [{ role: "user", content: "Run the tool" }],
+    })).json()
+
+    mockMessages = [assistantMessage([{ type: "text", text: "Here is the follow-up." }])]
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      system: systemFor(CHAT_A),
+      messages: [
+        { role: "user", content: "Run the tool" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_done", name: "exec", input: { command: "date" } }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_done", content: "TOOLCHECK_OK" }],
+        },
+        { role: "assistant", content: [{ type: "text", text: "The tool succeeded." }] },
+        { role: "user", content: "Tell me more." },
+      ],
+    })).json()
+
+    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+    expect(capturedQueryParams.prompt).toContain("Tell me more.")
+    expect(capturedQueryParams.prompt).not.toContain("Run the tool")
+  })
+
+  it("keeps conversations in different chats on separate sessions", async () => {
+    const app = createTestApp()
+
+    // Identical first message and no cwd: one shared fingerprint, two chats.
+    const firstTurn = [{ role: "user", content: "Run the tool" }]
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      system: systemFor(CHAT_A),
+      messages: firstTurn,
+    })).json()
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      system: systemFor(CHAT_B),
+      messages: firstTurn,
+    })).json()
+
+    expect(capturedQueryParams.options.resume).toBeUndefined()
+  })
+
+  it("does not let a later conversation in the same chat inherit the earlier history", async () => {
+    const app = createTestApp()
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      system: systemFor(CHAT_A),
+      messages: [
+        { role: "user", content: "First conversation" },
+        { role: "assistant", content: [{ type: "text", text: "Sure." }] },
+        { role: "user", content: "Still the first conversation" },
+      ],
+    })).json()
+
+    // The chat is the same, so the key is too — lineage verification is what
+    // has to reject this, and it must, because the history shares no prefix.
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      system: systemFor(CHAT_A),
+      messages: [{ role: "user", content: "A brand new conversation" }],
+    })).json()
+
+    expect(capturedQueryParams.options.resume).toBeUndefined()
+    expect(capturedQueryParams.prompt).toContain("A brand new conversation")
+    expect(capturedQueryParams.prompt).not.toContain("First conversation")
+  })
+})
