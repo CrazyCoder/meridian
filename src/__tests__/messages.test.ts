@@ -2,7 +2,7 @@
  * Unit tests for message parsing utilities.
  */
 import { describe, it, expect } from "bun:test"
-import { frameReplayTurns, normalizeContent, getLastUserMessage, extractAdvisorModel, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, buildToolUseIndex, describeToolCall } from "../proxy/messages"
+import { frameReplayTurns, hasActiveToolLoop, normalizeContent, getLastUserMessage, extractAdvisorModel, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, buildToolUseIndex, describeToolCall } from "../proxy/messages"
 
 const img = (id: string) => ({ type: "image", source: { type: "base64", media_type: "image/png", data: id } })
 function userMsg(content: unknown) {
@@ -452,5 +452,88 @@ describe("frameReplayTurns (#619)", () => {
     expect(out).not.toContain("Human:")
     expect(out).toEndWith("final question")
     expect(out).toContain("[your bash ls]:")
+  })
+})
+
+describe("hasActiveToolLoop", () => {
+  const toolUse = (id: string) => ({ type: "tool_use", id, name: "exec", input: {} })
+  const toolResult = (id: string) => ({ type: "tool_result", tool_use_id: id, content: "ok" })
+  const text = (t: string) => ({ type: "text", text: t })
+
+  it("is true when the conversation ends on a tool result", () => {
+    expect(hasActiveToolLoop([
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [toolUse("t1")] },
+      { role: "user", content: [toolResult("t1")] },
+    ])).toBe(true)
+  })
+
+  it("stays true when the client appends runtime context after the tool result", () => {
+    expect(hasActiveToolLoop([
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [toolUse("t1")] },
+      { role: "user", content: [toolResult("t1")] },
+      { role: "user", content: "Client runtime context." },
+    ])).toBe(true)
+  })
+
+  it("stays true when the model narrates before calling the tool", () => {
+    // Text alongside a tool_use is ordinary; it does not end the turn.
+    expect(hasActiveToolLoop([
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [text("I'll read that file."), toolUse("t1")] },
+      { role: "user", content: [toolResult("t1")] },
+    ])).toBe(true)
+  })
+
+  it("is false once the model has answered", () => {
+    expect(hasActiveToolLoop([
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [toolUse("t1")] },
+      { role: "user", content: [toolResult("t1")] },
+      { role: "assistant", content: [text("It printed the date.")] },
+      { role: "user", content: "tell me more" },
+    ])).toBe(false)
+  })
+
+  it("treats a plain string answer as closing the turn", () => {
+    expect(hasActiveToolLoop([
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [toolUse("t1")] },
+      { role: "user", content: [toolResult("t1")] },
+      { role: "assistant", content: "It printed the date." },
+      { role: "user", content: "tell me more" },
+    ])).toBe(false)
+  })
+
+  it("looks only at the trailing turn, not the whole history", () => {
+    // Three closed loops then a fresh one — only the last turn decides.
+    const closed = [
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [toolUse("t1")] },
+      { role: "user", content: [toolResult("t1")] },
+      { role: "assistant", content: [text("done")] },
+    ]
+    expect(hasActiveToolLoop([...closed, ...closed, ...closed])).toBe(false)
+    expect(hasActiveToolLoop([...closed, ...closed, ...closed,
+      { role: "user", content: "again" },
+      { role: "assistant", content: [toolUse("t9")] },
+      { role: "user", content: [toolResult("t9")] },
+    ])).toBe(true)
+  })
+
+  it("is false for conversations with no tool use at all", () => {
+    expect(hasActiveToolLoop([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: [text("hello")] },
+      { role: "user", content: "bye" },
+    ])).toBe(false)
+  })
+
+  it("handles empty and malformed input", () => {
+    expect(hasActiveToolLoop([])).toBe(false)
+    expect(hasActiveToolLoop(undefined as any)).toBe(false)
+    expect(hasActiveToolLoop([{ role: "user", content: null }] as any)).toBe(false)
+    expect(hasActiveToolLoop([{ role: "user", content: [null, undefined] }] as any)).toBe(false)
   })
 })

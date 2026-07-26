@@ -275,7 +275,7 @@ describe("Fingerprint resume: different first messages", () => {
 })
 
 describe("Fingerprint resume: multi-turn with tool_use blocks", () => {
-  it("fresh-replays headerless history containing tool_use and tool_result", async () => {
+  it("resumes correctly when history contains a closed tool_use/tool_result turn", async () => {
     const app = createTestApp()
 
     // Turn 1
@@ -298,9 +298,10 @@ describe("Fingerprint resume: multi-turn with tool_use blocks", () => {
       { role: "user", content: "now read it back" },
     ], "sdk-tools", "System prompt v2 with updated file tree")
 
-    // Headerless full-history clients do not need SDK resume once a client tool
-    // result exists; a fresh replay keeps that result authoritative.
-    expect(getCaptured()?.options?.resume).toBeUndefined()
+    // MUST resume even though system changed and history has tool blocks.
+    // The isolation guard covers the unfinished turn only — this one closed
+    // with an assistant answer.
+    expect(getCaptured()?.options?.resume).toBe("sdk-tools")
   })
 
   it("does NOT resume after undo even with tool_use in history", async () => {

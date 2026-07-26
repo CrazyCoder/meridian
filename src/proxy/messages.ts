@@ -82,6 +82,41 @@ export function getLastUserMessage(messages: Array<{ role: string; content: any 
 }
 
 /**
+ * True when the conversation ends inside an unfinished tool loop: the client
+ * has handed back a `tool_result` and is still waiting for the model to act
+ * on it.
+ *
+ * Scans backwards and stops at the first message that settles the question:
+ *
+ *   - a `tool_result` block          → the loop is still in flight
+ *   - an assistant turn with no
+ *     `tool_use` block               → the model already answered; loop closed
+ *
+ * An assistant message that mixes text with a `tool_use` does not close the
+ * turn — narrating before calling a tool is ordinary behavior, and treating it
+ * as an answer would classify every real tool loop as finished.
+ *
+ * Used to isolate concurrent headerless loops from each other without
+ * penalising the completed turns that precede them: the whole conversation is
+ * replayed on every request, so "this history contains a tool_result anywhere"
+ * stays true forever once a client calls a single tool, which is not the
+ * property the caller wants.
+ */
+export function hasActiveToolLoop(messages: Array<{ role: string; content: any }>): boolean {
+  if (!Array.isArray(messages)) return false
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    // A plain string answer carries no blocks, and still closes the turn.
+    const blocks: any[] = Array.isArray(message?.content) ? message.content : []
+    if (blocks.some((block: any) => block?.type === "tool_result")) return true
+    if (message?.role === "assistant" && !blocks.some((block: any) => block?.type === "tool_use")) {
+      return false
+    }
+  }
+  return false
+}
+
+/**
  * Frame a fresh-session replay so the model cannot pattern-continue it (#619).
  *
  * When a conversation falls off the resume path, its full history is

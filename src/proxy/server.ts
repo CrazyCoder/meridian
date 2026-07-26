@@ -66,7 +66,7 @@ import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDef
 import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
 import { translateResponsesToAnthropic, translateAnthropicToResponses, createResponsesSseTranslator, reasoningRequested, type ResponsesRequest, type AnthropicSseEvent as ResponsesAnthropicSseEvent } from "./openaiResponses"
-import { extractAdvisorModel, getLastUserMessage, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, MULTIMODAL_TYPES, buildToolUseIndex, describeToolCall, frameReplayTurns } from "./messages"
+import { extractAdvisorModel, getLastUserMessage, hasActiveToolLoop, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, MULTIMODAL_TYPES, buildToolUseIndex, describeToolCall, frameReplayTurns } from "./messages"
 import { requireAuth, authEnabled } from "./auth"
 import { detectAdapter } from "./adapters/detect"
 import { buildQueryOptions, type QueryContext } from "./query"
@@ -950,31 +950,36 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // Opt-in via header value: clients that don't set the header are
         // unaffected — behavior is byte-identical to today.
         // Client-driven passthrough history: the client executed a forwarded
-        // tool and sends the full conversation back on every request. Runtime
-        // context or later completed turns may follow the tool_result, so it is
-        // not necessarily in the final message or the latest turn suffix.
+        // tool and sends the full conversation back on every request.
         //
-        // These requests are self-contained (each carries the full growing
-        // conversation), so they need no session resume — and, being headerless,
-        // they would otherwise all collide on the same (firstUserMessage, cwd)
-        // fingerprint when a workflow engine runs several loops concurrently,
-        // causing one run to resume another run's Claude session and corrupt the
-        // conversation (premature end_turn, dropped tool calls). Treat them as
-        // independent: no fingerprint resume, no cache write. Header-keyed
-        // sessions (OpenCode's x-opencode-session, LiteLLM's
-        // x-litellm-session-id) never reach the fingerprint path, so they are
-        // unaffected.
+        // While such a loop is in flight the request needs no session resume —
+        // it already carries the whole conversation — and, being headerless, it
+        // would otherwise collide with every other loop on the same
+        // (firstUserMessage, cwd) fingerprint when a workflow engine runs
+        // several concurrently, so one run resumes another run's Claude session
+        // and corrupts it (premature end_turn, dropped tool calls). In-flight
+        // loops are therefore treated as independent: no fingerprint resume, no
+        // cache write.
+        //
+        // The window is the UNFINISHED turn only. History is replayed in full,
+        // so "a tool_result appears anywhere" stays true forever once a client
+        // calls one tool — which pinned every such conversation to a fresh
+        // replay per turn, and with it the prompt cache to the static-prefix
+        // floor. Closed turns resume like any other conversation; verifyLineage
+        // is what keeps a colliding fingerprint from being adopted there, as it
+        // does for every other headerless client.
+        //
+        // Header-keyed sessions (OpenCode's x-opencode-session, LiteLLM's
+        // x-litellm-session-id) and keys derived from the system prompt
+        // (adapters/custom.ts) never reach the fingerprint path, so they are
+        // unaffected either way.
         const requestMessages = Array.isArray(body.messages) ? body.messages : []
-        const hasClientToolResult = requestMessages
-          .some((message: any) =>
-            Array.isArray(message?.content)
-            && message.content.some((block: any) => block?.type === "tool_result")
-          )
         // NOTE: Claude Code owns its tool loop but also expects Meridian to
         // resume the backing SDK session. Older clients may omit metadata, so
         // preserve fingerprint resume instead of treating their tool results
         // as unrelated headerless workflow requests.
-        const isClientDrivenLoop = adapterBase !== "claude-code" && !agentSessionId && hasClientToolResult
+        const isClientDrivenLoop =
+          adapterBase !== "claude-code" && !agentSessionId && hasActiveToolLoop(requestMessages)
         // The fork/subagent independence guard protects HEADERLESS flows from
         // colliding on the shared (firstUserMessage, cwd) fingerprint. An
         // explicit session key can't collide — distinct flows carry distinct

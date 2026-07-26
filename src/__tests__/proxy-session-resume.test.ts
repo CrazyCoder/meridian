@@ -356,7 +356,11 @@ describe("Session resume: fingerprint fallback", () => {
     expect(capturedQueryParams.prompt).toContain("TOOLCHECK_OK")
   })
 
-  it("does not resume headerless history after a completed tool loop and a later user request", async () => {
+  it("resumes headerless history once the tool loop has closed", async () => {
+    // The isolation window is the unfinished turn. History is replayed in
+    // full, so treating "a tool_result appears anywhere" as an active loop
+    // pinned every such conversation to a fresh replay for the rest of its
+    // life, and the prompt cache with it.
     const app = createTestApp()
 
     await (await post(app, {
@@ -389,31 +393,50 @@ describe("Session resume: fingerprint fallback", () => {
       ],
     })).json()
 
-    expect(capturedQueryParams.options.resume).toBeUndefined()
+    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+    // Only the delta is replayed — the opening turn stays in the SDK session.
+    expect(capturedQueryParams.prompt).toContain("Tell me more.")
+    expect(capturedQueryParams.prompt).not.toContain("Run the tool")
+    // The client ran the tool itself, so the resumed session never saw the
+    // result; it is summarised into the delta rather than dropped.
     expect(capturedQueryParams.prompt).toContain("TOOLCHECK_OK")
+  })
+
+  it("keeps two concurrent in-flight tool loops off each other's session", async () => {
+    // Identical opener and no cwd: both loops share one fingerprint, which is
+    // the collision the guard exists for. Neither may adopt the other's
+    // session while its own turn is still unfinished.
+    const app = createTestApp()
+
+    const inFlight = (toolId: string) => [
+      { role: "user", content: "Run the tool" },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: toolId, name: "exec", input: { command: "date" } }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: toolId, content: `RESULT_${toolId}` }],
+      },
+    ]
 
     await (await post(app, {
       model: "claude-sonnet-4-5",
       max_tokens: 1024,
       stream: false,
-      messages: [
-        { role: "user", content: "Run the tool" },
-        {
-          role: "assistant",
-          content: [{ type: "tool_use", id: "toolu_done", name: "exec", input: { command: "date" } }],
-        },
-        {
-          role: "user",
-          content: [{ type: "tool_result", tool_use_id: "toolu_done", content: "TOOLCHECK_OK" }],
-        },
-        { role: "assistant", content: [{ type: "text", text: "The tool succeeded." }] },
-        { role: "user", content: "Tell me more." },
-        { role: "assistant", content: [{ type: "text", text: "Here is the follow-up." }] },
-        { role: "user", content: "Continue." },
-      ],
+      messages: inFlight("toolu_run_a"),
+    })).json()
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      messages: inFlight("toolu_run_b"),
     })).json()
 
     expect(capturedQueryParams.options.resume).toBeUndefined()
+    expect(capturedQueryParams.prompt).toContain("RESULT_toolu_run_b")
+    expect(capturedQueryParams.prompt).not.toContain("RESULT_toolu_run_a")
   })
 
   it("should NOT resume when first user message is different", async () => {
