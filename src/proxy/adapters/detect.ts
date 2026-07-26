@@ -17,6 +17,8 @@ import { claudeCodeAdapter } from "./claudecode"
 import { openAiAdapter } from "./openai"
 import { codexAdapter } from "./codex"
 import { cherryAdapter } from "./cherry"
+import { customAdapter } from "./custom"
+import { extractEmbeddedSessionId } from "../session/fingerprint"
 import { loadAdapterInstances, matchesInstance, type AdapterInstanceDef } from "../adapterInstances"
 
 const ADAPTER_MAP: Record<string, AgentAdapter> = {
@@ -37,6 +39,10 @@ const ADAPTER_MAP: Record<string, AgentAdapter> = {
   // Codex CLI endpoint (/v1/responses). Forces passthrough — Codex executes
   // its own tools. Selected via the x-meridian-agent: codex internal tag.
   codex: codexAdapter,
+  // Headerless clients keyed by a runtime session descriptor in the system
+  // prompt. Normally auto-detected from the body (see the last rule below);
+  // listed here so it can also be selected explicitly like any other adapter.
+  custom: customAdapter,
 }
 
 const envDefault = process.env.MERIDIAN_DEFAULT_AGENT || ""
@@ -72,7 +78,8 @@ function isLiteLLMRequest(c: Context): boolean {
  * 5. User-Agent starts with "Charm-Crush/"  → Crush adapter
  * 6. User-Agent starts with "claude-cli/"  → Claude Code adapter
  * 7. litellm/* UA or x-litellm-* headers   → LiteLLM passthrough adapter
- * 8. Default                                → MERIDIAN_DEFAULT_AGENT env var, or OpenCode
+ * 8. Embedded runtime session descriptor    → Custom adapter (needs `body`)
+ * 9. Default                                → MERIDIAN_DEFAULT_AGENT env var, or OpenCode
  */
 /**
  * Materialize an adapter INSTANCE (#476): the base adapter's behavior under
@@ -96,7 +103,7 @@ function makeInstanceAdapter(name: string, def: AdapterInstanceDef): AgentAdapte
   }
 }
 
-export function detectAdapter(c: Context): AgentAdapter {
+export function detectAdapter(c: Context, body?: unknown): AgentAdapter {
   const agentOverride = c.req.header("x-meridian-agent")?.toLowerCase()
   if (agentOverride && ADAPTER_MAP[agentOverride]) {
     return ADAPTER_MAP[agentOverride]!
@@ -163,6 +170,14 @@ export function detectAdapter(c: Context): AgentAdapter {
 
   if (isLiteLLMRequest(c)) {
     return passthroughAdapter
+  }
+
+  // Headerless client that publishes a runtime session descriptor in its
+  // system prompt (see adapters/custom.ts). Checked last, so every explicit
+  // signal above keeps priority, and only when the body is available —
+  // callers that detect before parsing get the header-only result.
+  if (body !== undefined && extractEmbeddedSessionId(body)) {
+    return customAdapter
   }
 
   return defaultAdapter

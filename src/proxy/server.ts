@@ -632,9 +632,14 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
     return withClaudeLogContext({ requestId: requestMeta.requestId, endpoint: requestMeta.endpoint }, async () => {
       // Hoist adapter detection before try so it's available in the catch block for telemetry
-      const adapter = detectAdapter(c)
+      let adapter = detectAdapter(c)
       try {
         const body = await c.req.json()
+        // Re-detect with the parsed body: the last detection rule matches a
+        // runtime session descriptor carried in the system prompt, which isn't
+        // visible from headers alone. Header-only detection above stays as the
+        // value used if parsing itself throws.
+        adapter = detectAdapter(c, body)
 
         // Validate required fields
         if (!Array.isArray(body.messages)) {

@@ -547,3 +547,133 @@ describe("Session resume: only send last user message on resume", () => {
     expect(capturedQueryParams.options.resume).toBeUndefined()
   })
 })
+
+// ============================================================
+// EMBEDDED RUNTIME SESSION DESCRIPTOR
+// ============================================================
+
+/**
+ * The guard above disables resume for headerless clients that drive their own
+ * tool loop, because their (first user message, cwd) fingerprint is not unique
+ * and one conversation can resume another's session.
+ *
+ * A client that publishes a stable session identifier in its system prompt has
+ * an exact key, so the collision the guard protects against cannot happen and
+ * resume must stay enabled — otherwise every turn is fresh-replayed and the
+ * prompt cache decays to the static prefix while the whole history is rewritten.
+ */
+describe("Session resume: embedded runtime session descriptor", () => {
+  const SESSION_A = "Runtime: agent=main | session=agent:main:a | sessionId=11111111-1111-4111-8111-111111111111 | host=box"
+  const SESSION_B = "Runtime: agent=main | session=agent:main:b | sessionId=22222222-2222-4222-8222-222222222222 | host=box"
+
+  function systemFor(runtime: string) {
+    return [
+      { type: "text", text: "You are a helpful assistant." },
+      { type: "text", text: `## Runtime\n${runtime}` },
+    ]
+  }
+
+  beforeEach(() => {
+    mockMessages = [assistantMessage([{ type: "text", text: "Hello" }])]
+    clearSessionCache()
+    capturedQueryParams = null
+    queryCallCount = 0
+  })
+
+  it("resumes after a completed tool loop and a later user request", async () => {
+    const app = createTestApp()
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      system: systemFor(SESSION_A),
+      messages: [{ role: "user", content: "Run the tool" }],
+    })).json()
+
+    mockMessages = [assistantMessage([{ type: "text", text: "Here is the follow-up." }])]
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      system: systemFor(SESSION_A),
+      messages: [
+        { role: "user", content: "Run the tool" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_done", name: "exec", input: { command: "date" } }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_done", content: "TOOLCHECK_OK" }],
+        },
+        { role: "assistant", content: [{ type: "text", text: "The tool succeeded." }] },
+        { role: "user", content: "Tell me more." },
+      ],
+    })).json()
+
+    // Resumed, and only the delta is replayed — not the whole history.
+    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+    expect(capturedQueryParams.prompt).toContain("Tell me more.")
+    expect(capturedQueryParams.prompt).not.toContain("Run the tool")
+  })
+
+  it("keeps two concurrent conversations on separate sessions", async () => {
+    const app = createTestApp()
+
+    // Identical first message and no cwd: these two would share one
+    // fingerprint, which is exactly the collision the descriptor removes.
+    const firstTurn = [{ role: "user", content: "Run the tool" }]
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      system: systemFor(SESSION_A),
+      messages: firstTurn,
+    })).json()
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      system: systemFor(SESSION_B),
+      messages: firstTurn,
+    })).json()
+
+    // B is a distinct conversation, so it must not have resumed A's session.
+    expect(capturedQueryParams.options.resume).toBeUndefined()
+  })
+
+  it("still refuses to resume a headerless client with no descriptor", async () => {
+    const app = createTestApp()
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      messages: [{ role: "user", content: "Run the tool" }],
+    })).json()
+
+    await (await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      stream: false,
+      messages: [
+        { role: "user", content: "Run the tool" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_done", name: "exec", input: { command: "date" } }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_done", content: "TOOLCHECK_OK" }],
+        },
+        { role: "user", content: "Tell me more." },
+      ],
+    })).json()
+
+    expect(capturedQueryParams.options.resume).toBeUndefined()
+  })
+})
