@@ -37,9 +37,11 @@ interface ResponsesContentPart {
 }
 
 interface ResponsesMessageItem {
-  type: "message"
+  /** Optional per the spec — `EasyInputMessage` requires only `role`. */
+  type?: "message"
   role: "user" | "assistant" | "developer" | "system"
-  content: ResponsesContentPart[] | string
+  /** Also optional per the spec: `EasyInputMessage` requires only `role`. */
+  content?: ResponsesContentPart[] | string
 }
 interface ResponsesFunctionCallItem {
   type: "function_call"
@@ -89,7 +91,33 @@ export interface ResponsesRequest {
 // Request translation: Responses → Anthropic
 // ---------------------------------------------------------------------------
 
-function partsToText(content: ResponsesContentPart[] | string): string {
+/**
+ * The effective discriminator for an input item.
+ *
+ * `type` is optional on Responses input items — `EasyInputMessage` requires
+ * only `role` — so a typeless item that carries a role IS a message. Codex
+ * always sends `type`, which is why this went unnoticed; clients that follow
+ * the spec (e.g. the Vercel AI SDK's `.responses()` model) send bare
+ * `{role, content}` and had every message silently dropped, translating to
+ * zero messages and a 400 from upstream.
+ *
+ * Returns undefined for anything unrecognized, so the caller's `default:`
+ * skips it:
+ *   - non-object elements — `input` is untrusted JSON, and `in` THROWS on a
+ *     primitive operand, which would surface as an unstructured HTTP 500
+ *   - a present-but-unknown `type` — future item kinds must not be coerced
+ *     into messages just because they happen to carry a role
+ */
+function itemDiscriminator(item: unknown): string | undefined {
+  if (typeof item !== "object" || item === null) return undefined
+  const record = item as Record<string, unknown>
+  if (typeof record.type === "string") return record.type
+  if (record.type === undefined && "role" in record) return "message"
+  return undefined
+}
+
+function partsToText(content: ResponsesContentPart[] | string | undefined): string {
+  if (content === undefined) return ""
   if (typeof content === "string") return content
   return content
     .filter((p) => typeof p.text === "string")
@@ -102,8 +130,8 @@ function partsToText(content: ResponsesContentPart[] | string): string {
  * no images so the caller keeps the plain-text path. Remote (non-data-URL)
  * images become an omission note, matching the chat-completions adapter.
  */
-function partsToBlocks(content: ResponsesContentPart[] | string): AnthropicContentBlock[] | null {
-  if (typeof content === "string") return null
+function partsToBlocks(content: ResponsesContentPart[] | string | undefined): AnthropicContentBlock[] | null {
+  if (content === undefined || typeof content === "string") return null
   const hasImage = content.some((p) => p.type === "input_image")
   if (!hasImage) return null
 
@@ -165,7 +193,10 @@ export function translateResponsesToAnthropic(body: ResponsesRequest): Anthropic
   }
 
   for (const item of items) {
-    switch (item.type) {
+    // NOTE: this switches on a COMPUTED discriminator, not on `item.type`, so
+    // TypeScript no longer narrows `item` per case — the `as` casts below are
+    // load-bearing assertions rather than belt-and-braces. Keep them.
+    switch (itemDiscriminator(item)) {
       case "message": {
         const msg = item as ResponsesMessageItem
         if (msg.role === "developer" || msg.role === "system") {

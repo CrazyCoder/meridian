@@ -49,6 +49,8 @@ mock.module("../mcpTools", () => ({
 
 const { createProxyServer, clearSessionCache } = await import("../proxy/server")
 const { resetActiveProfile } = await import("../proxy/profiles")
+const { __setFetchOAuthUsageOverride } = await import("../proxy/oauthUsage")
+const { rateLimitStore } = await import("../proxy/rateLimitStore")
 
 const PROFILES = [
   { id: "work", claudeConfigDir: "/tmp/meridian-test-prof-work" },
@@ -73,7 +75,33 @@ async function post(app: any, headers: Record<string, string> = {}, content = "h
   }))
 }
 
+async function exhaustedMarks(app: { fetch: (r: Request) => Response | Promise<Response> }) {
+  const res = await app.fetch(new Request("http://localhost/profiles/list"))
+  const body = await res.json() as { exhausted?: Array<{ id: string; until: number; reason: string }> }
+  return body.exhausted ?? []
+}
+
 const savedEnv: Record<string, string | undefined> = {}
+
+// File-level: every test in this file exhausts a profile through
+// dispatchPriority at some point, which fires refinePriorityCooldown ->
+// fetchOAuthUsage as a real (if fire-and-forget) side effect. Without this,
+// the "priority routing" describe block below (which predates the OAuth
+// refinement tier and sets no override of its own) would hit the real
+// fetchOAuthUsage -> createPlatformCredentialStore on every exhaustion,
+// spawning a `security find-generic-password` subprocess per call and, where
+// a matching credential exists, making a live HTTPS call to Anthropic from
+// the test suite. The "priority cooldown resolution" describe block below
+// still sets its own per-test override in its own beforeEach; Bun runs outer
+// (file-level) hooks before inner (describe-level) ones, so those overrides
+// still win for those tests.
+beforeEach(() => {
+  __setFetchOAuthUsageOverride(async () => null)
+})
+
+afterEach(() => {
+  __setFetchOAuthUsageOverride(null)
+})
 
 describe("priority routing", () => {
   beforeEach(() => {
@@ -192,5 +220,364 @@ describe("priority routing", () => {
     const res = await post(app, {}, "mode-off unique message")
     expect(res.status).toBe(429)
     expect(capturedEnvs.every((e) => e.includes("prof-work"))).toBe(true)
+  }, 20_000)
+})
+
+describe("priority cooldown resolution", () => {
+  const WORK_RESET = Date.now() + 4 * 60 * 60_000      // 4h out
+  const PERSONAL_RESET = Date.now() + 30 * 60_000      // 30m out
+
+  beforeEach(() => {
+    capturedEnvs = []
+    failingDirs = new Set()
+    clearSessionCache()
+    resetActiveProfile()
+    savedEnv.MERIDIAN_ROUTING = process.env.MERIDIAN_ROUTING
+    savedEnv.MERIDIAN_PROFILE_ORDER = process.env.MERIDIAN_PROFILE_ORDER
+    process.env.MERIDIAN_ROUTING = "priority"
+    process.env.MERIDIAN_PROFILE_ORDER = "work,personal"
+    rateLimitStore.clear()
+    __setFetchOAuthUsageOverride(async () => null)
+  })
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    rateLimitStore.clear()
+    __setFetchOAuthUsageOverride(null)
+  })
+
+  it("uses the failing profile's OWN five_hour reset, not another profile's", async () => {
+    // personal has a much later reset on record. work is the one that fails.
+    // The old global-singleton bug would hand work personal's number.
+    rateLimitStore.record("personal", {
+      status: "allowed",
+      rateLimitType: "five_hour",
+      utilization: 0.5,
+      resetsAt: Date.now() + 5 * 60 * 60_000,
+    })
+    rateLimitStore.record("work", {
+      status: "rejected",
+      rateLimitType: "five_hour",
+      utilization: 1,
+      resetsAt: WORK_RESET,
+    })
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    await post(app)
+
+    const marks = await exhaustedMarks(app)
+    expect(marks.map(m => m.id)).toEqual(["work"])
+    expect(marks.map(m => m.until)).toEqual([WORK_RESET])
+  }, 20_000)
+
+  it("falls back to the 10-minute default when the profile has no entry of its own", async () => {
+    rateLimitStore.record("personal", {
+      status: "allowed",
+      rateLimitType: "five_hour",
+      utilization: 0.5,
+      resetsAt: Date.now() + 5 * 60 * 60_000,
+    })
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    const before = Date.now()
+    await post(app)
+    const after = Date.now()
+
+    const marks = await exhaustedMarks(app)
+    const until = marks.map(m => m.until)
+    expect(until).toHaveLength(1)
+    expect(until.every(u => u >= before + 10 * 60_000 && u <= after + 10 * 60_000)).toBe(true)
+  }, 20_000)
+
+  it("falls back to the 10-minute default when the profile's own five_hour entry is healthy (allowed, utilization < 1)", async () => {
+    // A healthy account always has a five_hour entry with a future resetsAt
+    // — that boundary exists regardless of consumption. This entry alone
+    // doesn't prove the five-hour window caused the failure that's being
+    // handled right now (it could be a seven_day cap instead), so the
+    // synchronous tier-1 mark must not adopt this resetsAt.
+    const futureReset = Date.now() + 3 * 60 * 60_000 // several hours out
+    rateLimitStore.record("work", {
+      status: "allowed",
+      rateLimitType: "five_hour",
+      utilization: 0.4,
+      resetsAt: futureReset,
+    })
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    const before = Date.now()
+    await post(app)
+    const after = Date.now()
+
+    const marks = await exhaustedMarks(app)
+    const until = marks.map(m => m.until)
+    expect(until).toHaveLength(1)
+    expect(until.every(u => u >= before + 10 * 60_000 && u <= after + 10 * 60_000)).toBe(true)
+  }, 20_000)
+
+  it("refines a default-length mark with the authoritative OAuth reset", async () => {
+    __setFetchOAuthUsageOverride(async (opts) => {
+      if (opts?.profileId !== "work") return null
+      return { windows: [{ type: "five_hour", utilization: 1, resetsAt: WORK_RESET }], extraUsage: null, fetchedAt: Date.now() }
+    })
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    await post(app)
+    // The refinement is deliberately not awaited by the request path.
+    await Bun.sleep(20)
+
+    const marks = await exhaustedMarks(app)
+    expect(marks.map(m => m.until)).toEqual([WORK_RESET])
+  }, 20_000)
+
+  it("never shortens an existing mark with an earlier OAuth reset", async () => {
+    rateLimitStore.record("work", {
+      status: "rejected",
+      rateLimitType: "five_hour",
+      utilization: 1,
+      resetsAt: WORK_RESET,
+    })
+    __setFetchOAuthUsageOverride(async () => ({
+      windows: [{ type: "five_hour", utilization: 1, resetsAt: PERSONAL_RESET }],
+      extraUsage: null,
+      fetchedAt: Date.now(),
+    }))
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    await post(app)
+    await Bun.sleep(20)
+
+    const marks = await exhaustedMarks(app)
+    expect(marks.map(m => m.until)).toEqual([WORK_RESET])
+  }, 20_000)
+
+  it("leaves the mark unchanged when the OAuth fetch rejects", async () => {
+    __setFetchOAuthUsageOverride(async () => { throw new Error("upstream 503") })
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    const before = Date.now()
+    const res = await post(app)
+    await Bun.sleep(20)
+
+    expect(res.status).toBe(200) // failover still succeeded
+    const marks = await exhaustedMarks(app)
+    const until = marks.map(m => m.until)
+    expect(until).toHaveLength(1)
+    expect(until.every(u => u <= before + 10 * 60_000 + 5_000)).toBe(true)
+  }, 20_000)
+
+  it("leaves the mark unchanged when the OAuth fetch returns null", async () => {
+    // The null path is the one that actually happens in production:
+    // fetchOAuthUsage swallows its own failures and returns null.
+    __setFetchOAuthUsageOverride(async () => null)
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    const before = Date.now()
+    const res = await post(app)
+    await Bun.sleep(20)
+
+    expect(res.status).toBe(200) // failover still succeeded
+    const marks = await exhaustedMarks(app)
+    const until = marks.map(m => m.until)
+    expect(until).toHaveLength(1)
+    expect(until.every(u => u <= before + 10 * 60_000 + 5_000)).toBe(true)
+  }, 20_000)
+
+  it("does not extend the mark when the OAuth five_hour window is healthy (utilization < 1)", async () => {
+    // A healthy account always has a five_hour window with a future
+    // resetsAt — the rolling window boundary exists regardless of
+    // consumption. Only utilization >= 1 means that window is the actual
+    // cause of exhaustion; otherwise the conservative 10-minute default
+    // (tier 3) must stand.
+    const futureReset = Date.now() + 3 * 60 * 60_000 // comfortably in the future, well under the 6h cap
+    __setFetchOAuthUsageOverride(async (opts) => {
+      if (opts?.profileId !== "work") return null
+      return { windows: [{ type: "five_hour", utilization: 0.2, resetsAt: futureReset }], extraUsage: null, fetchedAt: Date.now() }
+    })
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    const before = Date.now()
+    await post(app)
+    await Bun.sleep(20)
+    const after = Date.now()
+
+    const marks = await exhaustedMarks(app)
+    const until = marks.map(m => m.until)
+    expect(until).toHaveLength(1)
+    expect(until.every(u => u >= before + 10 * 60_000 && u <= after + 10 * 60_000)).toBe(true)
+  }, 20_000)
+
+  it("clamps the synchronous mark to the 6-hour cap even when the profile's own reset is far beyond it", async () => {
+    const farReset = Date.now() + 12 * 60 * 60_000 // 12h out — beyond the 6h cap
+    rateLimitStore.record("work", {
+      status: "rejected",
+      rateLimitType: "five_hour",
+      utilization: 1,
+      resetsAt: farReset,
+    })
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    const before = Date.now()
+    await post(app)
+    const after = Date.now()
+
+    const marks = await exhaustedMarks(app)
+    const until = marks.map(m => m.until)
+    expect(until).toHaveLength(1)
+    expect(until.every(u => u >= before + 6 * 60 * 60_000 && u <= after + 6 * 60 * 60_000)).toBe(true)
+  }, 20_000)
+
+  it("clamps the refinement mark to the 6-hour cap even when OAuth reports a reset far beyond it", async () => {
+    const farReset = Date.now() + 12 * 60 * 60_000 // 12h out — beyond the 6h cap
+    __setFetchOAuthUsageOverride(async (opts) => {
+      if (opts?.profileId !== "work") return null
+      return { windows: [{ type: "five_hour", utilization: 1, resetsAt: farReset }], extraUsage: null, fetchedAt: Date.now() }
+    })
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    const before = Date.now()
+    await post(app)
+    await Bun.sleep(20)
+    const after = Date.now()
+
+    const marks = await exhaustedMarks(app)
+    const until = marks.map(m => m.until)
+    expect(until).toHaveLength(1)
+    expect(until.every(u => u >= before + 6 * 60 * 60_000 && u <= after + 6 * 60 * 60_000)).toBe(true)
+  }, 20_000)
+
+  it("does not block failover on the OAuth fetch", async () => {
+    // A fetch that never settles must not stall the request. The explicit
+    // type parameter matters: a bare `new Promise(() => {})` infers
+    // `Promise<unknown>`, which does not satisfy the override's signature
+    // and fails `tsc --noEmit`.
+    __setFetchOAuthUsageOverride(() => new Promise<null>(() => {}))
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    const res = await post(app)
+    expect(res.status).toBe(200)
+    expect(capturedEnvs.some(e => e.includes("prof-personal"))).toBe(true)
+  }, 20_000)
+})
+
+describe("keyless priority affinity", () => {
+  beforeEach(() => {
+    capturedEnvs = []
+    failingDirs = new Set()
+    clearSessionCache()
+    resetActiveProfile()
+    rateLimitStore.clear()
+    // Mirror the existing blocks exactly — MERIDIAN_PROFILE_ORDER matters,
+    // and the shared `savedEnv` object is restored wholesale in afterEach.
+    savedEnv.MERIDIAN_ROUTING = process.env.MERIDIAN_ROUTING
+    savedEnv.MERIDIAN_PROFILE_ORDER = process.env.MERIDIAN_PROFILE_ORDER
+    process.env.MERIDIAN_ROUTING = "priority"
+    process.env.MERIDIAN_PROFILE_ORDER = "work,personal"
+  })
+
+  afterEach(() => {
+    rateLimitStore.clear()
+    // Same restore loop the other describe blocks use — copy it verbatim from
+    // the "priority routing" block's afterEach rather than hand-rolling one.
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v !== undefined) process.env[k] = v
+      else delete process.env[k]
+    }
+  })
+
+  it("keeps a KEYLESS conversation on its failed-over profile after the preferred one recovers", async () => {
+    // A short-out reset makes work's exhaustion mark expire soon after being
+    // set, so "the cooldown elapsed" is testable without a real 10-minute
+    // (default) or multi-hour wait. The gate added in #697 requires status
+    // "rejected" (or utilization >= 1) for the entry to be trusted as the
+    // cooldown source — and that trust check (`resetsAt > now`) is evaluated
+    // only AFTER turn 1's own rate-limit retry ladder (2 retries, 1s + 2s
+    // backoff = ~3s real time) has already run its course. A resetsAt inside
+    // that ~3s window would already be in the past by the time the mark is
+    // set, so tier 1 would reject it and fall back to the 10-minute default
+    // — silently defeating the "quick recovery" setup below. 5s clears that
+    // ~3s floor with ~2s margin; the follow-up 3.6s sleep runs after the
+    // ladder too, so total elapsed at turn 2 is ~6.6s — comfortably past the
+    // 5s resetsAt (expiring it ~1.6s before turn 2) while still trusting the
+    // mark when it's set.
+    rateLimitStore.record("work", {
+      status: "rejected",
+      rateLimitType: "five_hour",
+      utilization: 1,
+      resetsAt: Date.now() + 5_000,
+    })
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+
+    // Turn 1 — no session header of any kind. Fails over to personal.
+    const r1 = await post(app, {}, "keyless conversation")
+    expect(r1.status).toBe(200)
+
+    // work recovers AND its exhaustion mark expires.
+    failingDirs.delete("prof-work")
+    await Bun.sleep(3_600)
+    capturedEnvs = []
+
+    // Turn 2 of the SAME conversation. getConversationFingerprint keys off the
+    // FIRST user message, so re-sending it is a faithful stand-in for a longer
+    // turn-2 payload that opens with the same message.
+    const r2 = await post(app, {}, "keyless conversation")
+    expect(r2.status).toBe(200)
+    expect(capturedEnvs.every((e) => e.includes("prof-personal"))).toBe(true)
+  }, 20_000)
+
+  it("gives two keyless conversations independent assignments", async () => {
+    // MUST be recorded BEFORE the failing request. ProfileExhaustion.mark only
+    // ever EXTENDS a mark, so recording this after the failure would leave the
+    // 10-minute default in place and work would never come back inside the test.
+    // See the timing note in the previous test — resetsAt must clear turn 1's
+    // ~3s rate-limit retry ladder or tier 1 discards it for the 10-minute
+    // default and this recovery never happens.
+    rateLimitStore.record("work", {
+      status: "rejected", rateLimitType: "five_hour", utilization: 1, resetsAt: Date.now() + 5_000,
+    })
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    // Conversation A fails over to personal and is assigned there.
+    expect((await post(app, {}, "conversation A")).status).toBe(200)
+
+    // work recovers and its mark expires, so a DIFFERENT conversation is free
+    // to use it — proving the assignment is per-conversation, not global.
+    failingDirs.delete("prof-work")
+    await Bun.sleep(3_600)
+    capturedEnvs = []
+    expect((await post(app, {}, "conversation B")).status).toBe(200)
+    expect(capturedEnvs.some((e) => e.includes("prof-work"))).toBe(true)
+  }, 20_000)
+
+  it("lands a keyless fork on the same account as its parent", async () => {
+    // work must genuinely recover before the fork request — see the timing
+    // note on the first test in this block for why the resetsAt margin
+    // matters. Without a real recovery, choosePriorityProfile would still be
+    // skipping the (still-exhausted) work profile on its own, and the
+    // assertion below would pass regardless of whether the fork actually
+    // inherited its parent's assignment.
+    rateLimitStore.record("work", {
+      status: "rejected", rateLimitType: "five_hour", utilization: 1, resetsAt: Date.now() + 5_000,
+    })
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    // Parent fails over to personal.
+    expect((await post(app, {}, "shared opening")).status).toBe(200)
+
+    // work recovers AND its exhaustion mark expires — so the only thing that
+    // can keep the fork on personal is the inherited assignment.
+    failingDirs.delete("prof-work")
+    await Bun.sleep(3_600)
+    capturedEnvs = []
+    // A fork shares the parent's first message, so it shares the fingerprint
+    // and therefore the account. This deliberately diverges from the session
+    // RESUME independence guard: an assignment picks an account, never a
+    // session, so sharing costs nothing and preserves a warm cache.
+    const fork = await post(app, { "x-meridian-source": "fork-memory-extract" }, "shared opening")
+    expect(fork.status).toBe(200)
+    expect(capturedEnvs.every((e) => e.includes("prof-personal"))).toBe(true)
   }, 20_000)
 })

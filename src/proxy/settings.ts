@@ -12,7 +12,24 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { homedir } from "node:os"
 
-const SETTINGS_FILE = join(homedir(), ".config", "meridian", "settings.json")
+/**
+ * Resolve the settings file path.
+ *
+ * Resolved per call rather than frozen at import time so tests can redirect
+ * it via MERIDIAN_CONFIG_DIR (see `src/__tests__/preload.ts`). Without the
+ * override the path is exactly what it has always been, so existing installs
+ * are unaffected.
+ *
+ * NOTE: deliberately does NOT honour XDG_CONFIG_HOME — anyone who has that
+ * set would silently relocate to a different settings file and appear to
+ * lose their configuration.
+ */
+function settingsFile(): string {
+  const override = process.env.MERIDIAN_CONFIG_DIR
+  return override
+    ? join(override, "settings.json")
+    : join(homedir(), ".config", "meridian", "settings.json")
+}
 
 export interface MeridianSettings {
   /** Last active profile ID — restored on proxy startup */
@@ -27,9 +44,10 @@ export interface MeridianSettings {
 
 /** Read settings from disk. Returns empty object if file doesn't exist or is invalid. */
 export function loadSettings(): MeridianSettings {
+  const file = settingsFile()
   try {
-    if (!existsSync(SETTINGS_FILE)) return {}
-    return JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"))
+    if (!existsSync(file)) return {}
+    return JSON.parse(readFileSync(file, "utf-8"))
   } catch {
     return {}
   }
@@ -37,13 +55,14 @@ export function loadSettings(): MeridianSettings {
 
 /** Write settings to disk. Merges with existing settings (doesn't clobber unknown keys). */
 export function saveSettings(updates: Partial<MeridianSettings>): void {
+  const file = settingsFile()
   const current = loadSettings()
   const merged = { ...current, ...updates }
   try {
-    mkdirSync(dirname(SETTINGS_FILE), { recursive: true })
-    writeFileSync(SETTINGS_FILE, JSON.stringify(merged, null, 2) + "\n", { mode: 0o600 })
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify(merged, null, 2) + "\n", { mode: 0o600 })
   } catch (err) {
-    console.warn(`[meridian] Failed to write ${SETTINGS_FILE}: ${err instanceof Error ? err.message : err}`)
+    console.warn(`[meridian] Failed to write ${file}: ${err instanceof Error ? err.message : err}`)
   }
 }
 

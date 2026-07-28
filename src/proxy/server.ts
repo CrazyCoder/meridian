@@ -77,7 +77,7 @@ import { getAdapterTransforms } from "./transforms/registry"
 import { loadPlugins, getActiveTransforms } from "./plugins/loader"
 import type { LoadedPlugin } from "./plugins/types"
 import { resolveProfile, listProfiles, setActiveProfile, getActiveProfileId, getEffectiveProfiles, restoreActiveProfile, type ResolvedProfile } from "./profiles"
-import { getRoutingMode, resolvePriorityOrder, choosePriorityProfile, ProfileExhaustion } from "./routing"
+import { getRoutingMode, resolvePriorityOrder, choosePriorityProfile, ProfileExhaustion, AssignmentStore } from "./routing"
 import { getSetting, setSetting } from "./settings"
 import { filterBetasForProfile, getBetaPolicyFromEnv } from "./betas"
 import { createFileChangeHook, extractFileChangesFromMessages, formatFileChangeSummary, type FileChange } from "./fileChanges"
@@ -93,6 +93,7 @@ import {
   type TokenUsageIteration,
   type TokenUsage,
 } from "./session/lineage"
+import { getPriorityAssignmentKey } from "./session/fingerprint"
 // Re-export for backwards compatibility (existing tests import from here)
 
 import { lookupSession, storeSession, clearSessionCache, getMaxSessionsLimit, evictSession, getSessionByClaudeId } from "./session/cache"
@@ -466,8 +467,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   // /v1/chat/completions), so ALL failover logic lives here — no changes to
   // the deep request machinery. State is per proxy instance.
   const priorityExhaustion = new ProfileExhaustion()
-  const priorityAssignments = new Map<string, string>() // sessionKey -> profileId
   const PRIORITY_ASSIGNMENTS_MAX = 5000
+  const priorityAssignments = new AssignmentStore(PRIORITY_ASSIGNMENTS_MAX)
   const PRIORITY_DEFAULT_COOLDOWN_MS = 10 * 60_000
   const PRIORITY_COOLDOWN_CAP_MS = 6 * 60 * 60_000
 
@@ -478,12 +479,77 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     return Array.isArray(setting) && setting.length > 0 ? setting : undefined
   }
 
-  function priorityCooldownUntil(now: number): number {
-    // Best-available reset signal: the SDK rate-limit store's five_hour reset
-    // when known; conservative default otherwise so a mis-mark self-heals.
-    const fiveHour = rateLimitStore.getAll().find(e => e.rateLimitType === "five_hour" && (e.resetsAt ?? 0) > now)
+  /** Tier 1 + 3: this profile's own observed five_hour reset, else a
+   *  conservative default so a mis-mark self-heals. Never blocks.
+   *
+   *  Gated the same way as tier 2's `refinePriorityCooldown`: a healthy
+   *  account always has a `five_hour` window with a future `resetsAt` —
+   *  that boundary exists regardless of consumption, so a scoped entry's
+   *  mere presence doesn't prove the five-hour window caused THIS failure
+   *  (it could be a seven_day cap, or a transient upstream error). Only
+   *  trust the entry's `resetsAt` when it says the window was actually
+   *  exhausted (`status === "rejected"`, or `utilization >= 1` for older
+   *  entries that predate the `status` field); otherwise fall through to
+   *  the conservative default so tier 2 isn't left refining a wrong mark
+   *  it has no way to challenge. */
+  function priorityCooldownUntil(profileId: string, now: number): number {
+    const fiveHour = rateLimitStore.getAll(profileId)
+      .find(e => e.rateLimitType === "five_hour" && (e.resetsAt ?? 0) > now
+        && (e.status === "rejected" || (e.utilization ?? 0) >= 1))
     const until = fiveHour?.resetsAt ?? now + PRIORITY_DEFAULT_COOLDOWN_MS
     return Math.min(until, now + PRIORITY_COOLDOWN_CAP_MS)
+  }
+
+  /** Tier 2: the authoritative per-account reset from Anthropic's usage
+   *  endpoint. Deliberately fire-and-forget — the failover path has already
+   *  burned one failed request and must not also wait on a network call.
+   *  `ProfileExhaustion.mark` ignores an `until` that isn't later than the
+   *  existing one, so a late refinement can only EXTEND a cooldown, never
+   *  un-suppress a profile early. A null/failed fetch changes nothing.
+   *
+   *  Gated on actual exhaustion: a healthy account always has a `five_hour`
+   *  window with a future `resetsAt` — that boundary exists regardless of
+   *  consumption. The OAuth snapshot is only authoritative about *when* the
+   *  five-hour window resets if that window is actually exhausted
+   *  (`utilization >= 1`); otherwise the triggering error was not five-hour
+   *  exhaustion (upstream overload, a seven_day cap, etc.) and the
+   *  conservative tier-3 default must stand rather than being extended out
+   *  to a boundary that has nothing to do with the failure. A missing/null
+   *  `utilization` is treated as NOT exhausted — under-suppressing is the
+   *  safe direction; over-suppressing a healthy profile is the bug this
+   *  gate exists to prevent.
+   *
+   *  `force: true` bypasses `fetchOAuthUsage`'s 30s cache: exhaustion is
+   *  rare (off the hot path) and `/v1/usage/quota/all` polling routinely
+   *  keeps that cache warm with a snapshot recorded just before the failure,
+   *  which would otherwise show "just under 1" and starve this refinement
+   *  right when it's needed. `force` only skips the cache read — the
+   *  in-flight-request de-dupe still applies after it, so concurrent
+   *  exhaustions of the same profile still share one upstream call rather
+   *  than stampeding it. A `stale: true` snapshot (served when a fresh fetch
+   *  failed transiently) is not authoritative about the current window, so
+   *  it's skipped too — the conservative default is the safer thing to
+   *  leave standing. */
+  function refinePriorityCooldown(profileId: string): void {
+    const target = getEffectiveProfiles(finalConfig.profiles).find(p => p.id === profileId)
+    void fetchOAuthUsage({ profileId, claudeConfigDir: target?.claudeConfigDir, force: true })
+      .then(usage => {
+        if (!usage || usage.stale) return
+        const fiveHour = usage.windows.find(w => w.type === "five_hour")
+        if (!fiveHour || (fiveHour.utilization ?? 0) < 1) return
+        const now = Date.now()
+        const resetsAt = fiveHour.resetsAt
+        if (!resetsAt || resetsAt <= now) return
+        const until = Math.min(resetsAt, now + PRIORITY_COOLDOWN_CAP_MS)
+        priorityExhaustion.mark(profileId, until, "rate_limit_error")
+        claudeLog("priority.cooldown_refined", { profile: profileId, until, source: "oauth_usage" })
+      })
+      .catch(err => {
+        claudeLog("priority.cooldown_refine_failed", {
+          profile: profileId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
   }
 
   /** Inspect an inner response for a quota failure without destroying it.
@@ -551,21 +617,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       const inner = await app.fetch(new Request(c.req.url, { method: "POST", headers, body: bodyBuf }))
       const { failed, errorPayload, response } = await sniffQuotaFailure(inner)
       if (!failed) {
-        if (sessionKey) {
-          priorityAssignments.set(sessionKey, candidate)
-          if (priorityAssignments.size > PRIORITY_ASSIGNMENTS_MAX) {
-            const oldest = priorityAssignments.keys().next().value
-            if (oldest !== undefined) priorityAssignments.delete(oldest)
-          }
-        }
+        if (sessionKey) priorityAssignments.set(sessionKey, candidate)
         if (previous) {
           claudeLog("profile.failover", { from: previous, to: candidate, reason: "rate_limit_error", sessionKey })
           plog(`[PROXY] PRIORITY failover ${previous} -> ${candidate}`)
         }
         return response
       }
-      priorityExhaustion.mark(candidate, priorityCooldownUntil(Date.now()), "rate_limit_error")
-      claudeLog("priority.exhausted", { profile: candidate, until: priorityCooldownUntil(Date.now()) })
+      const cooldownUntil = priorityCooldownUntil(candidate, Date.now())
+      priorityExhaustion.mark(candidate, cooldownUntil, "rate_limit_error")
+      claudeLog("priority.exhausted", { profile: candidate, until: cooldownUntil })
+      refinePriorityCooldown(candidate)
       lastError = errorPayload
       previous = candidate
     }
@@ -697,7 +759,22 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           if (effectivePool.length > 1) {
             const { order, unknown } = resolvePriorityOrder(effectivePool.map(p => p.id), priorityProfileOrderSetting())
             if (unknown.length > 0) claudeLog("priority.unknown_order_ids", { unknown })
-            const sessionKey = adapter.getSessionId(c, body) || null
+            // Keyless clients (pylon's main process, OpenCode setups that omit
+            // x-opencode-session) fall back to the conversation fingerprint —
+            // without it they re-pick an account every turn and bounce back to
+            // the preferred profile the moment its cooldown expires, replaying
+            // the whole history against a cold cache.
+            // Deliberately not clientWorkingDirectory (computed below): no
+            // MERIDIAN_WORKDIR/CLAUDE_PROXY_WORKDIR override here — that
+            // override would collapse every client's account key to one
+            // shared value.
+            const assignmentCwd = adapter.extractClientWorkingDirectory?.(body)
+              ?? adapter.extractWorkingDirectory(body)
+            const sessionKey = getPriorityAssignmentKey(
+              adapter.getSessionId(c, body),
+              body.messages,
+              assignmentCwd,
+            )
             const assigned = sessionKey ? priorityAssignments.get(sessionKey) : undefined
             // Assignment affinity: an existing conversation stays on its
             // account while that account is healthy (protects warm prompt
@@ -1004,8 +1081,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             claudeLog("session.pending_store_awaited", { waitedMs: Date.now() - waitStart })
           }
         }
-        let lineageResult = isIndependentSession
-          ? { type: "diverged" as const }
+        let lineageResult: LineageResult = isIndependentSession
+          ? { type: "diverged", reason: "independent-request" }
           : lookupSession(profileSessionId, body.messages || [], profileScopedCwd)
         // NOTE: agent-specific (opencode) — when OpenCode's chat.headers plugin
         // hook doesn't fire (category-dispatched or title-generation requests),
@@ -1014,12 +1091,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // session and be classified as "undo." Downgrade to "diverged" to
         // prevent leaking the old session's conversation history.
         if (lineageResult.type === "undo" && adapterBase === "opencode" && !agentSessionId) {
-          lineageResult = { type: "diverged" }
+          lineageResult = { type: "diverged", reason: "missing-session-header" }
         }
         const isResume = lineageResult.type === "continuation" || lineageResult.type === "compaction"
         const isUndo = lineageResult.type === "undo"
         const cachedSession = lineageResult.type !== "diverged" ? lineageResult.session : undefined
         const resumeSessionId = cachedSession?.claudeSessionId
+        const resumeFrom = lineageResult.type === "continuation" || lineageResult.type === "compaction"
+          ? lineageResult.resumeFrom
+          : undefined
         // For undo: fork the session at the rollback point
         const undoRollbackUuid = isUndo && lineageResult.type === "undo" ? lineageResult.rollbackUuid : undefined
 
@@ -1082,9 +1162,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           // so we only need to send the new user message.
           messagesToConvert = getLastUserMessage(allMessages)
         } else if (isResume) {
-          const knownCount = cachedSession.messageCount || 0
-          if (knownCount > 0 && knownCount < allMessages.length) {
-            messagesToConvert = allMessages.slice(knownCount)
+          if (resumeFrom !== undefined && resumeFrom < allMessages.length) {
+            messagesToConvert = allMessages.slice(resumeFrom)
           } else {
             messagesToConvert = getLastUserMessage(allMessages)
           }
@@ -1627,10 +1706,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     advisorModel,
                   }, requestAbort.controller))) {
                     // Capture Claude Max subscription quota updates emitted by
-                    // the SDK as rate_limit_event. We snapshot them in a process-wide
+                    // the SDK as rate_limit_event. We snapshot them in this
+                    // profile's slot of the (per-profile-scoped) rate limit
                     // store so /v1/usage/quota can return the latest live state.
                     if ((event as any).type === "rate_limit_event") {
-                      rateLimitStore.record((event as any).rate_limit_info)
+                      rateLimitStore.record(profile.id, (event as any).rate_limit_info)
                     }
                     // Only count real assistant content — not SDK error messages
                     // (which arrive as type:"assistant" with an error field set).
@@ -2344,7 +2424,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     }, requestAbort.controller))) {
                       // Same SDK rate-limit capture as the non-stream path.
                       if ((event as any).type === "rate_limit_event") {
-                        rateLimitStore.record((event as any).rate_limit_info)
+                        rateLimitStore.record(profile.id, (event as any).rate_limit_info)
                       }
                       if ((event as any).type === "stream_event") {
                         didYieldClientEvent = true
@@ -3685,11 +3765,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     const previousProfile = getActiveProfileId() ?? null
     setActiveProfile(body.profile!)
     // Evict all cached SDK sessions — they were started under the old profile's
-    // credentials and cannot be reused with different auth. Also drop the
-    // rate-limit snapshot so /v1/usage/quota doesn't return the previous
-    // profile's quotas under the new profile's identity.
+    // credentials and cannot be reused with different auth. The rate-limit
+    // store is NOT cleared: entries are profile-scoped, so the new profile
+    // can no longer read the old one's quotas, and other profiles' snapshots
+    // stay valid (consumers judge staleness from `observedAt`).
     clearSessionCache()
-    rateLimitStore.clear()
     // Attribute the switch: multiple surfaces can POST here (the meridian UI,
     // the CLI, pylon's provider switcher, the iOS companion) and the active
     // profile is GLOBAL state — an unexplained flip should be answerable from
@@ -3757,10 +3837,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     const store = credentialStoreForProfile(profile)
     const success = store ? await refreshOAuthToken(store) : false
     if (success) {
-      // Drop the rate-limit snapshot — old quotas were observed under the
-      // previous credential and may belong to a different account if the
-      // refresh swapped profiles. The next SDK call repopulates.
-      rateLimitStore.clear()
+      // Drop this profile's rate-limit snapshot — its quotas were observed
+      // under the previous credential. Scoped to the profile actually
+      // refreshed; other accounts' snapshots are untouched. The next SDK
+      // call repopulates.
+      rateLimitStore.clear(profile.id)
       return c.json({ success: true, message: "OAuth token refreshed successfully", profile: profile.id })
     }
     return c.json(
@@ -4052,11 +4133,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     // (`utilization`, `resetsAt`) win when present — they're always
     // populated. SDK fields fill in overage details and any bucket types
     // OAuth doesn't expose.
-    //
-    // Filter out the internal "default" bucket — it's a Meridian-side
-    // fallback for SDK events missing `rateLimitType`, not a real Anthropic
-    // bucket that consumers can render.
-    const sdkEntries = rateLimitStore.getAll().filter(entry => entry.rateLimitType !== undefined)
 
     // Determine which profile we're querying:
     //   1. Explicit ?profile=<id> query param
@@ -4071,6 +4147,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       || profilesList[0]?.id
       || null
     const targetProfile = targetProfileId ? profilesList.find(p => p.id === targetProfileId) : undefined
+
+    // Filter out the internal "default" bucket — it's a Meridian-side
+    // fallback for SDK events missing `rateLimitType`, not a real Anthropic
+    // bucket that consumers can render.
+    // Entries are read for the resolved target profile only — a multi-account
+    // setup must never render one account's SDK buckets under another's
+    // identity.
+    const sdkEntries = rateLimitStore.getAll(targetProfileId ?? "default")
+      .filter(entry => entry.rateLimitType !== undefined)
 
     const oauth = await fetchOAuthUsage({
       profileId: targetProfileId ?? undefined,

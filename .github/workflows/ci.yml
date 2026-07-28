@@ -46,7 +46,23 @@ jobs:
 
       # Install — this also runs claude-code's postinstall, which is the
       # single most common source of Windows install-time bugs.
+      #
+      # NOTE: bun runs lifecycle scripts through its own bundled POSIX-ish
+      # shell, even on Windows. That makes this step blind to POSIX syntax in
+      # our own `postinstall` — see the npm step below.
       - run: bun install
+
+      # Run our `postinstall` the way npm does: through cmd.exe. bun's shell
+      # happily parses POSIX constructs like `2>/dev/null || true` on Windows,
+      # so the `bun install` above cannot catch them — which is exactly how
+      # #688 shipped a postinstall that broke `npm install` for every Windows
+      # user while this job stayed green.
+      #
+      # `npm run` uses script-shell (cmd.exe on Windows) for the script body,
+      # so a non-portable postinstall fails here with a non-zero exit.
+      - name: postinstall must be cmd.exe-portable
+        run: npm run postinstall
+        shell: cmd
 
       # Run only the resolver tests on Windows. Useful even though they use
       # mocked deps, because the test runner itself exercises path joining,

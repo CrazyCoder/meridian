@@ -40,6 +40,87 @@ describe("translateResponsesToAnthropic", () => {
     expect(r.messages[0]!.role).toBe("user")
   })
 
+  // Bare `{role, content}` items are spec-valid and sent by the Vercel AI SDK.
+  it("treats input items without a type as messages", () => {
+    const r = translateResponsesToAnthropic({
+      model: "m",
+      input: [
+        { role: "system", content: "Be terse." },
+        { role: "user", content: [{ type: "input_text", text: "hello" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "hi" }] },
+      ],
+    })!
+    expect(r.system).toContain("Be terse.")
+    expect(r.messages).toEqual([
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+      { role: "assistant", content: [{ type: "text", text: "hi" }] },
+    ])
+  })
+
+  it("still ignores items that carry no role", () => {
+    const r = translateResponsesToAnthropic({
+      model: "m",
+      input: [
+        { type: "reasoning", id: "rs_123" },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+      ],
+    })!
+    expect(r.messages).toEqual([{ role: "user", content: [{ type: "text", text: "hello" }] }])
+  })
+
+  // `content` is optional on EasyInputMessage (only `role` is required), so a
+  // bare `{role}` must be skipped, not crash the translator. Defaulting a
+  // typeless item to "message" routed these into the message branch, where
+  // partsToBlocks did `content.some(...)` on undefined and threw — surfacing
+  // as an unstructured HTTP 500 from /v1/responses.
+  it("skips a message item that has no content instead of throwing", () => {
+    const r = translateResponsesToAnthropic({
+      model: "m",
+      input: [
+        { role: "user" },
+        { role: "user", content: [{ type: "input_text", text: "hello" }] },
+      ],
+    } as unknown as Parameters<typeof translateResponsesToAnthropic>[0])!
+    expect(r.messages).toEqual([{ role: "user", content: [{ type: "text", text: "hello" }] }])
+  })
+
+  it("skips explicitly typed message items that have no content", () => {
+    const r = translateResponsesToAnthropic({
+      model: "m",
+      input: [{ type: "message", role: "assistant" }],
+    } as unknown as Parameters<typeof translateResponsesToAnthropic>[0])!
+    expect(r.messages).toEqual([])
+  })
+
+  // A proxy receives untrusted JSON: a non-object array element must be
+  // ignored, not throw. `"role" in item` requires an object operand.
+  it("ignores non-object input items without throwing", () => {
+    const r = translateResponsesToAnthropic({
+      model: "m",
+      input: [
+        "hello",
+        42,
+        null,
+        { role: "user", content: [{ type: "input_text", text: "real" }] },
+      ],
+    } as unknown as Parameters<typeof translateResponsesToAnthropic>[0])!
+    expect(r.messages).toEqual([{ role: "user", content: [{ type: "text", text: "real" }] }])
+  })
+
+  // Only a MISSING type defaults to "message". An unknown type must keep
+  // falling through to `default:` even when a role happens to be present,
+  // so future item kinds aren't silently coerced into messages.
+  it("does not coerce an unknown item type into a message", () => {
+    const r = translateResponsesToAnthropic({
+      model: "m",
+      input: [
+        { type: "some_future_item", role: "user", content: "ignore me" },
+        { role: "user", content: [{ type: "input_text", text: "kept" }] },
+      ],
+    } as unknown as Parameters<typeof translateResponsesToAnthropic>[0])!
+    expect(r.messages).toEqual([{ role: "user", content: [{ type: "text", text: "kept" }] }])
+  })
+
   it("maps input_image data URLs to Anthropic image blocks", () => {
     const dataUrl = "data:image/png;base64,iVBORw0KGgo="
     const r = translateResponsesToAnthropic({
