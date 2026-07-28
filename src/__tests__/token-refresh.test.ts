@@ -821,3 +821,111 @@ describe("startBackgroundRefresh timer clamping (#515)", () => {
     expect(d).toBeLessThan(MAX_32BIT)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Login (refresh-token) expiry — the "your login expires in N days" signal
+// ---------------------------------------------------------------------------
+
+describe("refreshTokenExpiresAt persistence", () => {
+  let originalFetch: typeof globalThis.fetch
+  beforeEach(() => { originalFetch = globalThis.fetch })
+  afterEach(() => { globalThis.fetch = originalFetch })
+
+  it("persists refresh_token_expires_at when Anthropic returns it", async () => {
+    const { refreshOAuthToken } = await import("../proxy/tokenRefresh")
+    const rolled = Date.now() + 30 * 86_400_000
+    const { store, getStored } = makeStore()
+    mockFetch(async () => makeSuccessResponse({ ...MOCK_TOKEN_RESPONSE, refresh_token_expires_at: rolled }))
+
+    expect(await refreshOAuthToken(store)).toBe(true)
+    expect(getStored().claudeAiOauth.refreshTokenExpiresAt).toBe(rolled)
+  })
+
+  it("derives it from refresh_token_expires_in", async () => {
+    const { refreshOAuthToken } = await import("../proxy/tokenRefresh")
+    const { store, getStored } = makeStore()
+    const before = Date.now()
+    mockFetch(async () => makeSuccessResponse({ ...MOCK_TOKEN_RESPONSE, refresh_token_expires_in: 60 }))
+
+    expect(await refreshOAuthToken(store)).toBe(true)
+    const got = getStored().claudeAiOauth.refreshTokenExpiresAt
+    expect(got).toBeGreaterThanOrEqual(before + 60_000)
+    expect(got).toBeLessThanOrEqual(Date.now() + 60_000)
+  })
+
+  it("keeps the existing value when the response omits it", async () => {
+    const { refreshOAuthToken } = await import("../proxy/tokenRefresh")
+    const pinned = Date.now() + 5 * 86_400_000
+    const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    seeded.claudeAiOauth.refreshTokenExpiresAt = pinned
+    const { store, getStored } = makeStore(seeded)
+    mockFetch(async () => makeSuccessResponse(MOCK_TOKEN_RESPONSE))
+
+    expect(await refreshOAuthToken(store)).toBe(true)
+    // Must not be silently dropped — the countdown is built on it.
+    expect(getStored().claudeAiOauth.refreshTokenExpiresAt).toBe(pinned)
+    expect(getStored().claudeAiOauth.accessToken).toBe("new-access-token")
+  })
+})
+
+describe("getAuthRenewalStatus", () => {
+  it("reports days remaining and stays quiet outside the warning window", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 19 * 86_400_000
+    const { store } = makeStore(seeded)
+
+    const status = await getAuthRenewalStatus(store, 7)
+    expect(status.daysUntilRenewal).toBe(19)
+    expect(status.renewalRequiredSoon).toBe(false)
+  })
+
+  it("flags renewal once inside the warning window", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 3 * 86_400_000
+    const { store } = makeStore(seeded)
+
+    const status = await getAuthRenewalStatus(store, 7)
+    expect(status.daysUntilRenewal).toBe(3)
+    expect(status.renewalRequiredSoon).toBe(true)
+  })
+
+  it("flags an already-expired login with a negative day count", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() - 2 * 86_400_000
+    const { store } = makeStore(seeded)
+
+    const status = await getAuthRenewalStatus(store, 7)
+    expect(status.daysUntilRenewal).toBeLessThan(0)
+    expect(status.renewalRequiredSoon).toBe(true)
+  })
+
+  it("stays quiet when the field is absent — absence is not evidence of expiry", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const { store } = makeStore()
+
+    const status = await getAuthRenewalStatus(store, 7)
+    expect(status.refreshTokenExpiresAt).toBeUndefined()
+    expect(status.daysUntilRenewal).toBeUndefined()
+    expect(status.renewalRequiredSoon).toBe(false)
+  })
+
+  it("stays quiet when there are no credentials at all", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const { store } = makeStore(null)
+
+    expect((await getAuthRenewalStatus(store, 7)).renewalRequiredSoon).toBe(false)
+  })
+
+  it("does not throw when the credential store read fails", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const store: CredentialStore = {
+      async read() { throw new Error("keychain locked") },
+      async write() { return true },
+    }
+
+    expect((await getAuthRenewalStatus(store, 7)).renewalRequiredSoon).toBe(false)
+  })
+})
