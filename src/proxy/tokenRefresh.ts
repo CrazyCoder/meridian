@@ -388,8 +388,15 @@ export async function ensureFreshToken(
   return refreshOAuthToken(s)
 }
 
-/** Default warning window before the login dies, in days. */
-export const DEFAULT_RENEWAL_WARN_DAYS = 7
+/**
+ * Default warning window before the login dies, in days.
+ *
+ * Three, matching the CLI's own `tff` constant — the window outside which it
+ * suppresses the expiry tip entirely. The login only lasts 30 days, so a wider
+ * window would spend a tenth of every cycle in the alerting state and train
+ * the alert to be ignored. Override with MERIDIAN_AUTH_RENEWAL_WARN_DAYS.
+ */
+export const DEFAULT_RENEWAL_WARN_DAYS = 3
 
 export interface AuthRenewalStatus {
   /** Epoch ms the refresh token stops working, when known. */

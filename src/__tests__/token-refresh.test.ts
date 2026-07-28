@@ -975,3 +975,18 @@ describe("getAuthRenewalStatus day arithmetic matches the CLI", () => {
     expect(status.renewalRequiredSoon).toBe(true)
   })
 })
+
+describe("DEFAULT_RENEWAL_WARN_DAYS", () => {
+  it("is 3 days and is what getAuthRenewalStatus uses when unspecified", async () => {
+    const { getAuthRenewalStatus, DEFAULT_RENEWAL_WARN_DAYS } = await import("../proxy/tokenRefresh")
+    expect(DEFAULT_RENEWAL_WARN_DAYS).toBe(3)
+
+    const outside = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    outside.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 4 * 86_400_000 - 3_600_000
+    expect((await getAuthRenewalStatus(makeStore(outside).store)).renewalRequiredSoon).toBe(false)
+
+    const inside = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    inside.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 3 * 86_400_000 - 3_600_000
+    expect((await getAuthRenewalStatus(makeStore(inside).store)).renewalRequiredSoon).toBe(true)
+  })
+})
