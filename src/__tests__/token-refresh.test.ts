@@ -872,7 +872,7 @@ describe("getAuthRenewalStatus", () => {
   it("reports days remaining and stays quiet outside the warning window", async () => {
     const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
     const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
-    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 19 * 86_400_000 + 3_600_000
+    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 19 * 86_400_000 - 3_600_000
     const { store } = makeStore(seeded)
 
     const status = await getAuthRenewalStatus(store, 7)
@@ -883,7 +883,7 @@ describe("getAuthRenewalStatus", () => {
   it("flags renewal once inside the warning window", async () => {
     const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
     const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
-    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 3 * 86_400_000 + 3_600_000
+    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 3 * 86_400_000 - 3_600_000
     const { store } = makeStore(seeded)
 
     const status = await getAuthRenewalStatus(store, 7)
@@ -956,5 +956,22 @@ describe("refreshTokenExpiresAt sanity guard", () => {
 
     expect(await refreshOAuthToken(store)).toBe(true)
     expect(getStored().claudeAiOauth.refreshTokenExpiresAt).toBeUndefined()
+  })
+})
+
+describe("getAuthRenewalStatus day arithmetic matches the CLI", () => {
+  // The CLI computes Math.ceil((refreshTokenExpiresAt - now) / 86400000) and
+  // prints it as "Your login expires in N days". Reporting a different number
+  // for the same instant would make /health and the terminal contradict.
+  it("rounds a partial day up, as the CLI does", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    // 12 hours out: the CLI says "1 day", not "0".
+    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 43_200_000
+    const { store } = makeStore(seeded)
+
+    const status = await getAuthRenewalStatus(store, 7)
+    expect(status.daysUntilRenewal).toBe(1)
+    expect(status.renewalRequiredSoon).toBe(true)
   })
 })

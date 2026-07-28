@@ -428,8 +428,11 @@ export async function getAuthRenewalStatus(
   if (!refreshTokenExpiresAt) return { renewalRequiredSoon: false }
 
   const msRemaining = refreshTokenExpiresAt - Date.now()
-  // Floor, so "0 days" means it dies sometime today rather than tomorrow.
-  const daysUntilRenewal = Math.floor(msRemaining / 86_400_000)
+  // Ceil, matching the CLI's own `Math.ceil(remaining / 86400000)` so this
+  // number reads identically to the "Your login expires in N days" warning
+  // Claude Code prints. Flooring here would report one day fewer than the
+  // terminal does and make the two impossible to reconcile.
+  const daysUntilRenewal = Math.ceil(msRemaining / 86_400_000)
   return {
     refreshTokenExpiresAt,
     daysUntilRenewal,
