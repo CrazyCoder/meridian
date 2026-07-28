@@ -872,7 +872,7 @@ describe("getAuthRenewalStatus", () => {
   it("reports days remaining and stays quiet outside the warning window", async () => {
     const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
     const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
-    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 19 * 86_400_000
+    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 19 * 86_400_000 + 3_600_000
     const { store } = makeStore(seeded)
 
     const status = await getAuthRenewalStatus(store, 7)
@@ -883,7 +883,7 @@ describe("getAuthRenewalStatus", () => {
   it("flags renewal once inside the warning window", async () => {
     const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
     const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
-    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 3 * 86_400_000
+    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 3 * 86_400_000 + 3_600_000
     const { store } = makeStore(seeded)
 
     const status = await getAuthRenewalStatus(store, 7)
@@ -927,5 +927,34 @@ describe("getAuthRenewalStatus", () => {
     }
 
     expect((await getAuthRenewalStatus(store, 7)).renewalRequiredSoon).toBe(false)
+  })
+})
+
+describe("refreshTokenExpiresAt sanity guard", () => {
+  let originalFetch: typeof globalThis.fetch
+  beforeEach(() => { originalFetch = globalThis.fetch })
+  afterEach(() => { globalThis.fetch = originalFetch })
+
+  it("rejects a seconds-precision expiry instead of writing a 1970 timestamp", async () => {
+    const { refreshOAuthToken } = await import("../proxy/tokenRefresh")
+    const pinned = Date.now() + 5 * 86_400_000
+    const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    seeded.claudeAiOauth.refreshTokenExpiresAt = pinned
+    const { store, getStored } = makeStore(seeded)
+    // Seconds, not ms — would otherwise land ~56 years in the past.
+    const seconds = Math.floor((Date.now() + 30 * 86_400_000) / 1000)
+    mockFetch(async () => makeSuccessResponse({ ...MOCK_TOKEN_RESPONSE, refresh_token_expires_at: seconds }))
+
+    expect(await refreshOAuthToken(store)).toBe(true)
+    expect(getStored().claudeAiOauth.refreshTokenExpiresAt).toBe(pinned)
+  })
+
+  it("rejects an already-past expiry", async () => {
+    const { refreshOAuthToken } = await import("../proxy/tokenRefresh")
+    const { store, getStored } = makeStore()
+    mockFetch(async () => makeSuccessResponse({ ...MOCK_TOKEN_RESPONSE, refresh_token_expires_at: Date.now() - 1000 }))
+
+    expect(await refreshOAuthToken(store)).toBe(true)
+    expect(getStored().claudeAiOauth.refreshTokenExpiresAt).toBeUndefined()
   })
 })

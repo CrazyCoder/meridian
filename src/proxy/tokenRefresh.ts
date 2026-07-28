@@ -334,9 +334,15 @@ async function doRefresh(store: CredentialStore): Promise<boolean> {
   // login time and any renewal countdown built on it pessimistic. Persist it
   // when offered; keep the previous value when not, which is the conservative
   // direction (warn early rather than never).
-  const refreshTokenExpiresAt =
+  const refreshTokenExpiresAtRaw =
     tokenData.refresh_token_expires_at ??
     (tokenData.refresh_token_expires_in ? now + tokenData.refresh_token_expires_in * 1000 : undefined)
+  // A refresh that just succeeded proves the refresh token is still valid, so
+  // its expiry must lie in the future. Reject anything else — a seconds-rather
+  // -than-ms value would land in 1970 and read downstream as "login already
+  // expired", turning a healthy proxy into a permanent alert.
+  const refreshTokenExpiresAt =
+    refreshTokenExpiresAtRaw && refreshTokenExpiresAtRaw > now ? refreshTokenExpiresAtRaw : undefined
 
   credentials.claudeAiOauth = {
     ...credentials.claudeAiOauth,

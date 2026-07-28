@@ -3683,9 +3683,22 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // knowable days in advance — external monitors alert on
       // `renewalRequiredSoon`. Best-effort: a credential-store hiccup must not
       // turn a healthy proxy into a degraded one.
-      const warnDays = Number(process.env.MERIDIAN_AUTH_RENEWAL_WARN_DAYS) || DEFAULT_RENEWAL_WARN_DAYS
-      const renewal = await getAuthRenewalStatus(undefined, warnDays)
-        .catch(() => ({ renewalRequiredSoon: false }))
+      const rawWarnDays = process.env.MERIDIAN_AUTH_RENEWAL_WARN_DAYS
+      const parsedWarnDays = rawWarnDays ? Number(rawWarnDays) : NaN
+      // Explicit finite check rather than `|| DEFAULT`: 0 is a legitimate
+      // setting (warn only once the login has actually lapsed) and would
+      // otherwise be swallowed as falsy.
+      const warnDays = Number.isFinite(parsedWarnDays) && parsedWarnDays >= 0
+        ? parsedWarnDays
+        : DEFAULT_RENEWAL_WARN_DAYS
+      // Read the *profile's* credential store, not the default one — profiles
+      // are separate auth contexts keyed by CLAUDE_CONFIG_DIR, so the default
+      // store would report an unrelated account's expiry.
+      const renewalConfigDir = profileEnvOverrides?.CLAUDE_CONFIG_DIR
+      const renewal = await getAuthRenewalStatus(
+        renewalConfigDir ? createPlatformCredentialStore({ claudeConfigDir: renewalConfigDir }) : undefined,
+        warnDays,
+      ).catch(() => ({ renewalRequiredSoon: false }))
 
       return c.json({
         status: "healthy",
