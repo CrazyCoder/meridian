@@ -821,3 +821,368 @@ describe("startBackgroundRefresh timer clamping (#515)", () => {
     expect(d).toBeLessThan(MAX_32BIT)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Login (refresh-token) expiry — the "your login expires in N days" signal
+// ---------------------------------------------------------------------------
+
+describe("refreshTokenExpiresAt persistence", () => {
+  let originalFetch: typeof globalThis.fetch
+  beforeEach(() => { originalFetch = globalThis.fetch })
+  afterEach(() => { globalThis.fetch = originalFetch })
+
+  it("persists refresh_token_expires_at when Anthropic returns it", async () => {
+    const { refreshOAuthToken } = await import("../proxy/tokenRefresh")
+    const rolled = Date.now() + 30 * 86_400_000
+    const { store, getStored } = makeStore()
+    mockFetch(async () => makeSuccessResponse({ ...MOCK_TOKEN_RESPONSE, refresh_token_expires_at: rolled }))
+
+    expect(await refreshOAuthToken(store)).toBe(true)
+    expect(getStored().claudeAiOauth.refreshTokenExpiresAt).toBe(rolled)
+  })
+
+  it("derives it from refresh_token_expires_in", async () => {
+    const { refreshOAuthToken } = await import("../proxy/tokenRefresh")
+    const { store, getStored } = makeStore()
+    const before = Date.now()
+    mockFetch(async () => makeSuccessResponse({ ...MOCK_TOKEN_RESPONSE, refresh_token_expires_in: 60 }))
+
+    expect(await refreshOAuthToken(store)).toBe(true)
+    const got = getStored().claudeAiOauth.refreshTokenExpiresAt
+    expect(got).toBeGreaterThanOrEqual(before + 60_000)
+    expect(got).toBeLessThanOrEqual(Date.now() + 60_000)
+  })
+
+  it("keeps the existing value when the response omits it", async () => {
+    const { refreshOAuthToken } = await import("../proxy/tokenRefresh")
+    const pinned = Date.now() + 5 * 86_400_000
+    const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    seeded.claudeAiOauth.refreshTokenExpiresAt = pinned
+    const { store, getStored } = makeStore(seeded)
+    mockFetch(async () => makeSuccessResponse(MOCK_TOKEN_RESPONSE))
+
+    expect(await refreshOAuthToken(store)).toBe(true)
+    // Must not be silently dropped — the countdown is built on it.
+    expect(getStored().claudeAiOauth.refreshTokenExpiresAt).toBe(pinned)
+    expect(getStored().claudeAiOauth.accessToken).toBe("new-access-token")
+  })
+})
+
+describe("getAuthRenewalStatus", () => {
+  it("reports days remaining and stays quiet outside the warning window", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 19 * 86_400_000 - 3_600_000
+    const { store } = makeStore(seeded)
+
+    const status = await getAuthRenewalStatus(store, 7)
+    expect(status.daysUntilRenewal).toBe(19)
+    expect(status.renewalRequiredSoon).toBe(false)
+  })
+
+  it("flags renewal once inside the warning window", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 3 * 86_400_000 - 3_600_000
+    const { store } = makeStore(seeded)
+
+    const status = await getAuthRenewalStatus(store, 7)
+    expect(status.daysUntilRenewal).toBe(3)
+    expect(status.renewalRequiredSoon).toBe(true)
+  })
+
+  it("flags an already-expired login with a negative day count", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() - 2 * 86_400_000
+    const { store } = makeStore(seeded)
+
+    const status = await getAuthRenewalStatus(store, 7)
+    expect(status.daysUntilRenewal).toBeLessThan(0)
+    expect(status.renewalRequiredSoon).toBe(true)
+  })
+
+  it("stays quiet when the field is absent — absence is not evidence of expiry", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const { store } = makeStore()
+
+    const status = await getAuthRenewalStatus(store, 7)
+    expect(status.refreshTokenExpiresAt).toBeUndefined()
+    expect(status.daysUntilRenewal).toBeUndefined()
+    expect(status.renewalRequiredSoon).toBe(false)
+  })
+
+  it("stays quiet when there are no credentials at all", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const { store } = makeStore(null)
+
+    expect((await getAuthRenewalStatus(store, 7)).renewalRequiredSoon).toBe(false)
+  })
+
+  it("does not throw when the credential store read fails", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const store: CredentialStore = {
+      async read() { throw new Error("keychain locked") },
+      async write() { return true },
+    }
+
+    expect((await getAuthRenewalStatus(store, 7)).renewalRequiredSoon).toBe(false)
+  })
+})
+
+describe("refreshTokenExpiresAt sanity guard", () => {
+  let originalFetch: typeof globalThis.fetch
+  beforeEach(() => { originalFetch = globalThis.fetch })
+  afterEach(() => { globalThis.fetch = originalFetch })
+
+  it("rejects a seconds-precision expiry instead of writing a 1970 timestamp", async () => {
+    const { refreshOAuthToken } = await import("../proxy/tokenRefresh")
+    const pinned = Date.now() + 5 * 86_400_000
+    const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    seeded.claudeAiOauth.refreshTokenExpiresAt = pinned
+    const { store, getStored } = makeStore(seeded)
+    // Seconds, not ms — would otherwise land ~56 years in the past.
+    const seconds = Math.floor((Date.now() + 30 * 86_400_000) / 1000)
+    mockFetch(async () => makeSuccessResponse({ ...MOCK_TOKEN_RESPONSE, refresh_token_expires_at: seconds }))
+
+    expect(await refreshOAuthToken(store)).toBe(true)
+    expect(getStored().claudeAiOauth.refreshTokenExpiresAt).toBe(pinned)
+  })
+
+  it("rejects an already-past expiry", async () => {
+    const { refreshOAuthToken } = await import("../proxy/tokenRefresh")
+    const { store, getStored } = makeStore()
+    mockFetch(async () => makeSuccessResponse({ ...MOCK_TOKEN_RESPONSE, refresh_token_expires_at: Date.now() - 1000 }))
+
+    expect(await refreshOAuthToken(store)).toBe(true)
+    expect(getStored().claudeAiOauth.refreshTokenExpiresAt).toBeUndefined()
+  })
+})
+
+describe("getAuthRenewalStatus day arithmetic matches the CLI", () => {
+  // The CLI computes Math.ceil((refreshTokenExpiresAt - now) / 86400000) and
+  // prints it as "Your login expires in N days". Reporting a different number
+  // for the same instant would make /health and the terminal contradict.
+  it("rounds a partial day up, as the CLI does", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    // 12 hours out: the CLI says "1 day", not "0".
+    seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 43_200_000
+    const { store } = makeStore(seeded)
+
+    const status = await getAuthRenewalStatus(store, 7)
+    expect(status.daysUntilRenewal).toBe(1)
+    expect(status.renewalRequiredSoon).toBe(true)
+  })
+})
+
+describe("DEFAULT_RENEWAL_WARN_DAYS", () => {
+  it("is 3 days and is what getAuthRenewalStatus uses when unspecified", async () => {
+    const { getAuthRenewalStatus, DEFAULT_RENEWAL_WARN_DAYS } = await import("../proxy/tokenRefresh")
+    expect(DEFAULT_RENEWAL_WARN_DAYS).toBe(3)
+
+    const outside = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    outside.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 4 * 86_400_000 - 3_600_000
+    expect((await getAuthRenewalStatus(makeStore(outside).store)).renewalRequiredSoon).toBe(false)
+
+    const inside = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    inside.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 3 * 86_400_000 - 3_600_000
+    expect((await getAuthRenewalStatus(makeStore(inside).store)).renewalRequiredSoon).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Renewal-status caching
+//
+// /health is polled every 10s per open dashboard page (profileBar.ts,
+// landing.ts), by plugin health checks, and by external monitors. On macOS a
+// credential-store read spawns `/usr/bin/security find-generic-password`, so
+// an uncached read here means a subprocess per poll — for a value that moves
+// on a ~30-day cadence. Mirrors the TTL caching getClaudeAuthStatusAsync and
+// fetchOAuthUsage already use.
+// ---------------------------------------------------------------------------
+
+function makeCountingStore(refreshKey: string | undefined, expiresAt: number | undefined) {
+  let reads = 0
+  const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+  if (expiresAt === undefined) delete seeded.claudeAiOauth.refreshTokenExpiresAt
+  else seeded.claudeAiOauth.refreshTokenExpiresAt = expiresAt
+  const store: CredentialStore = {
+    ...(refreshKey ? { refreshKey } : {}),
+    async read() { reads++; return seeded },
+    async write() { return true },
+  }
+  return { store, reads: () => reads }
+}
+
+describe("getAuthRenewalStatus caching", () => {
+  beforeEach(async () => {
+    const { resetAuthRenewalCache } = await import("../proxy/tokenRefresh")
+    resetAuthRenewalCache()
+  })
+
+  it("reads the credential store once for repeated calls on the same refreshKey", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const { store, reads } = makeCountingStore("file:/tmp/cache-a/.credentials.json", Date.now() + 19 * 86_400_000)
+
+    await getAuthRenewalStatus(store, 3)
+    await getAuthRenewalStatus(store, 3)
+    await getAuthRenewalStatus(store, 3)
+
+    expect(reads()).toBe(1)
+  })
+
+  it("still recomputes the day count and flag from the cached expiry", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    // Only the store READ is cached; warnDays and elapsed time must stay live,
+    // or a monitor changing its threshold would keep seeing the old verdict.
+    const { store } = makeCountingStore("file:/tmp/cache-b/.credentials.json", Date.now() + 5 * 86_400_000)
+
+    const outside = await getAuthRenewalStatus(store, 3)
+    const inside = await getAuthRenewalStatus(store, 7)
+
+    expect(outside.renewalRequiredSoon).toBe(false)
+    expect(inside.renewalRequiredSoon).toBe(true)
+    expect(inside.daysUntilRenewal).toBe(outside.daysUntilRenewal)
+  })
+
+  it("does not cache when the store has no refreshKey", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    // Identity is unknown, so caching could conflate unrelated stores.
+    const { store, reads } = makeCountingStore(undefined, Date.now() + 19 * 86_400_000)
+
+    await getAuthRenewalStatus(store, 3)
+    await getAuthRenewalStatus(store, 3)
+
+    expect(reads()).toBe(2)
+  })
+
+  it("keeps distinct refreshKeys separate", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    const personal = makeCountingStore("file:/tmp/personal/.credentials.json", Date.now() + 19 * 86_400_000)
+    const work = makeCountingStore("file:/tmp/work/.credentials.json", Date.now() + 2 * 86_400_000)
+
+    const p = await getAuthRenewalStatus(personal.store, 3)
+    const w = await getAuthRenewalStatus(work.store, 3)
+
+    expect(p.renewalRequiredSoon).toBe(false)
+    expect(w.renewalRequiredSoon).toBe(true)
+    expect(personal.reads()).toBe(1)
+    expect(work.reads()).toBe(1)
+  })
+
+  it("does not cache a failed read, so a transient blip retries", async () => {
+    const { getAuthRenewalStatus, resetAuthRenewalCache } = await import("../proxy/tokenRefresh")
+    resetAuthRenewalCache()
+    let reads = 0
+    let fail = true
+    const store: CredentialStore = {
+      refreshKey: "file:/tmp/flaky/.credentials.json",
+      async read() {
+        reads++
+        if (fail) throw new Error("keychain unavailable")
+        const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+        seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 19 * 86_400_000
+        return seeded
+      },
+      async write() { return true },
+    }
+
+    const first = await getAuthRenewalStatus(store, 3)
+    expect(first.renewalRequiredSoon).toBe(false)
+    expect(first.refreshTokenExpiresAt).toBeUndefined()
+
+    fail = false
+    const second = await getAuthRenewalStatus(store, 3)
+    expect(reads).toBe(2)
+    expect(second.daysUntilRenewal).toBe(19)
+  })
+
+  it("shares one in-flight read across concurrent callers", async () => {
+    const { getAuthRenewalStatus } = await import("../proxy/tokenRefresh")
+    let reads = 0
+    const store: CredentialStore = {
+      refreshKey: "file:/tmp/concurrent/.credentials.json",
+      async read() {
+        reads++
+        await new Promise((r) => setTimeout(r, 20))
+        const seeded = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+        seeded.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 19 * 86_400_000
+        return seeded
+      },
+      async write() { return true },
+    }
+
+    const results = await Promise.all([
+      getAuthRenewalStatus(store, 3),
+      getAuthRenewalStatus(store, 3),
+      getAuthRenewalStatus(store, 3),
+    ])
+
+    expect(reads).toBe(1)
+    expect(results.map((r) => r.daysUntilRenewal)).toEqual([19, 19, 19])
+  })
+
+  it("resetAuthRenewalCache forces the next call to re-read", async () => {
+    const { getAuthRenewalStatus, resetAuthRenewalCache } = await import("../proxy/tokenRefresh")
+    const { store, reads } = makeCountingStore("file:/tmp/cache-c/.credentials.json", Date.now() + 19 * 86_400_000)
+
+    await getAuthRenewalStatus(store, 3)
+    resetAuthRenewalCache()
+    await getAuthRenewalStatus(store, 3)
+
+    expect(reads()).toBe(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Warning-window parsing
+//
+// Extracted from the /health handler so it is testable without mocking the
+// whole server, and so server.ts orchestrates rather than computes. `0` is a
+// legitimate setting — warn only once the login has actually lapsed — so a
+// `Number(raw) || DEFAULT` shortcut would silently swallow it.
+// ---------------------------------------------------------------------------
+
+describe("resolveRenewalWarnDays", () => {
+  it("defaults when unset", async () => {
+    const { resolveRenewalWarnDays, DEFAULT_RENEWAL_WARN_DAYS } = await import("../proxy/tokenRefresh")
+    expect(resolveRenewalWarnDays(undefined)).toBe(DEFAULT_RENEWAL_WARN_DAYS)
+    expect(resolveRenewalWarnDays("")).toBe(DEFAULT_RENEWAL_WARN_DAYS)
+  })
+
+  it("accepts 0 rather than swallowing it as falsy", async () => {
+    const { resolveRenewalWarnDays } = await import("../proxy/tokenRefresh")
+    expect(resolveRenewalWarnDays("0")).toBe(0)
+  })
+
+  it("accepts a positive window", async () => {
+    const { resolveRenewalWarnDays } = await import("../proxy/tokenRefresh")
+    expect(resolveRenewalWarnDays("14")).toBe(14)
+    expect(resolveRenewalWarnDays(" 7 ")).toBe(7)
+  })
+
+  it("falls back to the default for a negative or non-numeric value", async () => {
+    const { resolveRenewalWarnDays, DEFAULT_RENEWAL_WARN_DAYS } = await import("../proxy/tokenRefresh")
+    expect(resolveRenewalWarnDays("-1")).toBe(DEFAULT_RENEWAL_WARN_DAYS)
+    expect(resolveRenewalWarnDays("soon")).toBe(DEFAULT_RENEWAL_WARN_DAYS)
+    expect(resolveRenewalWarnDays("NaN")).toBe(DEFAULT_RENEWAL_WARN_DAYS)
+  })
+
+  it("a 0 window means the flag only fires once the login has lapsed", async () => {
+    const { getAuthRenewalStatus, resolveRenewalWarnDays, resetAuthRenewalCache } = await import("../proxy/tokenRefresh")
+    resetAuthRenewalCache()
+    const warnDays = resolveRenewalWarnDays("0")
+
+    const soon = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    soon.claudeAiOauth.refreshTokenExpiresAt = Date.now() + 2 * 86_400_000
+    const stillValid: CredentialStore = { async read() { return soon }, async write() { return true } }
+
+    const lapsed = JSON.parse(JSON.stringify(MOCK_CREDENTIALS))
+    lapsed.claudeAiOauth.refreshTokenExpiresAt = Date.now() - 86_400_000
+    const expired: CredentialStore = { async read() { return lapsed }, async write() { return true } }
+
+    expect((await getAuthRenewalStatus(stillValid, warnDays)).renewalRequiredSoon).toBe(false)
+    expect((await getAuthRenewalStatus(expired, warnDays)).renewalRequiredSoon).toBe(true)
+  })
+})

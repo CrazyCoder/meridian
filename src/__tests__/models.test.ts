@@ -3,7 +3,7 @@
  */
 import { afterEach, beforeEach, describe, it, expect, mock } from "bun:test"
 
-import { mapModelToClaudeModel, isClosedControllerError, resetCachedClaudeAuthStatus, stripExtendedContext, hasExtendedContext, recordExtendedContextUnavailable, isExtendedContextKnownUnavailable, resetExtendedContextUnavailable, resolveSdkModelDefaults, CANONICAL_FABLE_MODEL, CANONICAL_OPUS_MODEL, CANONICAL_SONNET_MODEL, CANONICAL_HAIKU_MODEL } from "../proxy/models"
+import { mapModelToClaudeModel, isClosedControllerError, resetCachedClaudeAuthStatus, stripExtendedContext, hasExtendedContext, recordExtendedContextUnavailable, isExtendedContextKnownUnavailable, resetExtendedContextUnavailable, resetWarnedTierOverrides, resolveSdkModelDefaults, CANONICAL_FABLE_MODEL, CANONICAL_OPUS_MODEL, CANONICAL_SONNET_MODEL, CANONICAL_HAIKU_MODEL } from "../proxy/models"
 
 describe("mapModelToClaudeModel", () => {
   const originalSonnetModel = process.env.CLAUDE_PROXY_SONNET_MODEL
@@ -202,6 +202,169 @@ describe("mapModelToClaudeModel", () => {
       // Subagents always use base model even with override
       expect(mapModelToClaudeModel("sonnet", "max", "subagent")).toBe("sonnet")
     })
+  })
+})
+
+describe("per-tier 1M overrides", () => {
+  const saved: Record<string, string | undefined> = {}
+  // Sonnet's vars and the global 1M switch are cleared too: the regression
+  // guard below asserts every tier's default, and the suite shares one
+  // process — a leaked MERIDIAN_SONNET_MODEL or MERIDIAN_1M_CONTEXT_SUPPORT
+  // from another file would fail it spuriously.
+  const KEYS = [
+    "MERIDIAN_FABLE_MODEL", "CLAUDE_PROXY_FABLE_MODEL",
+    "MERIDIAN_OPUS_MODEL", "CLAUDE_PROXY_OPUS_MODEL",
+    "MERIDIAN_SONNET_MODEL", "CLAUDE_PROXY_SONNET_MODEL",
+    "MERIDIAN_1M_CONTEXT_SUPPORT", "CLAUDE_PROXY_1M_CONTEXT_SUPPORT",
+  ]
+
+  beforeEach(() => {
+    for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k] }
+    resetExtendedContextUnavailable()
+    resetWarnedTierOverrides()
+  })
+
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k]
+      else process.env[k] = saved[k]
+    }
+    resetExtendedContextUnavailable()
+    resetWarnedTierOverrides()
+  })
+
+  // THE REGRESSION GUARD. Every existing install has neither variable set;
+  // this asserts they see exactly today's behaviour. If the new check is
+  // misplaced, this fails.
+  it("with no override set, defaults are unchanged", () => {
+    expect(mapModelToClaudeModel("claude-fable-5")).toBe("fable[1m]")
+    expect(mapModelToClaudeModel("claude-opus-4-6")).toBe("opus[1m]")
+    expect(mapModelToClaudeModel("claude-sonnet-4-6")).toBe("sonnet")
+    expect(mapModelToClaudeModel("claude-haiku-4-5-20251001")).toBe("haiku")
+  })
+
+  it("MERIDIAN_FABLE_MODEL=fable forces the base variant", () => {
+    process.env.MERIDIAN_FABLE_MODEL = "fable"
+    expect(mapModelToClaudeModel("claude-fable-5")).toBe("fable")
+  })
+
+  it("MERIDIAN_OPUS_MODEL=opus forces the base variant", () => {
+    process.env.MERIDIAN_OPUS_MODEL = "opus"
+    expect(mapModelToClaudeModel("claude-opus-4-6")).toBe("opus")
+  })
+
+  // The complaint in #702: the only existing lever is global, so opting out of
+  // fable 1M also gave up opus 1M. The override must be tier-scoped.
+  it("the fable override does not affect opus", () => {
+    process.env.MERIDIAN_FABLE_MODEL = "fable"
+    expect(mapModelToClaudeModel("claude-fable-5")).toBe("fable")
+    expect(mapModelToClaudeModel("claude-opus-4-6")).toBe("opus[1m]")
+  })
+
+  it("the opus override does not affect fable", () => {
+    process.env.MERIDIAN_OPUS_MODEL = "opus"
+    expect(mapModelToClaudeModel("claude-opus-4-6")).toBe("opus")
+    expect(mapModelToClaudeModel("claude-fable-5")).toBe("fable[1m]")
+  })
+
+  it("neither override affects sonnet or haiku", () => {
+    process.env.MERIDIAN_FABLE_MODEL = "fable"
+    process.env.MERIDIAN_OPUS_MODEL = "opus"
+    expect(mapModelToClaudeModel("claude-sonnet-4-6")).toBe("sonnet")
+    expect(mapModelToClaudeModel("claude-haiku-4-5-20251001")).toBe("haiku")
+  })
+
+  it("explicit [1m] values are accepted as a documented no-op", () => {
+    process.env.MERIDIAN_FABLE_MODEL = "fable[1m]"
+    process.env.MERIDIAN_OPUS_MODEL = "opus[1m]"
+    expect(mapModelToClaudeModel("claude-fable-5")).toBe("fable[1m]")
+    expect(mapModelToClaudeModel("claude-opus-4-6")).toBe("opus[1m]")
+  })
+
+  it("an unrecognized value is ignored, not treated as an opt-out", () => {
+    process.env.MERIDIAN_FABLE_MODEL = "nonsense"
+    process.env.MERIDIAN_OPUS_MODEL = ""
+    expect(mapModelToClaudeModel("claude-fable-5")).toBe("fable[1m]")
+    expect(mapModelToClaudeModel("claude-opus-4-6")).toBe("opus[1m]")
+  })
+
+  // These are opt-outs, unlike MERIDIAN_SONNET_MODEL's opt-in: a typo there
+  // fails safe (no billing), but the identical typo here fails unsafe (the
+  // user keeps being billed for [1m]). Values must be normalized so
+  // whitespace/case typos from launchd plists, docker-compose, or quoted
+  // .env lines don't silently defeat the opt-out.
+  it("surrounding whitespace is normalized", () => {
+    process.env.MERIDIAN_FABLE_MODEL = "  fable  "
+    expect(mapModelToClaudeModel("claude-fable-5")).toBe("fable")
+  })
+
+  it("case is normalized", () => {
+    process.env.MERIDIAN_FABLE_MODEL = "Fable"
+    expect(mapModelToClaudeModel("claude-fable-5")).toBe("fable")
+  })
+
+  it("case is normalized for opus", () => {
+    process.env.MERIDIAN_OPUS_MODEL = "OPUS"
+    expect(mapModelToClaudeModel("claude-opus-4-6")).toBe("opus")
+  })
+
+  it("the [1m] no-op tolerates whitespace/case and warns nothing", () => {
+    const originalWarn = console.warn
+    const warnings: string[] = []
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")) }
+    try {
+      process.env.MERIDIAN_FABLE_MODEL = " fable[1m] "
+      expect(mapModelToClaudeModel("claude-fable-5")).toBe("fable[1m]")
+      expect(warnings.length).toBe(0)
+    } finally {
+      console.warn = originalWarn
+    }
+  })
+
+  it("warns at most once per process per variable for an unrecognized value", () => {
+    const originalWarn = console.warn
+    const warnings: string[] = []
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")) }
+    try {
+      process.env.MERIDIAN_FABLE_MODEL = "typo-fable"
+      mapModelToClaudeModel("claude-fable-5")
+      mapModelToClaudeModel("claude-fable-5")
+      expect(warnings.length).toBe(1)
+      expect(warnings[0]).toContain("MERIDIAN_FABLE_MODEL")
+    } finally {
+      console.warn = originalWarn
+    }
+  })
+
+  it("the CLAUDE_PROXY_ aliases work identically", () => {
+    process.env.CLAUDE_PROXY_FABLE_MODEL = "fable"
+    process.env.CLAUDE_PROXY_OPUS_MODEL = "opus"
+    expect(mapModelToClaudeModel("claude-fable-5")).toBe("fable")
+    expect(mapModelToClaudeModel("claude-opus-4-6")).toBe("opus")
+  })
+
+  it("MERIDIAN_ takes precedence over CLAUDE_PROXY_", () => {
+    process.env.CLAUDE_PROXY_FABLE_MODEL = "fable"
+    process.env.MERIDIAN_FABLE_MODEL = "fable[1m]"
+    expect(mapModelToClaudeModel("claude-fable-5")).toBe("fable[1m]")
+  })
+
+  // Mythos routes into the fable branch, so the fable switch must cover it.
+  it("the fable override covers mythos, which rides the fable tier", () => {
+    process.env.MERIDIAN_FABLE_MODEL = "fable"
+    expect(mapModelToClaudeModel("claude-mythos-5")).toBe("fable")
+  })
+
+  it("subagents still get the base variant regardless of override", () => {
+    expect(mapModelToClaudeModel("claude-fable-5", "max", "subagent")).toBe("fable")
+    process.env.MERIDIAN_FABLE_MODEL = "fable[1m]"
+    expect(mapModelToClaudeModel("claude-fable-5", "max", "subagent")).toBe("fable")
+  })
+
+  it("the Extra Usage cooldown still forces the base variant", () => {
+    recordExtendedContextUnavailable()
+    expect(mapModelToClaudeModel("claude-fable-5")).toBe("fable")
+    expect(mapModelToClaudeModel("claude-opus-4-6")).toBe("opus")
   })
 })
 
