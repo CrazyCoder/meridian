@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.58.1](https://github.com/rynfar/meridian/compare/meridian-v1.58.0...meridian-v1.58.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* **query:** correct the preset's false gitStatus provenance claim ([#726](https://github.com/rynfar/meridian/issues/726)) ([8ce601b](https://github.com/rynfar/meridian/commit/8ce601babef481a4d168367cb14cb6586f3d4824)), closes [#694](https://github.com/rynfar/meridian/issues/694)
+* **sanitize:** make &lt;thinking&gt; stripping opt-in ([#721](https://github.com/rynfar/meridian/issues/721)) ([15f6eb5](https://github.com/rynfar/meridian/commit/15f6eb5c10689d28e136be8e947b86decd3797ff))
+
+## [1.58.0](https://github.com/rynfar/meridian/compare/meridian-v1.57.1...meridian-v1.58.0) (2026-07-29)
+
+
+### Features
+
+* **health:** report how long the login has left ([007882b](https://github.com/rynfar/meridian/commit/007882b96a962f78e7d55db0f9e75636c3cf39a8))
+* **health:** report how long the login has left ([22d0c81](https://github.com/rynfar/meridian/commit/22d0c818c988778298670e21ddc26a8a3a4d324d))
+* **models:** add per-tier 1M context overrides for fable and opus ([#714](https://github.com/rynfar/meridian/issues/714)) ([2c92b37](https://github.com/rynfar/meridian/commit/2c92b379fbc09f9afc3c9118f062425b30e67179))
+
+
+### Bug Fixes
+
+* **session:** reject compaction that resumes past the last message ([392e3c8](https://github.com/rynfar/meridian/commit/392e3c872756b219f12c0161cb191d3868fb94b8))
+* **session:** reject compaction that resumes past the last message ([8c30899](https://github.com/rynfar/meridian/commit/8c3089956f852eb15ca7ceca37f5c9af164173b4))
+
+
+### Performance
+
+* **health:** cache the refresh-token expiry read ([b33f2be](https://github.com/rynfar/meridian/commit/b33f2beb3491bee1c6f91af6aac6a96b4484d6e2))
+
 ## [1.57.1](https://github.com/rynfar/meridian/compare/meridian-v1.57.0...meridian-v1.57.1) (2026-07-28)
 
 
