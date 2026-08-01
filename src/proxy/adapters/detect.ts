@@ -130,8 +130,9 @@ export function detectAdapter(c: Context, body?: unknown): AgentAdapter {
     }
   }
 
-  // OpenCode: plugin injects x-opencode-session; newer versions use x-session-affinity
-  if (c.req.header("x-opencode-session") || c.req.header("x-session-affinity")) {
+  // OpenCode's own plugin injects x-opencode-session. Unambiguous — no other
+  // client sends it — so it outranks every User-Agent heuristic.
+  if (c.req.header("x-opencode-session")) {
     return openCodeAdapter
   }
 
@@ -148,6 +149,17 @@ export function detectAdapter(c: Context, body?: unknown): AgentAdapter {
 
   if (userAgent.startsWith("Charm-Crush/")) {
     return crushAdapter
+  }
+
+  // x-session-affinity is a generic session-stickiness header, NOT an OpenCode
+  // marker: Crush 0.87 sends it too (alongside x-session-id), and while it was
+  // checked ahead of the User-Agent chain that made every Crush request resolve
+  // to the OpenCode adapter — swapping in OpenCode's transforms, tool config and
+  // session semantics for a client that has its own. It stays as a fallback for
+  // OpenCode builds whose User-Agent isn't recognizable, but only after the
+  // clients that identify themselves unambiguously have had their say.
+  if (c.req.header("x-session-affinity")) {
+    return openCodeAdapter
   }
 
   // Claude Code CLI — `claude-cli/<version>`. Pi (and downstream Pi-based

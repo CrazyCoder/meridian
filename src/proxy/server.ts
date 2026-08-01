@@ -83,7 +83,7 @@ import { filterBetasForProfile, getBetaPolicyFromEnv } from "./betas"
 import { createFileChangeHook, extractFileChangesFromMessages, formatFileChangeSummary, type FileChange } from "./fileChanges"
 import { detectTokenAnomalies, formatAnomalyAlerts, type TokenSnapshot } from "./tokenHealth"
 import { computeCacheHitRate, formatUsageSummary } from "./tokenUsage"
-import { sanitizeTextContent } from "./sanitize"
+import { sanitizeTextContent, sanitizeAssistantText } from "./sanitize"
 import {
   computeLineageHash,
   hashMessage,
@@ -197,10 +197,15 @@ function normalizeStructuredUserContent(content: any): any {
  * inventing fake tool-call patterns back (issue #111, #386).
  */
 function flattenAssistantContent(content: any): string {
-  if (typeof content === "string") return content
+  // Strips only branded harness markers — notably Meridian's own "Files
+  // changed:" summary, which this server appends to the assistant's last text
+  // block and which the client then echoes back for replay (#724). The XML tag
+  // allowlist is deliberately NOT applied: assistant text is model output, and
+  // a model discussing configuration legitimately writes `<env>` (#720).
+  if (typeof content === "string") return sanitizeAssistantText(content)
   if (!Array.isArray(content)) return String(content ?? "")
   return content
-    .map((b: any) => (b?.type === "text" && b.text ? b.text : ""))
+    .map((b: any) => (b?.type === "text" && b.text ? sanitizeAssistantText(b.text) : ""))
     .filter(Boolean)
     .join("\n")
 }
@@ -532,6 +537,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
    *  leave standing. */
   function refinePriorityCooldown(profileId: string): void {
     const target = getEffectiveProfiles(finalConfig.profiles).find(p => p.id === profileId)
+    // Only `claude-max` profiles have credentials this can consult. `api`
+    // profiles authenticate with a key and have no usage endpoint; `oauth-token`
+    // profiles carry their token in `CLAUDE_CODE_OAUTH_TOKEN` with a config dir
+    // that deliberately holds no on-disk credentials, so the store read finds
+    // nothing there either. `force: true` also means the 30s cache can't
+    // suppress the repeat, so every exhaustion event would pay for a credential
+    // read (a `/usr/bin/security` subprocess on macOS) to learn nothing.
+    // Mirrors the `not_oauth` guard in `/v1/usage/quota/all` and
+    // `credentialStoreForProfile`. Tier 3's conservative default already stands
+    // when this returns early (#699).
+    if ((target?.type ?? "claude-max") !== "claude-max") return
     void fetchOAuthUsage({ profileId, claudeConfigDir: target?.claudeConfigDir, force: true })
       .then(usage => {
         if (!usage || usage.stale) return
@@ -3255,7 +3271,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     type: "upstream_timeout",
                     message: `Upstream stalled: no data for ${error.sinceLastMs}ms`,
                   }
-                : classifyError(errMsg)
+                : classifyError(errMsg, model)
               claudeLog("proxy.anthropic.error", { error: errMsg, classified: streamErr.type })
 
               // Surface the SDK termination reason (max_turns / process_exit / aborted)
