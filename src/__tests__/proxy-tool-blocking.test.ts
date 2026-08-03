@@ -92,11 +92,11 @@ function createTestApp() {
   return app
 }
 
-async function sendRequest(app: any, stream: boolean) {
+async function sendRequest(app: any, stream: boolean, headers: Record<string, string> = {}) {
   capturedQueryParams = null
   const response = await app.fetch(new Request("http://localhost/v1/messages", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify({
       model: "claude-sonnet-4-5",
       max_tokens: 128,
@@ -149,6 +149,117 @@ describe("Tool blocking: normal mode (non-passthrough)", () => {
     const app = createTestApp()
     const params = await sendRequest(app, true)
     assertAllToolsBlocked(params, "normal/stream")
+  })
+})
+
+// A Claude Code CLI client drives its own tool loop. server.ts resolves tool
+// config and passthrough from `pipelineCtx.*` — never from the adapter methods
+// — so with no registry entry for "claude-code" the request kept the
+// createRequestContext defaults: `blockedTools: []` and `passthrough:
+// undefined`. The SDK subprocess then had its own Read/Write/Bash available
+// while the client executed the same tool_use blocks locally, so a side effect
+// could happen twice (#735).
+//
+// These go through the HTTP layer on purpose: transform-parity tests assert the
+// transform's VALUES, and every one of them passed while this was broken. The
+// defect was the wiring between the registry and the request, which only a
+// server-level assertion can see.
+// #744: claudeCodeAdapter returns undefined from extractWorkingDirectory (so the
+// subprocess never chdirs into a layout that may not exist here), and surfaces
+// the client's real path via extractClientWorkingDirectory. When that path DOES
+// exist on the proxy host it should become the SDK's cwd — otherwise the SDK
+// advertises the proxy's own directory and the model composes absolute paths
+// against the wrong tree, writing to the proxy host while reporting success.
+//
+// Asserted through the HTTP layer on purpose: the resolver can be exercised
+// directly, but that only re-tests a copy of the call-site expression (#707).
+describe("SDK cwd for a claude-code client (#744)", () => {
+  let clientDir: string
+  let savedAgent: string | undefined
+
+  beforeEach(() => {
+    clientDir = mkdtempSync(join(tmpdir(), "meridian-client-cwd-"))
+    savedAgent = process.env.MERIDIAN_DEFAULT_AGENT
+    delete process.env.MERIDIAN_DEFAULT_AGENT
+  })
+  afterEach(() => {
+    rmSync(clientDir, { recursive: true, force: true })
+    if (savedAgent !== undefined) process.env.MERIDIAN_DEFAULT_AGENT = savedAgent
+    else delete process.env.MERIDIAN_DEFAULT_AGENT
+  })
+
+  /** The system-prompt shape a real Claude Code CLI sends. */
+  const systemFor = (cwd: string) => [
+    { type: "text", text: "You are a Claude agent, built on Anthropic's Claude Agent SDK." },
+    { type: "text", text: `# Environment\nYou have been invoked in the following environment:\n - Primary working directory: ${cwd}\n - Platform: darwin\n` },
+  ]
+
+  async function postAs(system: any) {
+    capturedQueryParams = null
+    const res = await createTestApp().fetch(new Request("http://localhost/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "user-agent": "claude-cli/1.0.60 (external)" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5", max_tokens: 64, stream: false,
+        system, messages: [{ role: "user", content: "hi" }],
+      }),
+    }))
+    await res.json()
+    return capturedQueryParams
+  }
+
+  it("uses the client's directory as the SDK cwd when it exists here", () => {
+    return postAs(systemFor(clientDir)).then((params) => {
+      expect(params?.options?.cwd).toBe(clientDir)
+    })
+  })
+
+  it("falls back to a valid server path when the client directory does not exist (#381)", () => {
+    // Remote client: its filesystem layout is absent here, and chdiring into it
+    // would fail the SDK spawn with a misleading error.
+    return postAs(systemFor("/definitely/not/here/meridian-744")).then((params) => {
+      expect(params?.options?.cwd).not.toBe("/definitely/not/here/meridian-744")
+      expect(params?.options?.cwd).toBe(process.cwd())
+    })
+  })
+})
+
+describe("Tool blocking: claude-code adapter (#735)", () => {
+  let savedAgent: string | undefined
+  beforeEach(() => {
+    // Default install: no passthrough opt-in, and no default-agent override
+    // (which would reroute the ambiguous claude-cli User-Agent elsewhere).
+    delete process.env.CLAUDE_PROXY_PASSTHROUGH
+    delete process.env.MERIDIAN_PASSTHROUGH
+    savedAgent = process.env.MERIDIAN_DEFAULT_AGENT
+    delete process.env.MERIDIAN_DEFAULT_AGENT
+  })
+  afterEach(() => {
+    if (savedAgent !== undefined) process.env.MERIDIAN_DEFAULT_AGENT = savedAgent
+    else delete process.env.MERIDIAN_DEFAULT_AGENT
+  })
+
+  const CLAUDE_CLI_UA = { "user-agent": "claude-cli/1.0.60 (external)" }
+
+  it("blocks the SDK's built-in tools for a claude-cli client (non-stream)", async () => {
+    const app = createTestApp()
+    const params = await sendRequest(app, false, CLAUDE_CLI_UA)
+    assertAllToolsBlocked(params, "claude-code/non-stream")
+  })
+
+  it("blocks the SDK's built-in tools for a claude-cli client (stream)", async () => {
+    const app = createTestApp()
+    const params = await sendRequest(app, true, CLAUDE_CLI_UA)
+    assertAllToolsBlocked(params, "claude-code/stream")
+  })
+
+  it("does not leave disallowedTools empty, which is the actual regression", async () => {
+    // Stated separately from assertAllToolsBlocked: an empty list is the exact
+    // broken state, and a future change that empties it should fail on a test
+    // whose name says so.
+    const app = createTestApp()
+    const params = await sendRequest(app, false, CLAUDE_CLI_UA)
+    expect((params?.options?.disallowedTools || []).length).toBeGreaterThan(0)
   })
 })
 
