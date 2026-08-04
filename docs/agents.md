@@ -347,3 +347,41 @@ The design token is stored at `~/.config/meridian/design-token.json` (mode `0600
 export ANTHROPIC_API_KEY=x
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3456
 ```
+### Hermes Agent
+
+[Hermes](https://hermes-agent.nousresearch.com) profiles route through
+Meridian via their model config — no adapter-specific setup on the Meridian
+side:
+
+```yaml
+# $HERMES_HOME/config.yaml
+model:
+  provider: anthropic
+  base_url: http://127.0.0.1:3456
+```
+
+Any `ANTHROPIC_API_KEY` value satisfies Hermes' credential check; Meridian
+handles the real authentication. Note that Hermes profiles have isolated
+`HERMES_HOME` directories: repeat the config for each profile.
+
+**Strongly recommended:** install the
+[`meridian-affinity` Hermes plugin](../examples/hermes-plugin/) — without
+it, every agentic turn ending in a `tool_result` is treated as an
+independent session and prompt-cache reuse is lost (each turn re-bills
+cache creation for the whole history). With it, sessions are resumed and
+cache hit rates reach ~100% on long runs. The plugin also wires
+`x-request-id`, `x-meridian-source` and `x-opencode-effort` for per-task
+cost control and telemetry correlation.
+
+**Which adapter Hermes lands on.** Hermes sends `User-Agent: python-httpx`,
+which matches no detection heuristic, so plain Hermes traffic falls through
+to whatever `MERIDIAN_DEFAULT_AGENT` names — `opencode` only when that
+variable is unset. Installing `meridian-affinity` changes this: the
+`x-session-affinity` header it injects resolves to the **`opencode`**
+adapter regardless of the default.
+
+That is usually what you want — the plugin's headers are the ones the
+OpenCode adapter reads — but it is a real switch, not a no-op. If you run
+`MERIDIAN_DEFAULT_AGENT=pi` (or anything else) and rely on that adapter's
+transforms for Hermes, set the adapter explicitly per request rather than
+letting the header decide.

@@ -133,6 +133,8 @@ export interface QueryContext {
   sharedMemory?: boolean
   /** Run the WebFetch domain safety check (hostname sent to api.anthropic.com) */
   webFetchPreflight?: boolean
+  /** Load the account's claude.ai MCP connectors (ignored in passthrough) */
+  claudeAiConnectors?: boolean
   /** Per-request cost cap in USD */
   maxBudgetUsd?: number
   /** Fallback model when primary fails */
@@ -383,7 +385,25 @@ export function buildQueryOptions(ctx: QueryContext, abortController?: AbortCont
         // Keychain auth.
         ...(sharedMemory ? stripConfigDir(cleanEnv) : cleanEnv),
         ENABLE_TOOL_SEARCH: hasDeferredTools ? "true" : "false",
-        ...(passthrough ? { ENABLE_CLAUDEAI_MCP_SERVERS: "false" } : {}),
+        // claude.ai connectors: MCP servers attached to the account's
+        // claude.ai profile (Drive, Gmail, Calendar, …). The subprocess
+        // otherwise fetches them from /v1/mcp_servers and connects each one
+        // through mcp-proxy.anthropic.com, so a caller that asked for none of
+        // that gets third-party tools in its session. Off unless opted in.
+        //
+        // Passthrough forces it off regardless: there the CLIENT executes
+        // tools, and it cannot run one that only exists inside the subprocess
+        // — the same mismatch that made CLAUDE_CODE_USE_POWERSHELL_TOOL a bug
+        // (#441). This was the pre-existing behaviour for passthrough; the
+        // change is that every other adapter now defaults to it too.
+        //
+        // Always explicit, never omitted — same reason as the `settings` keys
+        // above (#634). Expressing "on" by leaving the variable out would make
+        // the opt-in mean "whatever the subprocess defaults to", so an upstream
+        // default flip would silently re-enable connectors for everyone who
+        // opted in, and silently disable them for everyone who did not.
+        ENABLE_CLAUDEAI_MCP_SERVERS:
+          !passthrough && ctx.claudeAiConnectors === true ? "true" : "false",
         // Passthrough: suppress the CLI's "# Scratchpad Directory" context
         // block (#627). It advertises a PROXY-HOST path, but the CLIENT
         // executes the tools — OpenCode 1.18+ permission-blocks writes to

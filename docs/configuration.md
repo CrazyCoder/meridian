@@ -173,6 +173,7 @@ Every adapter Meridian can route to appears on that page — the list is derived
 | **Thinking Passthrough** | on / off | Forward thinking blocks to the client for display |
 | **Shared Memory** | on / off | Share memory directory with Claude Code (`~/.claude`) instead of isolated storage |
 | **WebFetch Preflight** | on / off | Check each WebFetch hostname against the Anthropic blocklist before fetching (default on, `cherry` only — see below) |
+| **claude.ai Connectors** | on / off | Load the MCP connectors attached to your claude.ai account (default off) |
 
 ### WebFetch preflight
 
@@ -200,6 +201,36 @@ is therefore the only place this toggle changes behaviour.
 If your *client* runs its own WebFetch — the usual case in passthrough mode —
 that fetch and its preflight happen in the client process, under the client's
 own settings. Meridian cannot turn it off from here.
+
+### claude.ai connectors
+
+If your claude.ai account has connectors attached — Drive, Gmail, Calendar —
+the subprocess can fetch them from `/v1/mcp_servers` and connect each one
+through `mcp-proxy.anthropic.com`. Their tools then appear in the session
+alongside the ones Meridian registered.
+
+That is rarely what you want from a proxy: the calling agent negotiated a tool
+surface, and this adds third-party tools it never asked for, plus an outbound
+fetch describing the account. So it is **off by default**.
+
+Passthrough mode keeps it off regardless of this setting. There the client
+executes tools, and it has no way to run one that exists only inside the
+subprocess.
+
+> **Upgrading to 1.60.0 — this turns something off that used to be on.**
+>
+> Before 1.60.0, connectors loaded for any adapter *not* running in
+> passthrough mode. In practice that meant **`cherry`, `droid`, and anything
+> started with `MERIDIAN_PASSTHROUGH=0`** — those sessions silently lose
+> connector tools on upgrade until you switch this on at `/settings`.
+>
+> Adapters that default to passthrough, `opencode` included, are unaffected:
+> connectors were already disabled for them.
+>
+> Nothing errors when a connector tool disappears — the model simply stops
+> having it, and answers as if the data were unavailable. If a session that
+> used to reach your Drive or Gmail stops doing so after upgrading, this
+> setting is why.
 
 ### System prompts
 
