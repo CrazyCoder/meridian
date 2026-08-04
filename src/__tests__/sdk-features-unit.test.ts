@@ -18,6 +18,11 @@ describe("validateFeatureUpdate", () => {
     expect(result).toEqual({ memory: false, sharedMemory: true })
   })
 
+  it("accepts webFetchPreflight and rejects a non-boolean", () => {
+    expect(validateFeatureUpdate({ webFetchPreflight: false })).toEqual({ webFetchPreflight: false })
+    expect(() => validateFeatureUpdate({ webFetchPreflight: "off" })).toThrow("webFetchPreflight must be a boolean")
+  })
+
   it("accepts codeSystemPrompt and clientSystemPrompt booleans", () => {
     expect(validateFeatureUpdate({ codeSystemPrompt: true })).toEqual({ codeSystemPrompt: true })
     expect(validateFeatureUpdate({ clientSystemPrompt: false })).toEqual({ clientSystemPrompt: false })
@@ -151,5 +156,50 @@ describe("sdkFeatures config roundtrip", () => {
       config = {}
     }
     expect(config).toEqual({})
+  })
+})
+
+// ── settings UI coverage ────────────────────────────────────────────
+
+// The settings page can only configure adapters it lists in ADAPTER_LABELS.
+// That list was written once (#349) and never updated, so `codex` (#654) and
+// `cherry` (#481) silently had no UI — which is how the webFetchPreflight
+// toggle came to render on seven adapters where it does nothing and none of
+// the one where it does. Keep the two lists in lockstep.
+describe("settings UI adapter coverage", () => {
+  it("exposes every adapter in the registry, with no aliases", () => {
+    const { getAllFeatureConfigs } = require("../proxy/sdkFeatures") as typeof import("../proxy/sdkFeatures")
+    const { listAdapterNames } = require("../proxy/adapters/detect") as typeof import("../proxy/adapters/detect")
+
+    // Not a hardcoded expected list — that is the bug this replaces. Adding an
+    // adapter to ADAPTER_MAP must make it configurable with no second edit.
+    expect(Object.keys(getAllFeatureConfigs()).sort()).toEqual(listAdapterNames().sort())
+    // `cherrystudio` and `claudecode` are alias keys; they must collapse into
+    // their canonical adapter rather than showing up as separate cards.
+    expect(Object.keys(getAllFeatureConfigs())).not.toContain("cherrystudio")
+    expect(Object.keys(getAllFeatureConfigs())).not.toContain("claudecode")
+  })
+
+  it("includes the adapters that were previously unreachable in the UI", () => {
+    const { getAllFeatureConfigs } = require("../proxy/sdkFeatures") as typeof import("../proxy/sdkFeatures")
+    const names = Object.keys(getAllFeatureConfigs())
+    // cherry (#481) is the only adapter the WebFetch preflight toggle affects;
+    // codex (#654) and claude-code were absent for the same hardcoded-list reason.
+    expect(names).toContain("cherry")
+    expect(names).toContain("codex")
+    expect(names).toContain("claude-code")
+  })
+
+  it("renders adapters from the API response, not a hardcoded page list", () => {
+    const { settingsPageHtml } = require("../telemetry/settingsPage") as typeof import("../telemetry/settingsPage")
+    // The render loop must iterate the fetched config. Iterating ADAPTER_LABELS
+    // is what made a new adapter invisible instead of merely unlabelled.
+    expect(settingsPageHtml).toContain("for (const adapter of Object.keys(currentConfig))")
+    expect(settingsPageHtml).not.toContain("Object.entries(ADAPTER_LABELS)")
+  })
+
+  it("falls back to the raw adapter name when no label exists", () => {
+    const { settingsPageHtml } = require("../telemetry/settingsPage") as typeof import("../telemetry/settingsPage")
+    expect(settingsPageHtml).toContain("ADAPTER_LABELS[adapter] || adapter")
   })
 })

@@ -26,6 +26,13 @@ export interface AdapterFeatures {
   thinkingPassthrough: boolean
   /** Share memory directory with Claude Code (~/.claude instead of SDK default) */
   sharedMemory: boolean
+  /**
+   * Run the WebFetch domain safety check. Before each fetch the subprocess
+   * sends the target hostname to api.anthropic.com to test it against a
+   * blocklist. Turn off to keep hostnames local; WebFetch then fetches any
+   * URL unchecked, so pair it with tool permissions if that matters.
+   */
+  webFetchPreflight: boolean
   /** Per-request cost cap in USD (0 = disabled) */
   maxBudgetUsd: number
   /** Fallback model when primary fails (empty = disabled) */
@@ -51,6 +58,8 @@ const DEFAULT_FEATURES: AdapterFeatures = {
   thinking: "disabled",
   thinkingPassthrough: false,
   sharedMemory: false,
+  // Matches the subprocess default — opt out, don't opt in.
+  webFetchPreflight: true,
   maxBudgetUsd: 0,
   fallbackModel: "",
   sdkDebug: false,
@@ -170,11 +179,16 @@ export function getExplicitThinking(adapterName: string): AdapterFeatures["think
 
 /**
  * Get the full config for all adapters (for the settings UI).
+ *
+ * The adapter list comes from the adapter registry, not a copy kept here —
+ * see listAdapterNames() for why. Required lazily: this module is imported by
+ * request-path code that has no reason to pull in every adapter definition,
+ * and the registry only matters when the settings UI asks for it.
  */
 export function getAllFeatureConfigs(): Record<string, AdapterFeatures> {
-  const adapters = ["opencode", "crush", "forgecode", "pi", "droid", "passthrough", "openai", "codex"]
+  const { listAdapterNames } = require("./adapters/detect") as typeof import("./adapters/detect")
   const result: Record<string, AdapterFeatures> = {}
-  for (const name of adapters) {
+  for (const name of listAdapterNames()) {
     result[name] = getFeaturesForAdapter(name)
   }
   return result

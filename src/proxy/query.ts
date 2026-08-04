@@ -13,6 +13,29 @@ import { envInt } from "../env"
 import type { Effort } from "./effort"
 
 /**
+ * Env defaults that quiet the subprocess's own outbound traffic.
+ *
+ * The subprocess here is infrastructure, not somebody's editor: it runs
+ * headless, nobody reads its usage metrics, its crash reports describe a
+ * process the operator never launched by hand, and `/feedback` and the
+ * session-quality survey have no interactive session to report on. The
+ * auto-updater is worse than useless — a version change underneath a running
+ * proxy is a source of skew, not a feature.
+ *
+ * Spread *before* the inherited env so anything the operator sets — including
+ * setting these to "0" — still wins.
+ */
+const QUIET_SUBPROCESS_ENV: Record<string, string> = {
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  DISABLE_TELEMETRY: "1",
+  DISABLE_ERROR_REPORTING: "1",
+  DISABLE_FEEDBACK_COMMAND: "1",
+  CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1",
+  DISABLE_AUTOUPDATER: "1",
+  CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1",
+}
+
+/**
  * Return a copy of `env` with `CLAUDE_CONFIG_DIR` removed. Used by the
  * sharedMemory branch — see the comment at the env construction site.
  *
@@ -108,6 +131,8 @@ export interface QueryContext {
   dreaming?: boolean
   /** Share memory directory with Claude Code (~/.claude) */
   sharedMemory?: boolean
+  /** Run the WebFetch domain safety check (hostname sent to api.anthropic.com) */
+  webFetchPreflight?: boolean
   /** Per-request cost cap in USD */
   maxBudgetUsd?: number
   /** Fallback model when primary fails */
@@ -330,6 +355,11 @@ export function buildQueryOptions(ctx: QueryContext, abortController?: AbortCont
       settings: {
         autoMemoryEnabled: ctx.memory ?? true,
         autoDreamEnabled: ctx.dreaming ?? false,
+        // Always explicit, for the same reason as the memory keys above: an
+        // omitted key falls back to the subprocess default, which is to run
+        // the check. `webFetchPreflight` is the positive form the settings
+        // UI shows; the SDK setting is the negative one.
+        skipWebFetchPreflight: ctx.webFetchPreflight === false,
       },
       // #634/#490: always explicit. Empty array → SDK emits
       // `--setting-sources=` → subprocess loads nothing. Omitting the key
@@ -340,6 +370,8 @@ export function buildQueryOptions(ctx: QueryContext, abortController?: AbortCont
       settingSources: settingSources ?? [],
       ...(onStderr ? { stderr: onStderr } : {}),
       env: {
+        // First, so an operator-set value of any kind overrides it.
+        ...QUIET_SUBPROCESS_ENV,
         // sharedMemory: the user wants the SDK to use Claude Code's default
         // config dir so memories sync. Counter-intuitively we DON'T set
         // CLAUDE_CONFIG_DIR=$HOME/.claude here — explicitly setting it (even

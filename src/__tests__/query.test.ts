@@ -4,6 +4,7 @@
 import { describe, it, expect } from "bun:test"
 import { buildQueryOptions, GIT_STATUS_PROVENANCE_NOTE, type QueryContext } from "../proxy/query"
 import { BLOCKED_BUILTIN_TOOLS, CLAUDE_CODE_ONLY_TOOLS, MCP_SERVER_NAME, ALLOWED_MCP_TOOLS } from "../proxy/tools"
+import { CHERRY_BLOCKED_BUILTIN_TOOLS, CHERRY_INCOMPATIBLE_TOOLS, CHERRY_WEB_TOOLS } from "../proxy/adapters/cherry"
 
 function makeContext(overrides: Partial<QueryContext> = {}): QueryContext {
   return {
@@ -44,6 +45,41 @@ describe("buildQueryOptions", () => {
     expect(result.options.maxTurns).toBe(200)
     expect(result.options.permissionMode).toBe("bypassPermissions")
     expect((result.options as any).includePartialMessages).toBeUndefined()
+  })
+
+  // The subprocess runs headless behind the proxy — its metrics, crash
+  // reports, feedback uploads and surveys describe a session no human is in.
+  it("quiets the subprocess's non-essential outbound traffic by default", () => {
+    const env = buildQueryOptions(makeContext()).options.env ?? {}
+    expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1")
+    expect(env.DISABLE_TELEMETRY).toBe("1")
+    expect(env.DISABLE_ERROR_REPORTING).toBe("1")
+    expect(env.DISABLE_FEEDBACK_COMMAND).toBe("1")
+    expect(env.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY).toBe("1")
+    expect(env.DISABLE_AUTOUPDATER).toBe("1")
+    expect(env.CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL).toBe("1")
+  })
+
+  it("lets the inherited env opt back into telemetry", () => {
+    const result = buildQueryOptions(makeContext({
+      cleanEnv: { DISABLE_TELEMETRY: "0", DISABLE_ERROR_REPORTING: "0" },
+    }))
+    expect(result.options.env?.DISABLE_TELEMETRY).toBe("0")
+    expect(result.options.env?.DISABLE_ERROR_REPORTING).toBe("0")
+    // Untouched keys keep the quiet default.
+    expect(result.options.env?.DISABLE_FEEDBACK_COMMAND).toBe("1")
+  })
+
+  it("lets envOverrides opt back into telemetry", () => {
+    const result = buildQueryOptions(makeContext({
+      envOverrides: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "0" },
+    }))
+    expect(result.options.env?.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("0")
+  })
+
+  it("keeps the quiet defaults in passthrough mode", () => {
+    const env = buildQueryOptions(makeContext({ passthrough: true })).options.env ?? {}
+    expect(env.DISABLE_TELEMETRY).toBe("1")
   })
 
   it("applies envOverrides after inherited env", () => {
@@ -388,6 +424,68 @@ describe("buildQueryOptions", () => {
     const opts = result.options as any
     expect(opts.settings.autoMemoryEnabled).toBe(false)
     expect(opts.settings.autoDreamEnabled).toBe(false)
+  })
+
+  // WebFetch preflight: the subprocess sends each fetch target's hostname to
+  // api.anthropic.com before retrieving it. The setting is emitted on every
+  // request for the same reason the memory keys are — an omitted key falls
+  // back to the subprocess default, which runs the check.
+  it("skips the WebFetch preflight when webFetchPreflight is false", () => {
+    const result = buildQueryOptions(makeContext({ webFetchPreflight: false }))
+    expect((result.options as any).settings.skipWebFetchPreflight).toBe(true)
+  })
+
+  it("runs the WebFetch preflight when webFetchPreflight is true", () => {
+    const result = buildQueryOptions(makeContext({ webFetchPreflight: true }))
+    expect((result.options as any).settings.skipWebFetchPreflight).toBe(false)
+  })
+
+  it("defaults to running the WebFetch preflight when unset", () => {
+    const result = buildQueryOptions(makeContext())
+    expect((result.options as any).settings.skipWebFetchPreflight).toBe(false)
+  })
+
+  it("carries the WebFetch preflight setting into passthrough mode", () => {
+    const result = buildQueryOptions(makeContext({ passthrough: true, webFetchPreflight: false }))
+    expect((result.options as any).settings.skipWebFetchPreflight).toBe(true)
+  })
+
+  // The setting above only *reaches* the subprocess — it changes nothing
+  // unless the subprocess can actually invoke the SDK's built-in WebFetch,
+  // because that is where the preflight lives. These three lock in which
+  // adapter shapes can, so the toggle's real scope can't drift silently.
+  // Documented in docs/configuration.md under "WebFetch preflight".
+  describe("WebFetch preflight scope", () => {
+    const canRunBuiltinWebFetch = (opts: any): boolean => {
+      const builtinsDisabled = Array.isArray(opts.tools) && opts.tools.length === 0
+      return !builtinsDisabled && !(opts.disallowedTools ?? []).includes("WebFetch")
+    }
+
+    it("passthrough adapters disable every built-in, so the toggle is inert", () => {
+      // `tools: []` is documented by the SDK as "disable all built-in tools".
+      const opts = buildQueryOptions(makeContext({
+        passthrough: true, blockedTools: [], incompatibleTools: [],
+      })).options as any
+      expect(opts.tools).toEqual([])
+      expect(canRunBuiltinWebFetch(opts)).toBe(false)
+    })
+
+    it("internal-mode adapters block WebFetch outright, so the toggle is inert", () => {
+      const opts = buildQueryOptions(makeContext({ passthrough: false })).options as any
+      expect(opts.disallowedTools).toContain("WebFetch")
+      expect(canRunBuiltinWebFetch(opts)).toBe(false)
+    })
+
+    it("cherry leaves the built-in WebFetch runnable, so the toggle bites there (#481)", () => {
+      const opts = buildQueryOptions(makeContext({
+        passthrough: false,
+        blockedTools: CHERRY_BLOCKED_BUILTIN_TOOLS,
+        incompatibleTools: CHERRY_INCOMPATIBLE_TOOLS,
+        allowedMcpTools: [...CHERRY_WEB_TOOLS],
+      })).options as any
+      expect(opts.disallowedTools).not.toContain("WebFetch")
+      expect(canRunBuiltinWebFetch(opts)).toBe(true)
+    })
   })
 
   it("emits an explicit empty settingSources so the subprocess loads nothing (#634/#490)", () => {
