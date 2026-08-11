@@ -65,6 +65,7 @@ import { checkPluginConfigured } from "./setup"
 import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable } from "./models"
 import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
+import { normalizeJcodeSessionId } from "./adapters/jcode"
 import { translateResponsesToAnthropic, translateAnthropicToResponses, createResponsesSseTranslator, reasoningRequested, type ResponsesRequest, type AnthropicSseEvent as ResponsesAnthropicSseEvent } from "./openaiResponses"
 import { extractAdvisorModel, extractSystemText, getLastUserMessage, hasActiveToolLoop, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, MULTIMODAL_TYPES, buildToolUseIndex, describeToolCall, frameReplayTurns } from "./messages"
 import { requireAuth, authEnabled } from "./auth"
@@ -531,7 +532,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
    *  right when it's needed. `force` only skips the cache read — the
    *  in-flight-request de-dupe still applies after it, so concurrent
    *  exhaustions of the same profile still share one upstream call rather
-   *  than stampeding it. A `stale: true` snapshot (served when a fresh fetch
+   *  than stampeding it. The per-profile 429 cooldown suppresses forced
+   *  callers too, so an upstream rate limit leaves this refinement on the
+   *  conservative default instead of stampeding a limited endpoint. A
+   *  `stale: true` snapshot (served when a fresh fetch
    *  failed transiently) is not authoritative about the current window, so
    *  it's skipped too — the conservative default is the safer thing to
    *  leave standing. */
@@ -1120,6 +1124,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const resumeFrom = lineageResult.type === "continuation" || lineageResult.type === "compaction"
           ? lineageResult.resumeFrom
           : undefined
+        const resumeContentFrom = lineageResult.type === "continuation"
+          ? lineageResult.resumeContentFrom
+          : undefined
         // For undo: fork the session at the rollback point
         const undoRollbackUuid = isUndo && lineageResult.type === "undo" ? lineageResult.rollbackUuid : undefined
 
@@ -1188,7 +1195,21 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           // so we only need to send the new user message.
           messagesToConvert = getLastUserMessage(allMessages)
         } else if (isResume) {
-          if (resumeFrom !== undefined && resumeFrom < allMessages.length) {
+          if (
+            resumeFrom !== undefined &&
+            resumeContentFrom !== undefined &&
+            resumeFrom < allMessages.length &&
+            Array.isArray(allMessages[resumeFrom]?.content)
+          ) {
+            const boundaryMessage = allMessages[resumeFrom]!
+            messagesToConvert = [
+              {
+                ...boundaryMessage,
+                content: boundaryMessage.content.slice(resumeContentFrom),
+              },
+              ...allMessages.slice(resumeFrom + 1),
+            ]
+          } else if (resumeFrom !== undefined && resumeFrom < allMessages.length) {
             messagesToConvert = allMessages.slice(resumeFrom)
           } else {
             messagesToConvert = getLastUserMessage(allMessages)
@@ -3965,7 +3986,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   // See src/proxy/openai.ts for the translation logic and design rationale.
   app.post("/v1/chat/completions", async (c) => {
     const rawBody = await c.req.json() as Record<string, unknown>
-    const anthropicBody = translateOpenAiToAnthropic(rawBody)
+    const userAgent = c.req.header("user-agent") ?? ""
+    const jcodeSessionId = userAgent.startsWith("jcode/")
+      ? normalizeJcodeSessionId(c.req.header("x-jcode-session"))
+      : undefined
+    const isJcode = jcodeSessionId !== undefined
+    const adapterName = isJcode ? "jcode" : "openai"
+    const anthropicBody = translateOpenAiToAnthropic(rawBody, {
+      preserveConversationHistory: isJcode,
+    })
 
     if (!anthropicBody) {
       return c.json(
@@ -3978,15 +4007,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     // Hono resolves the path in-process; the URL scheme/host are ignored.
     // Forward the caller's auth headers so requireAuth on /v1/messages accepts
     // the inner hop when MERIDIAN_API_KEY is set (issue #415).
-    // Tag the inner hop as the generic OpenAI endpoint. Without this the
-    // header-less internal request falls through detectAdapter to the default
-    // `opencode` adapter, whose claude_code preset defaults ON — hijacking the
-    // client's own system prompt with the Claude Code persona (#526). The
-    // `openai` adapter mirrors opencode but defaults the preset OFF.
+    // Tag the inner hop as generic OpenAI unless a verified Jcode request
+    // supplied its durable local session ID. Both adapters keep the Claude Code
+    // preset off, while Jcode additionally preserves append-only history.
     const internalHeaders: Record<string, string> = {
       "Content-Type": "application/json",
-      "x-meridian-agent": "openai",
+      "x-meridian-agent": adapterName,
     }
+    if (jcodeSessionId) internalHeaders["x-jcode-session"] = jcodeSessionId
+    const requestedProfile = c.req.header("x-meridian-profile")
+    if (requestedProfile) internalHeaders["x-meridian-profile"] = requestedProfile
     const xApiKey = c.req.header("x-api-key")
     if (xApiKey) internalHeaders["x-api-key"] = xApiKey
     const authz = c.req.header("authorization")
@@ -4010,12 +4040,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     const created = Math.floor(Date.now() / 1000)
     const model = (typeof rawBody.model === "string" && rawBody.model) ? rawBody.model : CANONICAL_SONNET_MODEL
 
-    // Resolve SDK features for this request (thinking passthrough setting).
-    // The OpenAI endpoint is unambiguously the `openai` adapter — matching the
-    // x-meridian-agent tag set on the internal hop above — so resolve directly
-    // rather than re-detecting from the (generic) client User-Agent.
+    // Resolve SDK features for the same adapter selected on the internal hop.
     const { getFeaturesForAdapter } = require("./sdkFeatures") as typeof import("./sdkFeatures")
-    const sdkFeatures = getFeaturesForAdapter("openai")
+    const sdkFeatures = getFeaturesForAdapter(adapterName)
 
     if (!anthropicBody.stream) {
       const anthropicRes = await internalRes.json() as Record<string, unknown>
