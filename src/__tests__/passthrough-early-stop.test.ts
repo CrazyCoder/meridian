@@ -12,10 +12,12 @@
  */
 import { describe, it, expect } from "bun:test"
 import {
+  clientAbortDisposition,
   createEarlyStopTracker,
   isClientForwardedToolUse,
   noteAssistantContent,
   noteUserContent,
+  resumeBoundaryUuid,
   shouldEarlyStop,
 } from "../proxy/passthroughEarlyStop"
 
@@ -56,6 +58,87 @@ describe("isClientForwardedToolUse", () => {
 
   it("excludes tool_use blocks with no id (can't be tracked)", () => {
     expect(isClientForwardedToolUse({ type: "tool_use", name: "read" })).toBe(false)
+  })
+})
+
+describe("clientAbortDisposition", () => {
+  const base = {
+    isIndependentSession: false,
+    profileSessionId: "s1",
+    currentSessionId: "claude-1",
+    sawDuplicateToolUse: false,
+    resumeBoundaryUuid: "u1",
+    passthrough: true,
+  }
+
+  it("stores the boundary when one was persisted before the abort", () => {
+    expect(clientAbortDisposition(base)).toEqual({ action: "store", resumeUuid: "u1" })
+  })
+
+  it("evicts when no deny was persisted — nothing is safe to resume from", () => {
+    // The interrupted tail would make the SDK synthesize a continuation the
+    // model answers with an empty turn, and every empty turn becomes the next
+    // tail. A fresh replay is the cost of not wedging the conversation.
+    expect(clientAbortDisposition({ ...base, resumeBoundaryUuid: undefined })).toEqual({ action: "evict" })
+  })
+
+  // A deny boundary is a passthrough concept. In internal mode the SDK runs the
+  // tools itself, so a user message carrying tool_results is an ordinary turn —
+  // persisting its uuid as a spent deny would make the next continuation fork
+  // from a point that was never a boundary.
+  it("never records a deny boundary for an internal-mode abort", () => {
+    expect(clientAbortDisposition({ ...base, passthrough: false })).toEqual({ action: "evict" })
+  })
+
+  it("evicts when the SDK session id never arrived", () => {
+    expect(clientAbortDisposition({ ...base, currentSessionId: undefined })).toEqual({ action: "evict" })
+  })
+
+  it("evicts on a duplicate-aborted history (#552) even with a boundary", () => {
+    expect(clientAbortDisposition({ ...base, sawDuplicateToolUse: true })).toEqual({ action: "evict" })
+  })
+
+  it("does nothing for fork/subagent requests — they never write the cache", () => {
+    expect(clientAbortDisposition({ ...base, isIndependentSession: true })).toEqual({ action: "none" })
+  })
+
+  it("does nothing without a session key", () => {
+    expect(clientAbortDisposition({ ...base, profileSessionId: undefined })).toEqual({ action: "none" })
+  })
+})
+
+describe("resumeBoundaryUuid", () => {
+  const userMsg = (uuid: unknown, content: unknown) => ({
+    type: "user",
+    uuid,
+    message: { role: "user", content },
+  })
+
+  it("returns the uuid of a user message carrying a tool_result", () => {
+    expect(resumeBoundaryUuid(userMsg("u1", [toolResult("t1")]))).toBe("u1")
+  })
+
+  it("returns the uuid when tool_results mix with other blocks", () => {
+    expect(resumeBoundaryUuid(userMsg("u2", [{ type: "text", text: "hi" }, toolResult("t1")]))).toBe("u2")
+  })
+
+  it("ignores assistant messages", () => {
+    expect(resumeBoundaryUuid({ type: "assistant", uuid: "a1", message: { content: [toolResult("t1")] } })).toBeUndefined()
+  })
+
+  it("ignores user messages without tool_results", () => {
+    expect(resumeBoundaryUuid(userMsg("u3", [{ type: "text", text: "hi" }]))).toBeUndefined()
+  })
+
+  it("ignores messages with no usable uuid", () => {
+    expect(resumeBoundaryUuid(userMsg(undefined, [toolResult("t1")]))).toBeUndefined()
+    expect(resumeBoundaryUuid(userMsg("", [toolResult("t1")]))).toBeUndefined()
+  })
+
+  it("tolerates malformed content", () => {
+    expect(resumeBoundaryUuid(userMsg("u4", "just a string"))).toBeUndefined()
+    expect(resumeBoundaryUuid(null)).toBeUndefined()
+    expect(resumeBoundaryUuid({})).toBeUndefined()
   })
 })
 
