@@ -4,6 +4,8 @@
  */
 import { describe, it, expect } from "bun:test"
 import {
+  describeLineageMismatch,
+  formatLineageMismatch,
   computeLineageHash,
   hashMessage,
   computeMessageHashes,
@@ -243,7 +245,7 @@ describe("verifyLineage", () => {
       msg("user", "i"),           // New
     ]
     const result = verifyLineage(session, extended)
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       type: "diverged",
       reason: "modified-history",
       prefixOverlap: 6,
@@ -271,7 +273,7 @@ describe("verifyLineage", () => {
     const result = verifyLineage(session, incoming)
 
     expect(incoming).toHaveLength(727)
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       type: "diverged",
       reason: "modified-history",
       prefixOverlap: 514,
@@ -539,6 +541,107 @@ describe("verifyLineage stale modified continuation (#689)", () => {
   })
 })
 
+// #767 asked for exactly this: "prefix overlap 50/51" says how many messages
+// matched and never which one stopped. The answer was always in hand at the
+// point of the decision — it just was not reported.
+describe("describeLineageMismatch", () => {
+  function sessionFor(messages: Array<{ role: string; content: any }>): SessionState {
+    return makeSession({
+      lastAccess: 0,
+      lineageHash: computeLineageHash(messages),
+      messageCount: messages.length,
+      messageHashes: computeMessageHashes(messages),
+    })
+  }
+
+  it("names the first index that stopped matching, with both digests", () => {
+    const stored = [
+      { role: "user", content: "one" },
+      { role: "assistant", content: "two" },
+      { role: "user", content: "three" },
+    ]
+    const incoming = [
+      { role: "user", content: "one" },
+      { role: "assistant", content: "two" },
+      { role: "user", content: "three-EDITED" },
+    ]
+
+    const detail = describeLineageMismatch(sessionFor(stored), incoming)
+    expect(detail.index).toBe(2)
+    expect(detail.storedDigest).toBeDefined()
+    expect(detail.incomingDigest).toBeDefined()
+    expect(detail.storedDigest).not.toBe(detail.incomingDigest)
+    // The preceding index matched — that is what makes the named index the seam.
+    expect(detail.previousDigest).toBe(computeMessageHashes(stored)[1])
+    expect(detail.storedCount).toBe(3)
+    expect(detail.incomingCount).toBe(3)
+  })
+
+  it("reports shape without ever carrying content", () => {
+    const secret = "SECRET-do-not-log-this"
+    const stored = [{ role: "user", content: "one" }]
+    const incoming = [{ role: "user", content: [
+      { type: "text", text: secret },
+      { type: "tool_result", tool_use_id: "t1", content: secret },
+    ] }]
+
+    const detail = describeLineageMismatch(sessionFor(stored), incoming)
+    expect(detail.incomingShape).toEqual({ role: "user", blocks: "text,tool_result", bytes: expect.any(Number) })
+    expect(JSON.stringify(detail)).not.toContain(secret)
+  })
+
+  it("reports -1 when the shared prefix matches all the way", () => {
+    const stored = [{ role: "user", content: "one" }]
+    const incoming = [{ role: "user", content: "one" }, { role: "assistant", content: "two" }]
+    expect(describeLineageMismatch(sessionFor(stored), incoming).index).toBe(-1)
+  })
+})
+
+// The log line this feeds is the whole point: core already knew which message
+// broke, and reported only a count nobody could act on.
+describe("formatLineageMismatch", () => {
+  const base = {
+    index: 50,
+    storedDigest: "19d133336ded0000000000000000aaaa",
+    incomingDigest: "d546681fb008000000000000000bbbbb",
+    previousDigest: "d61d1384ce00000000000000000ccccc",
+    incomingShape: { role: "user", blocks: "tool_result,tool_result", bytes: 812 },
+    storedCount: 51,
+    incomingCount: 53,
+  }
+
+  it("names the index, truncates both digests, and reports the shape", () => {
+    const out = formatLineageMismatch(base)!
+    expect(out).toContain("first mismatch at index 50")
+    expect(out).toContain("stored=19d133336ded")
+    expect(out).toContain("incoming=d546681fb008")
+    expect(out).toContain("user[tool_result,tool_result] 812B")
+  })
+
+  // A trailing-only mismatch is a late tool result; a mid-history one means the
+  // transcript was rewritten. The overlap count cannot tell them apart.
+  it("calls out a trailing-only mismatch", () => {
+    expect(formatLineageMismatch(base)).toContain("trailing message only")
+  })
+
+  it("does not call a mid-history mismatch trailing", () => {
+    expect(formatLineageMismatch({ ...base, index: 2 })).not.toContain("trailing")
+  })
+
+  it("returns nothing when the shared prefix matched all the way", () => {
+    expect(formatLineageMismatch({ ...base, index: -1 })).toBeUndefined()
+  })
+
+  it("never carries content", () => {
+    const secret = "SECRET-do-not-log"
+    const out = formatLineageMismatch({
+      ...base,
+      incomingShape: { role: "user", blocks: "text", bytes: secret.length },
+    })!
+    expect(out).not.toContain(secret)
+  })
+})
+
 describe("verifyLineage append-only tool-result extension", () => {
   const toolResult = (id: string, content: string) => ({
     type: "tool_result",
@@ -586,6 +689,78 @@ describe("verifyLineage append-only tool-result extension", () => {
     })
   })
 
+  // #767: OpenCode + Opus reported `prefix overlap N/N+1` on nearly every turn,
+  // each one forcing a fresh replay (cache 97% -> 32%, ~3.9x cost). The reported
+  // shape is exactly this path: the trailing stored message is the user turn
+  // carrying tool_results, a parallel call lands late and extends it, and the
+  // conversation grows by an assistant+user pair on top. Opus issues parallel
+  // tool calls far more readily than Haiku, which is the model correlation the
+  // report measured (85% clean on Haiku vs 30-40% on Opus).
+  it("continues on the #767 signature: trailing message extended, history grown", () => {
+    // 51 stored messages, the last one a user turn with one result of two.
+    const head: Array<{ role: string; content: any }> = []
+    for (let i = 0; i < 49; i++) {
+      head.push({ role: i % 2 === 0 ? "user" : "assistant", content: [{ type: "text", text: `turn ${i}` }] })
+    }
+    const assistantWithParallelCalls = { role: "assistant", content: [
+      { type: "tool_use", id: "call-a", name: "bash", input: { command: "a" } },
+      { type: "tool_use", id: "call-b", name: "bash", input: { command: "b" } },
+    ] }
+    const stored = [
+      ...head,
+      assistantWithParallelCalls,
+      { role: "user", content: [toolResult("call-a", "a-result")] },
+    ]
+    expect(stored.length).toBe(51)
+
+    const incoming = [
+      ...head,
+      assistantWithParallelCalls,
+      // The late sibling result extends the SAME message rather than adding one.
+      { role: "user", content: [toolResult("call-a", "a-result"), toolResult("call-b", "b-result")] },
+      { role: "assistant", content: [{ type: "text", text: "and the answer" }] },
+      { role: "user", content: [{ type: "text", text: "next question" }] },
+    ]
+    expect(incoming.length).toBe(53)
+
+    const result = verifyLineage(sessionFor(stored), incoming)
+    expect(result.type).toBe("continuation")
+    if (result.type === "continuation") {
+      expect(result.resumeFrom).toBe(50)
+      expect(result.resumeContentFrom).toBe(1)
+    }
+  })
+
+  // The caveat that decides whether a fix is visible in the field: block hashes
+  // are only recorded from 1.61.0 on, so a session cached by an older build
+  // keeps replaying until it is started fresh.
+  it("a session stored without block hashes still diverges (pre-1.61.0 cache entry)", () => {
+    const stored = [
+      { role: "user", content: [{ type: "text", text: "run both" }] },
+      { role: "assistant", content: [
+        { type: "tool_use", id: "call-a", name: "bash", input: { command: "a" } },
+        { type: "tool_use", id: "call-b", name: "bash", input: { command: "b" } },
+      ] },
+      { role: "user", content: [toolResult("call-a", "a-result")] },
+    ]
+    const legacySession = makeSession({
+      lastAccess: 0,
+      lineageHash: computeLineageHash(stored),
+      messageCount: stored.length,
+      messageHashes: computeMessageHashes(stored),
+      // messageBlockHashes deliberately absent — what a pre-1.61.0 entry holds.
+    })
+    const incoming = [
+      stored[0]!,
+      stored[1]!,
+      { role: "user", content: [toolResult("call-a", "a-result"), toolResult("call-b", "b-result")] },
+      { role: "assistant", content: [{ type: "text", text: "answer" }] },
+      { role: "user", content: [{ type: "text", text: "next" }] },
+    ]
+
+    expect(verifyLineage(legacySession, incoming).type).toBe("diverged")
+  })
+
   it("still diverges when an existing tool result changed", () => {
     const stored = [
       { role: "user", content: [{ type: "text", text: "run both" }] },
@@ -604,7 +779,7 @@ describe("verifyLineage append-only tool-result extension", () => {
       { role: "assistant", content: "next" },
     ]
 
-    expect(verifyLineage(sessionFor(stored), incoming)).toEqual({
+    expect(verifyLineage(sessionFor(stored), incoming)).toMatchObject({
       type: "diverged",
       reason: "modified-history",
       prefixOverlap: 2,

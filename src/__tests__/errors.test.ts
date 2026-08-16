@@ -2,7 +2,7 @@
  * Unit tests for classifyError — pure function, no mocks needed.
  */
 import { describe, it, expect } from "bun:test"
-import { classifyError, extendedContextHint, isStaleSessionError, isBusySessionError, isExtraUsageRequiredError, extractSdkTermination, formatSdkTermination } from "../proxy/errors"
+import { canRecoverCapturedToolUses, classifyError, extendedContextHint, classifyResumeRefusal, isBusySessionError, isExtraUsageRequiredError, extractSdkTermination, formatSdkTermination, isAccountFailoverError, isQuotaRefusal } from "../proxy/errors"
 
 describe("classifyError", () => {
   describe("authentication errors", () => {
@@ -150,6 +150,102 @@ describe("classifyError", () => {
       const result = classifyError("subscription expired")
       expect(result.status).toBe(402)
     })
+
+    it("detects a lapsed subscription with a payment-method prompt", () => {
+      const r = classifyError("Claude Code returned an error result: Your Claude Max subscription is inactive — update your payment method to continue.")
+      expect(r.status).toBe(402)
+      expect(r.type).toBe("billing_error")
+    })
+
+    it("detects an exhausted extra-usage refusal", () => {
+      const r = classifyError("API Error: 400 You're out of extra usage. Add more at claude.ai/settings/usage")
+      expect(r.type).toBe("billing_error")
+    })
+
+    // These used to classify as billing because the branch matched bare
+    // substrings anywhere in the text, and it runs before the crash/max-turns
+    // branches so it won. Harmless as a wrong status code; not harmless once
+    // isAccountFailoverError keys on the type (#796), where an incidental
+    // filename could mark every profile in the pool exhausted.
+    it.each([
+      ["a filename", "Claude Code returned an error result: Reached maximum number of turns (3) while editing subscription.ts"],
+      ["a path", "Error: ENOENT: no such file or directory, open '/repo/src/billing/index.ts'"],
+      ["a URL", "fetch failed: https://api.example.com/payment/status returned 500"],
+      ["a stack frame line number", "TypeError: undefined is not a function\n    at handler.js:402:15"],
+    ])("does not read %s as a billing error", (_label, msg) => {
+      const r = classifyError(msg)
+      expect(r.type).not.toBe("billing_error")
+      expect(isAccountFailoverError(r.type)).toBe(false)
+    })
+  })
+
+  // #770: guardUpstreamIdle is meridian's own termination, not the SDK's. Its
+  // message matched none of the needles, so it landed on "unknown" — which
+  // excludes it from canRecoverAsToolUse and discards tool calls the hook had
+  // already captured.
+  describe("upstream idle termination", () => {
+    it("recognises the idle guard's own error and reads the idle window", () => {
+      const t = extractSdkTermination("upstream idle for 90001ms (limit 90000ms)")
+      expect(t.reason).toBe("upstream_idle")
+      expect(t.idleMs).toBe(90001)
+    })
+
+    it("recognises it when wrapped by the SDK error text", () => {
+      const t = extractSdkTermination("Error: upstream idle for 90001ms (limit 90000ms)\n    at guard.ts:1")
+      expect(t.reason).toBe("upstream_idle")
+    })
+
+    it("leaves the client-facing classification untouched", () => {
+      // The 504 upstream_timeout the client sees comes from an
+      // `instanceof UpstreamIdleError` branch in server.ts, NOT from
+      // classifyError — which still reads this as a generic api_error. #770 is
+      // about the termination reason only, so this pins that the wire status
+      // did not move with it.
+      const r = classifyError("upstream idle for 90001ms (limit 90000ms)")
+      expect(r.status).toBe(500)
+      expect(r.type).toBe("api_error")
+    })
+
+    it("does not swallow a max_turns error that mentions idling", () => {
+      const t = extractSdkTermination("Reached maximum number of turns (3) while waiting for an idle upstream")
+      expect(t.reason).toBe("max_turns")
+    })
+  })
+
+  describe("canRecoverCapturedToolUses", () => {
+    const base = { passthrough: true, capturedToolUses: 2, abortIsOurs: true } as const
+
+    it("recovers a turn-cap termination", () => {
+      expect(canRecoverCapturedToolUses({ ...base, reason: "max_turns" })).toBe(true)
+    })
+
+    // #770: the stall killed the stream, not the work already captured.
+    it("recovers an idle-guard termination", () => {
+      expect(canRecoverCapturedToolUses({ ...base, reason: "upstream_idle" })).toBe(true)
+    })
+
+    it("recovers our own abort but not a client disconnect", () => {
+      expect(canRecoverCapturedToolUses({ ...base, reason: "aborted", abortIsOurs: true })).toBe(true)
+      expect(canRecoverCapturedToolUses({ ...base, reason: "aborted", abortIsOurs: false })).toBe(false)
+    })
+
+    it("does not recover an unrecognised termination", () => {
+      expect(canRecoverCapturedToolUses({ ...base, reason: "unknown" })).toBe(false)
+    })
+
+    it("does not recover a process crash", () => {
+      expect(canRecoverCapturedToolUses({ ...base, reason: "process_exit" })).toBe(false)
+    })
+
+    // Without captured calls there is nothing to deliver, and outside
+    // passthrough the client does not execute tools at all.
+    it("requires captured tool calls", () => {
+      expect(canRecoverCapturedToolUses({ ...base, reason: "max_turns", capturedToolUses: 0 })).toBe(false)
+    })
+
+    it("requires passthrough", () => {
+      expect(canRecoverCapturedToolUses({ ...base, reason: "max_turns", passthrough: false })).toBe(false)
+    })
   })
 
   describe("process crashes", () => {
@@ -232,37 +328,50 @@ describe("classifyError", () => {
     })
   })
 
-  describe("stale session detection", () => {
-    it("detects 'No message found with message.uuid' errors", () => {
-      expect(isStaleSessionError(new Error("No message found with message.uuid of: e663b687-6d08-4cc4-b9a9-5245ce8f1e07"))).toBe(true)
+  describe("resume refusal classification", () => {
+    const busyRefusal =
+      "Error: Session 3cff857d-114e-4be3-8a12-99842ad2326e is currently running as a background agent (bg). Use `claude agents` to find and attach to it, or add --fork-session to branch off a copy."
+
+    it("a lost message names itself, so an identical attempt is pointless", () => {
+      expect(classifyResumeRefusal(new Error("No message found with message.uuid of: e663b687-6d08-4cc4-b9a9-5245ce8f1e07"))).toBe("missing-message")
     })
 
-    it("detects the error embedded in longer messages", () => {
-      expect(isStaleSessionError(new Error("claude code returned an error result: No message found with message.uuid of: abc123"))).toBe(true)
+    it("reads the refusal out of a longer message", () => {
+      expect(classifyResumeRefusal(new Error("claude code returned an error result: No message found with message.uuid of: abc123"))).toBe("missing-message")
     })
 
-    it("detects 'No conversation found with session ID' errors", () => {
-      expect(isStaleSessionError(new Error("No conversation found with session ID: 2e9e868c-ab59-482c-ae28-3b60ec9cb95b"))).toBe(true)
+    it("a session that would not open is unresumable, not proven gone", () => {
+      expect(classifyResumeRefusal(new Error("No conversation found with session ID: 2e9e868c-ab59-482c-ae28-3b60ec9cb95b"))).toBe("unresumable")
+      expect(classifyResumeRefusal(new Error("No conversation found to continue"))).toBe("unresumable")
+      expect(classifyResumeRefusal(new Error("No conversations found to resume"))).toBe("unresumable")
+      expect(classifyResumeRefusal(new Error("No conversations found to resume."))).toBe("unresumable")
     })
 
-    it("detects 'No conversation found to continue' errors", () => {
-      expect(isStaleSessionError(new Error("No conversation found to continue"))).toBe(true)
+    it("a session held by a running agent is busy, so it can be branched", () => {
+      expect(classifyResumeRefusal(new Error(busyRefusal))).toBe("busy")
     })
 
-    it("detects 'No conversations found to resume' errors", () => {
-      expect(isStaleSessionError(new Error("No conversations found to resume"))).toBe(true)
-      expect(isStaleSessionError(new Error("No conversations found to resume."))).toBe(true)
+    it("finds the busy refusal on stderr when the error only carries the exit code", () => {
+      expect(classifyResumeRefusal(new Error("Claude Code process exited with code 1"), busyRefusal)).toBe("busy")
     })
 
-    it("returns false for unrelated errors", () => {
-      expect(isStaleSessionError(new Error("rate limit exceeded"))).toBe(false)
-      expect(isStaleSessionError(new Error("authentication failed"))).toBe(false)
+    it("leaves failures that are not about the resume unclassified", () => {
+      expect(classifyResumeRefusal(new Error("rate limit exceeded"))).toBeUndefined()
+      expect(classifyResumeRefusal(new Error("authentication failed"))).toBeUndefined()
+      expect(classifyResumeRefusal(new Error("Claude Code process exited with code 1"))).toBeUndefined()
     })
 
-    it("returns false for non-Error values", () => {
-      expect(isStaleSessionError("No message found with message.uuid")).toBe(false)
-      expect(isStaleSessionError(null)).toBe(false)
-      expect(isStaleSessionError(undefined)).toBe(false)
+    it("reads no wording off the value of a non-Error failure", () => {
+      expect(classifyResumeRefusal("No message found with message.uuid")).toBeUndefined()
+      expect(classifyResumeRefusal(null)).toBeUndefined()
+      expect(classifyResumeRefusal(undefined)).toBeUndefined()
+    })
+
+    it("still finds the busy refusal on stderr, whatever the failure value is", () => {
+      // The busy wording travels on stderr precisely because the failure often
+      // carries nothing but an exit code, so this one is not value-bound.
+      expect(classifyResumeRefusal("exit 1", busyRefusal)).toBe("busy")
+      expect(classifyResumeRefusal(null, busyRefusal)).toBe("busy")
     })
   })
 
@@ -525,5 +634,51 @@ describe("classifyError: session/usage limit phrasings (live-observed)", () => {
     const r = classifyError("usage limit reached | resets at 5pm")
     expect(r.type).toBe("rate_limit_error")
     expect(r.status).toBe(429)
+  })
+})
+
+describe("isAccountFailoverError", () => {
+  it("accepts the types that exhaust one account and leave the pool viable", () => {
+    expect(isAccountFailoverError("rate_limit_error")).toBe(true)
+    expect(isAccountFailoverError("billing_error")).toBe(true)
+  })
+
+  it("rejects failures that say nothing about the account", () => {
+    // Failing over on these would spend every account on one upstream hiccup
+    // and mark them all exhausted for something none of them did.
+    expect(isAccountFailoverError("api_error")).toBe(false)
+    expect(isAccountFailoverError("overloaded_error")).toBe(false)
+    expect(isAccountFailoverError("timeout_error")).toBe(false)
+    expect(isAccountFailoverError("upstream_timeout")).toBe(false)
+  })
+
+  it("rejects authentication_error, which the token refresh recovers in place", () => {
+    expect(isAccountFailoverError("authentication_error")).toBe(false)
+  })
+
+  it("rejects a missing or malformed type rather than guessing", () => {
+    expect(isAccountFailoverError(undefined)).toBe(false)
+    expect(isAccountFailoverError(null)).toBe(false)
+    expect(isAccountFailoverError("")).toBe(false)
+  })
+
+  it("agrees with classifyError on a subscription refusal", () => {
+    const classified = classifyError("Your Claude Max subscription is inactive - update your payment method")
+    expect(classified.type).toBe("billing_error")
+    expect(classified.status).toBe(402)
+    expect(isAccountFailoverError(classified.type)).toBe(true)
+  })
+})
+
+describe("isQuotaRefusal", () => {
+  it("separates the refusal that names its own reset from the one that does not", () => {
+    expect(isQuotaRefusal("rate_limit_error")).toBe(true)
+    expect(isQuotaRefusal("billing_error")).toBe(false)
+    expect(isQuotaRefusal(undefined)).toBe(false)
+  })
+
+  it("is a strict subset of the failover set", () => {
+    expect(isAccountFailoverError("rate_limit_error") && isQuotaRefusal("rate_limit_error")).toBe(true)
+    expect(isAccountFailoverError("billing_error") && !isQuotaRefusal("billing_error")).toBe(true)
   })
 })

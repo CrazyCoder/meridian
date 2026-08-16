@@ -13,7 +13,22 @@ import { assistantMessage, messageStart, textBlockStart, textDelta, blockStop, m
 
 let capturedEnvs: string[] = []
 let failingDirs = new Set<string>()
+// Accounts that fail only AFTER streaming some content — the error frame then
+// lands behind message_start, where the sniffer must not touch it.
+let failAfterContentDirs = new Set<string>()
 const DEFAULT_FAILURE = "429 rate limit reached for this account"
+// Classifies as billing_error (402): an account whose subscription lapsed or
+// whose card was declined. Per-account like a quota refusal, but with no reset
+// to wait for.
+const SUBSCRIPTION_REFUSAL = "Claude Code returned an error result: Your Claude Max subscription is inactive — update your payment method to continue."
+// Classifies as overloaded_error (503): says nothing about the account, so it
+// must NOT spend the pool.
+const UPSTREAM_HICCUP = "Claude Code returned an error result: upstream is overloaded"
+// A perfectly ordinary failure that happens to name a file called
+// subscription.ts. Before the classifier was tightened this read as
+// billing_error and, with billing in the failover set, burned the whole pool.
+const INCIDENTAL_BILLING_WORD =
+  "Claude Code returned an error result: Reached maximum number of turns (3) while editing subscription.ts"
 let failureMessage = DEFAULT_FAILURE
 
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
@@ -23,6 +38,14 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
     const streaming = params.options?.includePartialMessages === true
     return (async function* () {
       if ([...failingDirs].some((f) => dir.includes(f))) {
+        throw new Error(failureMessage)
+      }
+      if ([...failAfterContentDirs].some((f) => dir.includes(f))) {
+        if (streaming) {
+          yield messageStart("msg-1")
+          yield textBlockStart(0)
+          yield textDelta(0, "partial from " + dir)
+        }
         throw new Error(failureMessage)
       }
       if (streaming) {
@@ -99,6 +122,7 @@ const savedEnv: Record<string, string | undefined> = {}
 // still win for those tests.
 beforeEach(() => {
   failureMessage = DEFAULT_FAILURE
+  failAfterContentDirs = new Set()
   __setFetchOAuthUsageOverride(async () => null)
 })
 
@@ -120,6 +144,14 @@ describe("priority routing", () => {
     resetActiveProfile()
     savedEnv.MERIDIAN_ROUTING = process.env.MERIDIAN_ROUTING
     savedEnv.MERIDIAN_PROFILE_ORDER = process.env.MERIDIAN_PROFILE_ORDER
+    // A profile with no claudeConfigDir of its own inherits the ambient
+    // CLAUDE_CONFIG_DIR, so the SDK mock sees the developer's real config
+    // directory instead of falling back to its "default" sentinel. A test that
+    // fails such a profile by adding "default" to failingDirs then never fails
+    // it at all. Green in CI, red on any machine that runs Claude Code with a
+    // custom config dir — which is most of this project's users.
+    savedEnv.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
+    delete process.env.CLAUDE_CONFIG_DIR
     process.env.MERIDIAN_ROUTING = "priority"
     process.env.MERIDIAN_PROFILE_ORDER = "work,personal"
   })
@@ -239,6 +271,176 @@ describe("priority routing", () => {
     expect(text.split("event: message_start").length - 1).toBe(1)
   }, 20_000)
 
+  it("fails over when the preferred account's subscription is refused", async () => {
+    failureMessage = SUBSCRIPTION_REFUSAL
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    const res = await post(app)
+    expect(res.status).toBe(200)
+    const body = await res.json() as { content: Array<{ text: string }> }
+    expect(body.content[0]?.text).toContain("prof-personal")
+  }, 20_000)
+
+  it("marks the refused account with its own reason, not the quota one", async () => {
+    failureMessage = SUBSCRIPTION_REFUSAL
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    await post(app)
+    const marks = await exhaustedMarks(app)
+    expect(marks.map(m => m.id)).toEqual(["work"])
+    expect(marks[0]?.reason).toBe("billing_error")
+  }, 20_000)
+
+  // The blast radius of putting billing_error in the failover set: any error
+  // text containing "subscription", "billing" or "payment" — a filename, a
+  // path, an MCP server's stderr — used to mark EVERY profile exhausted, and a
+  // fully exhausted pool collapses the candidate list, so the next genuine
+  // quota failure never reaches the healthy account.
+  it("does not spend the pool on an error that merely names a billing word", async () => {
+    failureMessage = INCIDENTAL_BILLING_WORD
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    await post(app)
+
+    const marks = await exhaustedMarks(app)
+    expect(marks.map(m => m.id)).not.toContain("personal")
+    expect(marks.map(m => m.id)).not.toContain("work")
+  }, 20_000)
+
+  it("still fails over to a healthy account after one of those errors", async () => {
+    failureMessage = INCIDENTAL_BILLING_WORD
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    await post(app)
+
+    // The pool must be intact: a real quota refusal now still reaches personal.
+    failureMessage = DEFAULT_FAILURE
+    const res = await post(app, {}, "second request after an incidental billing word")
+    expect(res.status).toBe(200)
+    const body = await res.json() as { content: Array<{ text: string }> }
+    expect(body.content[0]?.text).toContain("prof-personal")
+  }, 30_000)
+
+  it("streams fail over on a refused subscription too", async () => {
+    failureMessage = SUBSCRIPTION_REFUSAL
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    const res = await app.fetch(new Request("http://localhost/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5",
+        max_tokens: 128,
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }))
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain("prof-personal")
+    expect(text.split("event: message_start").length - 1).toBe(1)
+  }, 20_000)
+
+  it("surfaces the refusal's own status when every account is refused", async () => {
+    failureMessage = SUBSCRIPTION_REFUSAL
+    failingDirs.add("prof-work")
+    failingDirs.add("prof-personal")
+    const app = createTestApp()
+    const res = await post(app)
+    // Not a 429: a client told to back off would retry a pool that cannot
+    // recover on its own.
+    expect(res.status).toBe(402)
+    const body = await res.json() as { error: { type: string } }
+    expect(body.error.type).toBe("billing_error")
+  }, 30_000)
+
+  it("does NOT spend the pool on a failure that says nothing about the account", async () => {
+    failureMessage = UPSTREAM_HICCUP
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    const res = await post(app)
+    expect(res.status).toBe(503)
+    // personal was never tried, and work carries no exhaustion mark
+    expect(capturedEnvs.length).toBeGreaterThan(0)
+    expect(capturedEnvs.every((e) => e.includes("prof-work"))).toBe(true)
+    expect(await exhaustedMarks(app)).toEqual([])
+  }, 20_000)
+
+  it("moves an assigned conversation off an account once its subscription is refused", async () => {
+    const app = createTestApp()
+    // s1 lands on work, and assignment affinity pins it there
+    const first = await post(app, { "x-opencode-session": "s1" })
+    expect(first.status).toBe(200)
+    const firstBody = await first.json() as { content: Array<{ text: string }> }
+    expect(firstBody.content[0]?.text).toContain("prof-work")
+
+    // work's subscription lapses. Affinity outranks the pool order, so nothing
+    // but an exhaustion mark can move this conversation — which is exactly
+    // what a refusal that fails to mark leaves stuck.
+    failureMessage = SUBSCRIPTION_REFUSAL
+    failingDirs.add("prof-work")
+    const second = await post(app, { "x-opencode-session": "s1" })
+    expect(second.status).toBe(200)
+    const secondBody = await second.json() as { content: Array<{ text: string }> }
+    expect(secondBody.content[0]?.text).toContain("prof-personal")
+
+    // and it does not drift back: the mark makes the next request skip work
+    capturedEnvs = []
+    const third = await post(app, { "x-opencode-session": "s1" })
+    expect(third.status).toBe(200)
+    expect(capturedEnvs).toHaveLength(1)
+    expect(capturedEnvs[0]).toContain("prof-personal")
+  }, 30_000)
+
+  it("streams the refusal's own payload when every account is refused", async () => {
+    failureMessage = SUBSCRIPTION_REFUSAL
+    failingDirs.add("prof-work")
+    failingDirs.add("prof-personal")
+    const app = createTestApp()
+    const res = await app.fetch(new Request("http://localhost/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5",
+        max_tokens: 128,
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }))
+    // SSE carries its failure in the frame, not in the status
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain("event: error")
+    expect(text).toContain("billing_error")
+    expect(text).not.toContain("message_start")
+  }, 30_000)
+
+  it("leaves a refusal that arrives AFTER content alone", async () => {
+    // The deliberate limit of this whole mechanism: once the client is
+    // consuming a stream it is never yanked, whatever the error says. The
+    // account keeps its place — the failure is not attributed to it here.
+    failureMessage = SUBSCRIPTION_REFUSAL
+    failAfterContentDirs.add("prof-work")
+    const app = createTestApp()
+    const res = await app.fetch(new Request("http://localhost/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5",
+        max_tokens: 128,
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }))
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain("partial from")
+    expect(text).toContain("billing_error")
+    expect(capturedEnvs).toHaveLength(1)
+    expect(capturedEnvs[0]).toContain("prof-work")
+    expect(await exhaustedMarks(app)).toEqual([])
+  }, 20_000)
+
   it("mode OFF is byte-identical: no failover, error surfaces from the default profile", async () => {
     delete process.env.MERIDIAN_ROUTING
     failingDirs.add("prof-work")
@@ -260,6 +462,14 @@ describe("priority cooldown resolution", () => {
     resetActiveProfile()
     savedEnv.MERIDIAN_ROUTING = process.env.MERIDIAN_ROUTING
     savedEnv.MERIDIAN_PROFILE_ORDER = process.env.MERIDIAN_PROFILE_ORDER
+    // A profile with no claudeConfigDir of its own inherits the ambient
+    // CLAUDE_CONFIG_DIR, so the SDK mock sees the developer's real config
+    // directory instead of falling back to its "default" sentinel. A test that
+    // fails such a profile by adding "default" to failingDirs then never fails
+    // it at all. Green in CI, red on any machine that runs Claude Code with a
+    // custom config dir — which is most of this project's users.
+    savedEnv.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
+    delete process.env.CLAUDE_CONFIG_DIR
     process.env.MERIDIAN_ROUTING = "priority"
     process.env.MERIDIAN_PROFILE_ORDER = "work,personal"
     rateLimitStore.clear()
@@ -297,6 +507,32 @@ describe("priority cooldown resolution", () => {
     const marks = await exhaustedMarks(app)
     expect(marks.map(m => m.id)).toEqual(["work"])
     expect(marks.map(m => m.until)).toEqual([WORK_RESET])
+  }, 20_000)
+
+  it("ignores the five_hour reset when the refusal is about the subscription, not the quota", async () => {
+    // work has a rejected five_hour window on record, resetting 4h out. A
+    // billing refusal must not borrow that number: entitlement does not come
+    // back when a quota window rolls over, so adopting it would hide the
+    // account for four hours instead of re-probing it on the conservative
+    // default.
+    rateLimitStore.record("work", {
+      status: "rejected",
+      rateLimitType: "five_hour",
+      utilization: 1,
+      resetsAt: WORK_RESET,
+    })
+    failureMessage = SUBSCRIPTION_REFUSAL
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    const before = Date.now()
+    await post(app)
+
+    const marks = await exhaustedMarks(app)
+    expect(marks.map(m => m.id)).toEqual(["work"])
+    expect(marks[0]?.reason).toBe("billing_error")
+    expect(marks[0]?.until).toBeLessThan(WORK_RESET)
+    expect(marks[0]?.until).toBeGreaterThanOrEqual(before + 10 * 60_000)
+    expect(marks[0]?.until).toBeLessThanOrEqual(Date.now() + 10 * 60_000)
   }, 20_000)
 
   it("adopts a SECONDS-valued reset from the SDK, which tier 1 could never match before (#708)", async () => {
@@ -578,6 +814,14 @@ describe("keyless priority affinity", () => {
     // and the shared `savedEnv` object is restored wholesale in afterEach.
     savedEnv.MERIDIAN_ROUTING = process.env.MERIDIAN_ROUTING
     savedEnv.MERIDIAN_PROFILE_ORDER = process.env.MERIDIAN_PROFILE_ORDER
+    // A profile with no claudeConfigDir of its own inherits the ambient
+    // CLAUDE_CONFIG_DIR, so the SDK mock sees the developer's real config
+    // directory instead of falling back to its "default" sentinel. A test that
+    // fails such a profile by adding "default" to failingDirs then never fails
+    // it at all. Green in CI, red on any machine that runs Claude Code with a
+    // custom config dir — which is most of this project's users.
+    savedEnv.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
+    delete process.env.CLAUDE_CONFIG_DIR
     process.env.MERIDIAN_ROUTING = "priority"
     process.env.MERIDIAN_PROFILE_ORDER = "work,personal"
   })

@@ -42,6 +42,21 @@ export function extendedContextHint(model?: string): string {
   return advise("MERIDIAN_1M_CONTEXT_SUPPORT=0")
 }
 
+/** Phrases that actually indicate a billing or subscription refusal.
+ *
+ *  `\b402\b` excludes a `:digits` suffix so a stack frame like
+ *  `handler.js:402:15` cannot be read as a payment-required status. */
+const BILLING_SIGNALS: readonly RegExp[] = [
+  /\b402\b(?!:\d)/,
+  /billing[_ ](?:error|issue|problem|failure)/,
+  /subscription (?:is |has )?(?:inactive|expired|lapsed|cancell?ed|ended|invalid|not active)/,
+  /(?:expired|inactive|lapsed|invalid|no active|cancell?ed) subscription/,
+  /payment (?:method|required|failed|declined|details|info)/,
+  /update your payment/,
+  /(?:out of|draw from|draws from) extra usage/,
+  /insufficient (?:credit|funds|balance)/,
+]
+
 /** "hit your limit", "hit your session limit", "hit your weekly limit", and any
  *  future single-word qualifier the CLI adopts. Anchored on both sides so it
  *  can't drift into unrelated text that happens to contain "limit". */
@@ -99,8 +114,14 @@ export function classifyError(errMsg: string, model?: string): ClassifiedError {
     }
   }
 
-  // Billing / subscription
-  if (lower.includes("402") || lower.includes("billing") || lower.includes("subscription") || lower.includes("payment")) {
+  // Billing / subscription. Matched on phrases rather than bare tokens: an
+  // error mentioning `subscription.ts`, a path under `src/billing/`, or a URL
+  // containing `/payment/` is not a billing problem, and this branch runs
+  // BEFORE the process-crash and max-turns branches, so it wins on any message
+  // that merely contains the word. That was a wrong status code until
+  // isAccountFailoverError started keying on it (#796) — at which point an
+  // MCP server's stderr could mark every profile in the pool exhausted.
+  if (BILLING_SIGNALS.some(rx => rx.test(lower))) {
     return {
       status: 402,
       type: "billing_error",
@@ -207,17 +228,43 @@ export function isExpiredTokenError(errMsg: string): boolean {
 }
 
 /**
- * Detect errors caused by stale session/message UUIDs.
- * These happen when the upstream Claude session no longer contains
- * the referenced message or conversation (expired, evicted server-side, etc.).
+ * Why the CLI refused a --resume, as far as the refusal itself can tell:
+ *
+ * - "busy": the session exists and is registered as a running agent. It can
+ *   be branched, so a caller out of retries may fork it.
+ * - "unresumable": the session as a whole could not be opened. This is not
+ *   proof that it is gone — a --resume landing while the session's previous
+ *   subprocess is still exiting is refused although the session is intact —
+ *   so a caller must retry before giving up on it, and has nothing to fork.
+ * - "missing-message": one message inside the session is gone, so an
+ *   identical attempt fails identically. Retrying is pointless.
+ *
+ * The three carry different recoveries, which is the whole reason they are
+ * one verdict rather than scattered text matches at each call site.
  */
-export function isStaleSessionError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
+export type ResumeRefusal = "busy" | "unresumable" | "missing-message"
+
+/**
+ * Classify a resume failure. Returns undefined for anything that is not a
+ * refusal of the resume itself (rate limits, auth, upstream faults), which
+ * the caller handles on its own paths.
+ *
+ * The busy refusal text arrives on stderr — the SDK error itself only carries
+ * the exit code — so captured stderr is part of the input.
+ */
+export function classifyResumeRefusal(error: unknown, stderr?: string): ResumeRefusal | undefined {
+  if (isBusySessionError(error, stderr)) return "busy"
+  if (!(error instanceof Error)) return undefined
   const msg = error.message
-  return msg.includes("No message found with message.uuid")
-    || msg.includes("No conversation found with session ID")
-    || msg.includes("No conversation found to continue")
-    || msg.includes("No conversations found to resume")
+  if (msg.includes("No message found with message.uuid")) return "missing-message"
+  if (
+    msg.includes("No conversation found with session ID") ||
+    msg.includes("No conversation found to continue") ||
+    msg.includes("No conversations found to resume")
+  ) {
+    return "unresumable"
+  }
+  return undefined
 }
 
 /**
@@ -244,6 +291,47 @@ export function isRateLimitError(errMsg: string): boolean {
 }
 
 /**
+ * Error types that exhaust the CURRENT account while leaving the rest of the
+ * pool viable — priority routing's cue to try the next candidate instead of
+ * handing the failure to the client.
+ *
+ * `rate_limit_error` is a spent quota window; `billing_error` is a lapsed
+ * subscription or a declined payment method. Both are properties of the one
+ * account that raised them and neither can succeed on a retry there, which is
+ * exactly what makes another account worth trying.
+ *
+ * Deliberately absent: `authentication_error`, which the token refresh already
+ * recovers in place, and the account-blind failures (`api_error`,
+ * `overloaded_error`, `timeout_error`) — those say nothing about entitlement,
+ * and failing over on them would spend the whole pool on one upstream hiccup
+ * and leave every account marked exhausted for something none of them did.
+ */
+const ACCOUNT_FAILOVER_ERROR_TYPES: ReadonlySet<string> = new Set([
+  "rate_limit_error",
+  "billing_error",
+])
+
+/**
+ * Whether a classified error type means "this account cannot serve the
+ * request, another one might". Used by priority routing to decide failover.
+ */
+export function isAccountFailoverError(errorType: string | null | undefined): errorType is string {
+  return typeof errorType === "string" && ACCOUNT_FAILOVER_ERROR_TYPES.has(errorType)
+}
+
+/**
+ * Whether the refusal is the quota kind, which names its own reset — the two
+ * cooldown tiers read the account's five-hour window, and only this kind has
+ * anything to look up there. Lives beside the set so the type name stays
+ * owned by one module: a rename that missed a caller in the orchestrator would
+ * not break failover loudly, it would silently downgrade every quota cooldown
+ * to the conservative default.
+ */
+export function isQuotaRefusal(errorType: string | null | undefined): boolean {
+  return errorType === "rate_limit_error"
+}
+
+/**
  * Detect errors caused by the 1M context window requiring Extra Usage.
  * Max subscribers without Extra Usage enabled get this error when using
  * sonnet[1m] or opus[1m]. The fix is to fall back to the base model.
@@ -260,11 +348,13 @@ export function isExtraUsageRequiredError(errMsg: string): boolean {
  * collapses into a generic api_error.
  */
 export interface SdkTermination {
-  reason: "max_turns" | "process_exit" | "aborted" | "unknown"
+  reason: "max_turns" | "process_exit" | "aborted" | "upstream_idle" | "unknown"
   /** Turn count when reason=max_turns and parseable. */
   turns?: number
   /** Exit code when reason=process_exit and parseable. */
   exitCode?: number
+  /** Milliseconds the upstream was silent, when reason=upstream_idle. */
+  idleMs?: number
   /** Captured "Subprocess stderr: …" tail (truncated). */
   stderrTail?: string
   /** Truncated raw error message — set only when reason="unknown" so the log
@@ -301,6 +391,44 @@ function makeRawTail(errMsg: string): string | undefined {
  * Returns reason="unknown" when the message doesn't match any recognized
  * pattern; callers can still log it with whatever surrounding context they have.
  */
+/**
+ * Can a failed passthrough turn still be delivered as a tool-use response?
+ *
+ * When the PreToolUse hook already captured tool calls, the client has
+ * everything it needs to run them and drive the next turn — so a terminated
+ * turn can end as a normal `stop_reason: "tool_use"` instead of a 500 with the
+ * calls thrown away.
+ *
+ * `upstream_idle` qualifies for exactly the same reason as `max_turns` (#770):
+ * the stall killed the stream, not the work already captured. Dropping those
+ * calls is what leaves the model resuming against its own unfulfilled promise
+ * and reporting that it "forgot".
+ *
+ * `abortIsOurs` exists because the two call sites disagree, deliberately: the
+ * streaming path accepts an abort only when meridian raised it (a duplicate
+ * tool_use or an early stop), since a client disconnect must never be recorded
+ * as a recovered success. The non-streaming path has no client-disconnect abort
+ * to distinguish and passes true.
+ */
+export function canRecoverCapturedToolUses(input: {
+  reason: SdkTermination["reason"]
+  passthrough: boolean
+  capturedToolUses: number
+  abortIsOurs: boolean
+}): boolean {
+  if (!input.passthrough) return false
+  if (input.capturedToolUses <= 0) return false
+  switch (input.reason) {
+    case "max_turns":
+    case "upstream_idle":
+      return true
+    case "aborted":
+      return input.abortIsOurs
+    default:
+      return false
+  }
+}
+
 export function extractSdkTermination(errMsg: string): SdkTermination {
   const stderrTail = extractStderrTail(errMsg)
 
@@ -308,6 +436,22 @@ export function extractSdkTermination(errMsg: string): SdkTermination {
   // (the SDK sometimes emits the operative phrase only into stderr).
   const haystack = `${errMsg}\n${stderrTail ?? ""}`
   const lower = haystack.toLowerCase()
+
+  // Meridian's own terminations, not the SDK's. guardUpstreamIdle raises this
+  // when the model stream goes quiet past the limit; the message matches none
+  // of the SDK needles below, so it used to land on "unknown" — which excludes
+  // it from canRecoverAsToolUse and silently DISCARDS any tool_use blocks the
+  // PreToolUse hook had already captured (#770). The client then never sees the
+  // calls, and the next turn resumes against a history where the model promised
+  // work it never appears to have requested.
+  if (lower.includes("upstream idle for")) {
+    const m = haystack.match(/upstream idle for (\d+)ms/i)
+    return {
+      reason: "upstream_idle",
+      ...(m ? { idleMs: Number(m[1]) } : {}),
+      ...(stderrTail ? { stderrTail } : {}),
+    }
+  }
 
   if (lower.includes("reached maximum number of turns")) {
     const m = haystack.match(/Reached maximum number of turns \((\d+)\)/i)

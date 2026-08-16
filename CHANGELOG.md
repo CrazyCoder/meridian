@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.62.1](https://github.com/rynfar/meridian/compare/meridian-v1.62.0...meridian-v1.62.1) (2026-08-15)
+
+
+### Bug Fixes
+
+* **concurrency:** stop internal dispatch hops from taking a second queue slot ([#813](https://github.com/rynfar/meridian/issues/813)) ([32ccab8](https://github.com/rynfar/meridian/commit/32ccab8a33ab2535cad529a1cf430187cb87caf2))
+* **passthrough:** stop announcing a truncated turn as a clean finish ([#801](https://github.com/rynfar/meridian/issues/801)) ([7c83f2b](https://github.com/rynfar/meridian/commit/7c83f2b10ff5c8dc4ed62ca96f12c1985570329d))
+* **plugins:** derive the known-adapter list from the registry ([#814](https://github.com/rynfar/meridian/issues/814)) ([226232d](https://github.com/rynfar/meridian/commit/226232d573b060c5a19f6eac38286e7f0bdd6137))
+* **session:** retry a refused resume before abandoning the session ([#811](https://github.com/rynfar/meridian/issues/811)) ([cb6fe0c](https://github.com/rynfar/meridian/commit/cb6fe0c6bff5188ab7e089d8bd481a62d0f719c0))
+
+## [1.62.0](https://github.com/rynfar/meridian/compare/meridian-v1.61.0...meridian-v1.62.0) (2026-08-15)
+
+
+### Features
+
+* **adapters:** add Prime Agent adapter ([#808](https://github.com/rynfar/meridian/issues/808)) ([377a79b](https://github.com/rynfar/meridian/commit/377a79bd305fccf57ce15a2d0c84893b3c8115c9))
+
+
+### Bug Fixes
+
+* **replay:** restore tool-call attribution for pi, bash, and code tools ([#802](https://github.com/rynfar/meridian/issues/802)) ([87e60f8](https://github.com/rynfar/meridian/commit/87e60f8d475dbc3a7b8fb90430c684f36cc03c77))
+* **routing:** fail over when an account's subscription is refused ([#800](https://github.com/rynfar/meridian/issues/800)) ([1635f3e](https://github.com/rynfar/meridian/commit/1635f3e742eccfeb1a8f6e45f77d4e543f1469e3))
+* **session:** say which message broke the lineage, not just how many matched ([#797](https://github.com/rynfar/meridian/issues/797)) ([87f78f8](https://github.com/rynfar/meridian/commit/87f78f8c4e1989c5afacbe532f3fc1aaaf7e888b))
+
 ## [1.61.0](https://github.com/rynfar/meridian/compare/meridian-v1.60.0...meridian-v1.61.0) (2026-08-11)
 
 

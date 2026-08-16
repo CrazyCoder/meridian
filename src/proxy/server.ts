@@ -2,6 +2,7 @@ import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { stream } from "hono/streaming"
 import { serve } from "@hono/node-server"
+import { AsyncLocalStorage } from "node:async_hooks"
 import type { Server } from "node:http"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -50,7 +51,7 @@ import { LRUMap } from "../utils/lruMap"
 
 import { telemetryStore, diagnosticLog, createTelemetryRoutes, landingHtml, renderPrometheusMetrics } from "../telemetry"
 import type { RequestMetric } from "../telemetry"
-import { classifyError, extractSdkTermination, formatSdkTermination, isStaleSessionError, isBusySessionError, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError } from "./errors"
+import { canRecoverCapturedToolUses, classifyError, extractSdkTermination, formatSdkTermination, classifyResumeRefusal, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError, isAccountFailoverError, isQuotaRefusal } from "./errors"
 import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, getAuthRenewalStatus, resolveRenewalWarnDays, type CredentialStore } from "./tokenRefresh"
 import {
   createFileDesignTokenStore,
@@ -419,14 +420,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   const PENDING_STORE_WAIT_MS = 3000
   const PENDING_STORE_AUTO_RESOLVE_MS = 10000
 
-  // #630: a --resume spawned while the session's previous subprocess is
-  // still exiting is refused ("currently running as a background agent",
-  // a consequence of #628's CLAUDE_CODE_SESSION_KIND=bg). The stale
-  // process exits within ~a second — retry the same resume with linear
-  // backoff, then fork the session as a last resort. Delay is overridable
-  // so tests don't sleep for real.
-  const BUSY_SESSION_MAX_RETRIES = 3
-  const BUSY_SESSION_RETRY_DELAY_MS = parseInt(process.env.MERIDIAN_BUSY_RETRY_DELAY_MS ?? "500", 10)
+  // A --resume spawned while the session's previous subprocess is still
+  // exiting is refused, in two wordings: "currently running as a background
+  // agent" (#630, a consequence of #628's CLAUDE_CODE_SESSION_KIND=bg) and
+  // "No conversation found …". Neither means the session is gone — the stale
+  // process exits within ~a second — so retry the same resume with linear
+  // backoff, and fork only what can be branched. Delay is overridable so
+  // tests don't sleep for real.
+  const RESUME_REFUSAL_MAX_RETRIES = 3
+  // The env name predates the wider refusal set and stays as it is: renaming it
+  // would silently drop anyone's existing override.
+  const RESUME_REFUSAL_RETRY_DELAY_MS = parseInt(process.env.MERIDIAN_BUSY_RETRY_DELAY_MS ?? "500", 10)
   const pendingSessionStores = new Map<string, { promise: Promise<void>; resolve: () => void }>()
   const registerPendingStore = (key: string): (() => void) => {
     let resolveFn: () => void = () => {}
@@ -583,25 +587,37 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       })
   }
 
-  /** Inspect an inner response for a quota failure without destroying it.
-   *  Non-stream: a 429 body. Stream: an `event: error` frame with
-   *  rate_limit_error BEFORE any content frame (mid-content errors pass
-   *  through — never yank a stream a client is already consuming). */
-  async function sniffQuotaFailure(res: Response): Promise<{ failed: boolean; errorPayload: unknown; response: Response }> {
+  /** Inspect an inner response for an account-level failure without destroying
+   *  it. Non-stream: an error body on a non-OK status. Stream: an
+   *  `event: error` frame BEFORE any content frame (mid-content errors pass
+   *  through — never yank a stream a client is already consuming).
+   *
+   *  `isAccountFailoverError` decides which classified types are worth another
+   *  account; anything else is this account's honest answer and belongs to the
+   *  client untouched. The non-stream status gate is `!res.ok` rather than a
+   *  literal 429 because the qualifying types do not share one status — a
+   *  spent quota window is 429, a refused subscription 402. */
+  async function sniffAccountFailure(res: Response): Promise<
+    | { failed: true; errorPayload: unknown; errorType: string; response: Response }
+    | { failed: false; errorPayload: null; errorType: null; response: Response }
+  > {
     const contentType = res.headers.get("content-type") ?? ""
     if (!contentType.includes("text/event-stream")) {
-      if (res.status === 429) {
+      if (!res.ok) {
         const body = await res.clone().json().catch(() => null) as { error?: { type?: string } } | null
-        if (body?.error?.type === "rate_limit_error") return { failed: true, errorPayload: body, response: res }
+        const errorType = body?.error?.type
+        if (isAccountFailoverError(errorType)) {
+          return { failed: true, errorPayload: body, errorType, response: res }
+        }
       }
-      return { failed: false, errorPayload: null, response: res }
+      return { failed: false, errorPayload: null, errorType: null, response: res }
     }
     const reader = res.body?.getReader()
-    if (!reader) return { failed: false, errorPayload: null, response: res }
+    if (!reader) return { failed: false, errorPayload: null, errorType: null, response: res }
     const decoder = new TextDecoder()
     const consumed: Uint8Array[] = []
     let text = ""
-    let failedPayload: unknown = null
+    let failure: { payload: unknown; type: string } | null = null
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -614,16 +630,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const dataLine = frame.split("\n").find(l => l.startsWith("data: "))
         try {
           const parsed = dataLine ? JSON.parse(dataLine.slice(6)) as { error?: { type?: string } } : null
-          if (parsed?.error?.type === "rate_limit_error") {
-            failedPayload = parsed
+          const parsedType = parsed?.error?.type
+          if (isAccountFailoverError(parsedType)) {
+            failure = { payload: parsed, type: parsedType }
           }
-        } catch { /* not a quota frame — pass through below */ }
+        } catch { /* not an account-failure frame — pass through below */ }
       }
       break // first complete frame decides
     }
-    if (failedPayload) {
+    if (failure) {
       await reader.cancel().catch(() => {})
-      return { failed: true, errorPayload: failedPayload, response: res }
+      return { failed: true, errorPayload: failure.payload, errorType: failure.type, response: res }
     }
     const rest = new ReadableStream<Uint8Array>({
       start(ctrl) { for (const chunk of consumed) ctrl.enqueue(chunk) },
@@ -634,44 +651,61 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       },
       cancel(reason) { void reader.cancel(reason).catch(() => {}) },
     })
-    return { failed: false, errorPayload: null, response: new Response(rest, { status: res.status, headers: res.headers }) }
+    return { failed: false, errorPayload: null, errorType: null, response: new Response(rest, { status: res.status, headers: res.headers }) }
   }
 
   async function dispatchPriority(c: Context, orderedCandidateIds: string[], sessionKey: string | null, wantsStream: boolean): Promise<Response> {
     const bodyBuf = await c.req.arrayBuffer()
     let lastError: unknown = null
+    let lastStatus = 429
     let previous: string | null = null
+    let previousReason = "rate_limit_error"
     for (const candidate of orderedCandidateIds) {
       const headers = new Headers(c.req.raw.headers)
       headers.set("x-meridian-profile", candidate)
       headers.set("x-meridian-priority-dispatch", "1")
       const inner = await app.fetch(new Request(c.req.url, { method: "POST", headers, body: bodyBuf }))
-      const { failed, errorPayload, response } = await sniffQuotaFailure(inner)
-      if (!failed) {
+      const sniffed = await sniffAccountFailure(inner)
+      if (!sniffed.failed) {
         if (sessionKey) priorityAssignments.set(sessionKey, candidate)
         if (previous) {
-          claudeLog("profile.failover", { from: previous, to: candidate, reason: "rate_limit_error", sessionKey })
-          plog(`[PROXY] PRIORITY failover ${previous} -> ${candidate}`)
+          claudeLog("profile.failover", { from: previous, to: candidate, reason: previousReason, sessionKey })
+          plog(`[PROXY] PRIORITY failover ${previous} -> ${candidate} (${previousReason})`)
         }
-        return response
+        return sniffed.response
       }
-      const cooldownUntil = priorityCooldownUntil(candidate, Date.now())
-      priorityExhaustion.mark(candidate, cooldownUntil, "rate_limit_error")
-      claudeLog("priority.exhausted", { profile: candidate, until: cooldownUntil })
-      refinePriorityCooldown(candidate)
-      lastError = errorPayload
+      const reason = sniffed.errorType
+      // Only a quota refusal has a reset to look up. Both cooldown tiers read
+      // the account's five-hour window, which says nothing about entitlement:
+      // a refused subscription would be suppressed until an unrelated quota
+      // boundary, and `refinePriorityCooldown` could only push that further
+      // out (`mark` lets a later refinement extend a cooldown, never shorten
+      // it). The conservative default stands instead, so the account is
+      // re-probed once the subscription may plausibly have been fixed.
+      const quotaRefusal = isQuotaRefusal(reason)
+      const cooldownUntil = quotaRefusal
+        ? priorityCooldownUntil(candidate, Date.now())
+        : Date.now() + PRIORITY_DEFAULT_COOLDOWN_MS
+      priorityExhaustion.mark(candidate, cooldownUntil, reason)
+      claudeLog("priority.exhausted", { profile: candidate, until: cooldownUntil, reason })
+      if (quotaRefusal) refinePriorityCooldown(candidate)
+      lastError = sniffed.errorPayload
+      lastStatus = inner.status
       previous = candidate
+      previousReason = reason
     }
     // Every candidate failed: surface the LAST tried profile's error (owner
     // decision). Stream sniff consumed the inner body, so reconstruct the
-    // exact frame for SSE requests; non-stream errors pass through as JSON.
+    // exact frame for SSE requests; non-stream errors pass through as JSON,
+    // carrying the status that came with them — a pool refused for billing
+    // must not reach the client as a 429 it would dutifully back off from.
     if (wantsStream) {
       return new Response(`event: error\ndata: ${JSON.stringify(lastError)}\n\n`, {
         status: 200,
         headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
       })
     }
-    return new Response(JSON.stringify(lastError), { status: 429, headers: { "content-type": "application/json" } })
+    return new Response(JSON.stringify(lastError), { status: lastStatus, headers: { "content-type": "application/json" } })
   }
   app.use("/auth/*", requireAuth)
 
@@ -695,6 +729,21 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   const MAX_CONCURRENT_SESSIONS = parseInt((process.env.MERIDIAN_MAX_CONCURRENT ?? process.env.CLAUDE_PROXY_MAX_CONCURRENT) || "10", 10)
   let activeSessions = 0
   const sessionQueue: Array<{ resolve: () => void }> = []
+  // Priority routing dispatches by re-entering this app over `app.fetch`
+  // (dispatchPriority), so one external request makes two passes through the
+  // queued route. Counting both is a deadlock, not an over-count: the outer
+  // pass holds its slot for as long as the inner pass runs, so N concurrent
+  // requests hold all N slots while waiting for inner passes that can never be
+  // admitted, and the queue never drains again. The slot belongs to the
+  // external request; the inner pass is the same request continuing, and it is
+  // the only one of the two that spawns an SDK subprocess.
+  //
+  // The marker rides the async context rather than a header because a header
+  // reaches the limiter from the wire: any client could send it and opt out of
+  // the limit this exists to impose. It carries the outer pass's queue timings
+  // so the inner pass — the one that reports telemetry — still records the wait
+  // the external request actually served, rather than a zero of its own.
+  const insideSessionSlot = new AsyncLocalStorage<{ queueEnteredAt: number; queueStartedAt: number }>()
 
   async function acquireSession(): Promise<void> {
     if (activeSessions < MAX_CONCURRENT_SESSIONS) {
@@ -1128,6 +1177,34 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         if (lineageResult.type === "undo" && adapterBase === "opencode" && !agentSessionId) {
           lineageResult = { type: "diverged", reason: "missing-session-header" }
         }
+        // Publish the decision to plugins. Core has always known WHICH message
+        // stopped matching; the log line only ever reported how many matched
+        // ("prefix overlap 50/51"), which is why #767 had to hand-patch a build
+        // to get any further. The detail is computed only on a divergence — the
+        // one case that is both rare and already about to cost a full replay —
+        // and carries digests and shapes, never content.
+        if (pipeline.some(t => t.onSession)) {
+          // verifyLineage attaches the detail on modified-history, where it has
+          // the stored digests in hand; nothing recomputes it here.
+          const mismatch = lineageResult.type === "diverged" ? lineageResult.mismatch : undefined
+          runTransformHook(pipeline, "onSession", {
+            adapter: adapterBase,
+            lineage: lineageResult.type,
+            reason: lineageResult.type === "diverged" ? lineageResult.reason : undefined,
+            sessionKey: profileSessionId,
+            storedCount: mismatch?.storedCount,
+            incomingCount: (body.messages || []).length,
+            prefixOverlap: lineageResult.type === "diverged" ? lineageResult.prefixOverlap : undefined,
+            mismatch: mismatch && mismatch.index >= 0 ? {
+              index: mismatch.index,
+              storedDigest: mismatch.storedDigest,
+              incomingDigest: mismatch.incomingDigest,
+              previousDigest: mismatch.previousDigest,
+              incomingShape: mismatch.incomingShape,
+            } : undefined,
+          }, adapterBase)
+        }
+
         const isResume = lineageResult.type === "continuation" || lineageResult.type === "compaction"
         const isUndo = lineageResult.type === "undo"
         const cachedSession = lineageResult.type !== "diverged" ? lineageResult.session : undefined
@@ -1751,8 +1828,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
               let tokenRefreshed = false
               let didFreshBaseRetry = false
-              let busySessionRetries = 0
+              let resumeRefusalRetries = 0
               let busySessionFork = false
+              let sawUnresumableRefusal = false
               while (true) {
                 // Track whether response content was yielded.
                 // The SDK emits metadata (session_id etc.) before the API call;
@@ -1809,37 +1887,51 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   // Never retry after response content was yielded — response is committed
                   if (didYieldContent) throw error
 
-                  // Retry: session still registered as a running bg agent (#630).
-                  // The previous subprocess for this session (early-stop drain or
-                  // slow exit) hasn't finished dying, so the CLI refused --resume
-                  // with exit 1. Surfacing that would be a deterministic failure —
-                  // the client's identical retry hits the same window. Wait for
-                  // the stale process to exit and retry the SAME resume; if the
-                  // session stays busy, fork it (full history, fresh id).
-                  if (resumeSessionId && isBusySessionError(error, stderrLines.slice(attemptStderrStart).join("\n"))) {
-                    if (busySessionRetries < BUSY_SESSION_MAX_RETRIES) {
-                      busySessionRetries++
-                      claudeLog("session.busy_retry", { mode: "non_stream", attempt: busySessionRetries, resumeSessionId })
-                      plog(`[PROXY] ${requestMeta.requestId} session busy (bg agent), retrying resume ${busySessionRetries}/${BUSY_SESSION_MAX_RETRIES}`)
-                      await new Promise((resolve) => setTimeout(resolve, BUSY_SESSION_RETRY_DELAY_MS * busySessionRetries))
+                  // Retry: the resume was refused, not answered. Both refusals
+                  // that mean "not right now" — the session is busy, or it could
+                  // not be opened at all — are produced in the exit window of
+                  // this session's previous subprocess (early-stop drain or slow
+                  // exit), with the session itself intact. Surfacing that would
+                  // be a deterministic failure (the client's identical retry
+                  // hits the same window) and evicting would destroy a live
+                  // session, so wait for the stale process to exit and retry the
+                  // SAME resume. A busy session can then be forked (full
+                  // history, fresh id); an unresumable one offers nothing to
+                  // branch and falls through to the replay below. The busy
+                  // wording only ever arrives on stderr, and only matters where
+                  // a resume was attempted, so the capture is read there alone.
+                  const refusal = classifyResumeRefusal(error, resumeSessionId ? stderrLines.slice(attemptStderrStart).join("\n") : undefined)
+                  if (refusal === "unresumable") sawUnresumableRefusal = true
+                  if (resumeSessionId && (refusal === "busy" || refusal === "unresumable")) {
+                    if (resumeRefusalRetries < RESUME_REFUSAL_MAX_RETRIES) {
+                      resumeRefusalRetries++
+                      claudeLog("session.resume_retry", { mode: "non_stream", refusal, attempt: resumeRefusalRetries, resumeSessionId })
+                      plog(`[PROXY] ${requestMeta.requestId} resume refused (${refusal}), retrying ${resumeRefusalRetries}/${RESUME_REFUSAL_MAX_RETRIES}`)
+                      await new Promise((resolve) => setTimeout(resolve, RESUME_REFUSAL_RETRY_DELAY_MS * resumeRefusalRetries))
                       continue
                     }
-                    if (!busySessionFork) {
+                    if (refusal === "busy" && !busySessionFork) {
                       busySessionFork = true
                       claudeLog("session.busy_fork", { mode: "non_stream", resumeSessionId })
-                      plog(`[PROXY] ${requestMeta.requestId} session still busy after ${BUSY_SESSION_MAX_RETRIES} retries — forking session`)
+                      plog(`[PROXY] ${requestMeta.requestId} session still busy after ${RESUME_REFUSAL_MAX_RETRIES} retries — forking session`)
                       continue
                     }
                   }
 
-                  // Retry: stale undo UUID — evict session and start fresh (one-shot)
-                  if (isStaleSessionError(error)) {
-                    claudeLog("session.stale_uuid_retry", {
+                  // The session cannot serve this turn: a message it must hold
+                  // is gone, or it refused to open and has now spent every
+                  // retry. Reaching here after such a refusal means the budget
+                  // is gone whatever the last attempt was refused with, so a
+                  // wording that alternates cannot escape to the client. Evict
+                  // and replay the history as a fresh session (one-shot).
+                  if (refusal === "missing-message" || sawUnresumableRefusal) {
+                    claudeLog("session.resume_replay", {
                       mode: "non_stream",
+                      refusal,
                       rollbackUuid: undoRollbackUuid,
                       resumeSessionId,
                     })
-                    plog(`[PROXY] Stale session UUID, evicting and retrying as fresh session`)
+                    plog(`[PROXY] ${requestMeta.requestId} session unusable (${refusal}), evicting and replaying as fresh session`)
                     evictSession(profileSessionId, profileScopedCwd, allMessages)
                     sdkUuidMap.length = 0
                     for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
@@ -2132,10 +2224,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             // that never triggered the loop-break (e.g. wide parallel exceeding
             // the turn budget) land here.
             const sdkTerm = extractSdkTermination(error instanceof Error ? error.message : String(error))
-            const canRecoverAsToolUse =
-              passthrough &&
-              capturedToolUses.length > 0 &&
-              (sdkTerm.reason === "max_turns" || sdkTerm.reason === "aborted")
+            const canRecoverAsToolUse = canRecoverCapturedToolUses({
+              reason: sdkTerm.reason,
+              passthrough,
+              capturedToolUses: capturedToolUses.length,
+              // No client-disconnect abort reaches this path.
+              abortIsOurs: true,
+            })
             if (canRecoverAsToolUse) {
               diagnosticLog.session(
                 `${requestMeta.requestId} sdk_termination_recovered ${formatSdkTermination(sdkTerm, {
@@ -2568,8 +2663,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
                 let tokenRefreshed = false
                 let didFreshBaseRetry = false
-                let busySessionRetries = 0
+                let resumeRefusalRetries = 0
                 let busySessionFork = false
+                let sawUnresumableRefusal = false
 
                 while (true) {
                   // Track whether client-visible SSE events were yielded.
@@ -2613,32 +2709,40 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     // Never retry after client-visible SSE events — response is committed
                     if (didYieldClientEvent) throw error
 
-                    // Retry: session still registered as a running bg agent (#630)
-                    // — see the non-stream branch above for the full rationale.
-                    if (resumeSessionId && isBusySessionError(error, stderrLines.slice(attemptStderrStart).join("\n"))) {
-                      if (busySessionRetries < BUSY_SESSION_MAX_RETRIES) {
-                        busySessionRetries++
-                        claudeLog("session.busy_retry", { mode: "stream", attempt: busySessionRetries, resumeSessionId })
-                        plog(`[PROXY] ${requestMeta.requestId} session busy (bg agent), retrying resume ${busySessionRetries}/${BUSY_SESSION_MAX_RETRIES}`)
-                        await new Promise((resolve) => setTimeout(resolve, BUSY_SESSION_RETRY_DELAY_MS * busySessionRetries))
+                    // Retry: the resume was refused, not answered — see the
+                    // non-stream branch above for the full rationale. The busy
+                    // wording only ever arrives on stderr, and only matters
+                    // where a resume was attempted, so the capture is read there
+                    // alone.
+                    const refusal = classifyResumeRefusal(error, resumeSessionId ? stderrLines.slice(attemptStderrStart).join("\n") : undefined)
+                    if (refusal === "unresumable") sawUnresumableRefusal = true
+                    if (resumeSessionId && (refusal === "busy" || refusal === "unresumable")) {
+                      if (resumeRefusalRetries < RESUME_REFUSAL_MAX_RETRIES) {
+                        resumeRefusalRetries++
+                        claudeLog("session.resume_retry", { mode: "stream", refusal, attempt: resumeRefusalRetries, resumeSessionId })
+                        plog(`[PROXY] ${requestMeta.requestId} resume refused (${refusal}), retrying ${resumeRefusalRetries}/${RESUME_REFUSAL_MAX_RETRIES}`)
+                        await new Promise((resolve) => setTimeout(resolve, RESUME_REFUSAL_RETRY_DELAY_MS * resumeRefusalRetries))
                         continue
                       }
-                      if (!busySessionFork) {
+                      if (refusal === "busy" && !busySessionFork) {
                         busySessionFork = true
                         claudeLog("session.busy_fork", { mode: "stream", resumeSessionId })
-                        plog(`[PROXY] ${requestMeta.requestId} session still busy after ${BUSY_SESSION_MAX_RETRIES} retries — forking session`)
+                        plog(`[PROXY] ${requestMeta.requestId} session still busy after ${RESUME_REFUSAL_MAX_RETRIES} retries — forking session`)
                         continue
                       }
                     }
 
-                    // Retry: stale undo UUID — evict and start fresh (one-shot)
-                    if (isStaleSessionError(error)) {
-                      claudeLog("session.stale_uuid_retry", {
+                    // The session cannot serve this turn — evict and replay
+                    // the history as a fresh session (one-shot). See the
+                    // non-stream branch above for the full rationale.
+                    if (refusal === "missing-message" || sawUnresumableRefusal) {
+                      claudeLog("session.resume_replay", {
                         mode: "stream",
+                        refusal,
                         rollbackUuid: undoRollbackUuid,
                         resumeSessionId,
                       })
-                      plog(`[PROXY] Stale session UUID, evicting and retrying as fresh session`)
+                      plog(`[PROXY] ${requestMeta.requestId} session unusable (${refusal}), evicting and replaying as fresh session`)
                       evictSession(profileSessionId, profileScopedCwd, allMessages)
                       sdkUuidMap.length = 0
                       for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
@@ -3718,12 +3822,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               // single-step duplicate abort (sawDuplicateToolUse) or the
               // early stop (earlyStopFired) — a client-disconnect abort must
               // not be recorded as a recovered success.
-              const canRecoverAsToolUse =
-                (sdkTerm.reason === "max_turns" ||
-                  (sdkTerm.reason === "aborted" && (sawDuplicateToolUse || earlyStopFired))) &&
-                passthrough &&
-                capturedToolUses.length > 0 &&
-                messageStartEmitted
+              // "upstream_idle" joins them for the same reason (#770): the guard
+              // killed a stalled stream, but the tool calls were already
+              // captured and are exactly what the client needs to make progress.
+              // Discarding them turns a recoverable stall into a turn the model
+              // later reports having "forgotten", because the next resume shows
+              // its promise to act with no matching call.
+              const canRecoverAsToolUse = canRecoverCapturedToolUses({
+                reason: sdkTerm.reason,
+                passthrough,
+                capturedToolUses: capturedToolUses.length,
+                abortIsOurs: sawDuplicateToolUse || earlyStopFired,
+              }) && messageStartEmitted
 
               if (canRecoverAsToolUse) {
                 // Log the recovery at session level (not error) — it's a
@@ -3883,11 +3993,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               //
               // A turn cut off mid-generation is exactly what "max_tokens"
               // describes on the wire — truncated, not finished — and every
-              // Anthropic-compatible client already handles it. Reserve
-              // "end_turn" for the case where the model really did produce a
-              // complete answer before the failure.
+              // Anthropic-compatible client already handles it.
+              //
+              // Unconditional, including when text was already forwarded (#770).
+              // The earlier carve-out reserved "end_turn" for "the model really
+              // did produce a complete answer before the failure", but nothing
+              // here can know that: reaching this branch means the turn raised
+              // instead of completing, and a partial answer followed by a crash
+              // is still a truncation. Emitting "end_turn" there was the one
+              // value that actively lies, and it lies in the direction that
+              // makes an autonomous loop stop.
               if (messageStartEmitted) {
-                const errorStopReason = textEventsForwarded > 0 ? "end_turn" : "max_tokens"
+                const errorStopReason = "max_tokens"
                 claudeLog("response.error_envelope", {
                   mode: "stream",
                   stopReason: errorStopReason,
@@ -4013,10 +4130,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     const requestId = c.req.header("x-request-id") || randomUUID()
     const queueEnteredAt = Date.now()
     claudeLog("request.enter", { requestId, endpoint })
+    // Already inside this request's slot — an internal dispatch hop, not a new
+    // arrival. Taking a second slot here is what deadlocks the pool.
+    const held = insideSessionSlot.getStore()
+    if (held) {
+      return handleMessages(c, { requestId, endpoint, ...held })
+    }
     await acquireSession()
     const queueStartedAt = Date.now()
     try {
-      return await handleMessages(c, { requestId, endpoint, queueEnteredAt, queueStartedAt })
+      return await insideSessionSlot.run({ queueEnteredAt, queueStartedAt }, () =>
+        handleMessages(c, { requestId, endpoint, queueEnteredAt, queueStartedAt }))
     } finally {
       releaseSession()
     }
