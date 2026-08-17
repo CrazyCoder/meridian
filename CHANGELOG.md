@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.62.4](https://github.com/rynfar/meridian/compare/meridian-v1.62.3...meridian-v1.62.4) (2026-08-17)
+
+
+### Bug Fixes
+
+* preserve passthrough session cache lineage ([#837](https://github.com/rynfar/meridian/issues/837)) ([a8a3d11](https://github.com/rynfar/meridian/commit/a8a3d11c50868a157cd1997a3b0f3b7d913fb0cc))
+
+## [1.62.3](https://github.com/rynfar/meridian/compare/meridian-v1.62.2...meridian-v1.62.3) (2026-08-17)
+
+
+### Bug Fixes
+
+* **concurrency:** follow env changes for the shared SDK semaphore budget ([e40ff28](https://github.com/rynfar/meridian/commit/e40ff2853732b2853bfc28bbf85064fda0f9959f))
+
+## [1.62.2](https://github.com/rynfar/meridian/compare/meridian-v1.62.1...meridian-v1.62.2) (2026-08-17)
+
+
+### Bug Fixes
+
+* advertise 1M context on Team and Enterprise plans ([#830](https://github.com/rynfar/meridian/issues/830)) ([4103b6f](https://github.com/rynfar/meridian/commit/4103b6f98e0680609a5276d993558ac110a90c44))
+* coordinate SDK/session concurrency and add graceful shutdown ([#825](https://github.com/rynfar/meridian/issues/825)) ([83b2f5c](https://github.com/rynfar/meridian/commit/83b2f5c8f5b087eb9bd43bc2cb04a768435057cf))
+* **routing:** bench a weekly-capped profile until the weekly reset ([#815](https://github.com/rynfar/meridian/issues/815)) ([db72d9a](https://github.com/rynfar/meridian/commit/db72d9a5ca70567242eab1aaa1ab6579d96933e6))
+
 ## [1.62.1](https://github.com/rynfar/meridian/compare/meridian-v1.62.0...meridian-v1.62.1) (2026-08-15)
 
 
