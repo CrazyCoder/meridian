@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.62.6](https://github.com/rynfar/meridian/compare/meridian-v1.62.5...meridian-v1.62.6) (2026-08-19)
+
+
+### Bug Fixes
+
+* give OpenCode's internal agents their own session key ([#848](https://github.com/rynfar/meridian/issues/848)) ([7ce5345](https://github.com/rynfar/meridian/commit/7ce5345912b61307e3f734b4ee7538cb327597eb))
+
+## [1.62.5](https://github.com/rynfar/meridian/compare/meridian-v1.62.4...meridian-v1.62.5) (2026-08-17)
+
+
+### Bug Fixes
+
+* route native subagents to base model tiers ([#839](https://github.com/rynfar/meridian/issues/839)) ([91aeaf5](https://github.com/rynfar/meridian/commit/91aeaf56d6d220a4cd01fc0bfebe5dfd486e7b90))
+
 ## [1.62.4](https://github.com/rynfar/meridian/compare/meridian-v1.62.3...meridian-v1.62.4) (2026-08-17)
 
 

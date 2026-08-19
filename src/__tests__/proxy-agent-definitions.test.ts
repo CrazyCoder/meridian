@@ -109,16 +109,31 @@ describe("buildAgentDefinitions", () => {
     const defs = buildAgentDefinitions("No agents here")
     expect(Object.keys(defs)).toHaveLength(0)
   })
+
+  it("applies an explicit base tier to parsed agents, defaults, and aliases", () => {
+    const defs = buildAgentDefinitions(SAMPLE_TASK_DESCRIPTION, undefined, "opus")
+    expect(Object.keys(defs).length).toBeGreaterThan(0)
+    for (const def of Object.values(defs)) expect(def.model).toBe("opus")
+    expect(defs.general?.model).toBe("opus")
+    expect(defs["general-purpose"]?.model).toBe("opus")
+  })
 })
 
 describe("mapModelTier", () => {
-  it("should map opus models", () => {
-    expect(mapModelTier("anthropic/claude-opus-4-6")).toBe("opus[1m]")
-    expect(mapModelTier("claude-opus-4")).toBe("opus[1m]")
+  it("should map opus models to the SDK's base subagent tier", () => {
+    expect(mapModelTier("anthropic/claude-opus-4-6")).toBe("opus")
+    expect(mapModelTier("claude-opus-4")).toBe("opus")
+    expect(mapModelTier("opus[1m]")).toBe("opus")
   })
 
   it("should map sonnet models", () => {
     expect(mapModelTier("anthropic/claude-sonnet-4-5")).toBe("sonnet")
+  })
+
+  it("should map fable and mythos models to the base fable tier", () => {
+    expect(mapModelTier("claude-fable-5")).toBe("fable")
+    expect(mapModelTier("claude-mythos-5")).toBe("fable")
+    expect(mapModelTier("fable[1m]")).toBe("fable")
   })
 
   it("should map haiku models", () => {
@@ -409,6 +424,11 @@ describe("buildAgentDefinitionsFromTool (regex with enum fallback)", () => {
     const defs = buildAgentDefinitionsFromTool(omoStyleTool)
     expect(defs["oracle"]!.model).toBe("inherit")
     expect(defs["oracle"]!.prompt).toContain(`"oracle" agent`)
+  })
+
+  it("applies the selected tier to enum-derived agents and injected defaults", () => {
+    const defs = buildAgentDefinitionsFromTool(omoStyleTool, undefined, "opus")
+    for (const def of Object.values(defs)) expect(def.model).toBe("opus")
   })
 })
 
