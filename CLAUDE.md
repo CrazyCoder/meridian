@@ -9,10 +9,20 @@ A proxy that bridges OpenCode (Anthropic API format) to Claude Max (Agent SDK). 
 ## Commands
 
 ```bash
-npm test          # Run all tests (bun test)
+npm test          # Run all tests — ALWAYS use this, never bare `bun test`
 npm run build     # Build with tsup
 npm start         # Start the proxy server
+npm run typecheck # tsc --noEmit (CI runs this separately; tests do not typecheck)
 ```
+
+**`npm test` is not a thin wrapper around `bun test`.** Ten test files mock
+modules with `mock.module`, which is process-global in bun and leaks across
+files, so `npm test` runs each of them in its own `bun test` invocation and
+excludes them from the main pass. Running bare `bun test` puts them back in one
+process and produces ~11 failures that look pre-existing and have nothing to do
+with your change. If you see failures in `models-auth-status`, `mcpTools grep
+tool`, `models.test`, or the session-store files, check which command you ran
+before investigating anything else.
 
 ## Code Rules
 
@@ -67,6 +77,8 @@ adapters/
 query.ts           → buildQueryOptions (shared stream/non-stream SDK call builder)
 errors.ts          → classifyError (pure)
 models.ts          → mapModelToClaudeModel, resolveClaudeExecutableAsync
+buildInfo.ts       → build provenance + semver compare (PURE)
+updateCheck.ts     → cached npm registry check for the newest release
 tools.ts           → BLOCKED_BUILTIN_TOOLS, CLAUDE_CODE_ONLY_TOOLS, MCP_SERVER_NAME
 messages.ts        → normalizeContent, getLastUserMessage (pure)
 fileChanges.ts     → PostToolUse hook: file write/edit tracking + summary formatting (pure)
@@ -90,6 +102,7 @@ External plugins depend on these interfaces. **Do not change without project own
 | `x-opencode-session` header | `adapters/opencode.ts` | Session tracking from agent plugins |
 | `x-meridian-profile` header | `server.ts`, `profiles.ts` | Per-request profile selection |
 | `GET /health` response shape | `server.ts` | Plugin health checks |
+| `/health` `build` block | `buildInfo.ts` | Version/provenance drift detection |
 | `POST /v1/messages` request/response format | `server.ts` | All agents (Anthropic API contract) |
 | `GET /profiles/list` response shape | `server.ts` | Profile management UI and CLI |
 | `POST /profiles/active` request/response | `server.ts` | Profile switching from CLI and UI |

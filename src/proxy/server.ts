@@ -65,7 +65,9 @@ import {
   DESIGN_UPSTREAM_ORIGIN,
 } from "./design"
 import { checkPluginConfigured, notePluginlessOpenCodeRequest } from "./setup"
-import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable, subscriptionIncludesExtendedContext } from "./models"
+import { describeBuildDrift, getBuildInfo } from "./buildInfo"
+import { getLatestVersion, startUpdateCheck, stopUpdateCheck } from "./updateCheck"
+import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable, recordExtendedContextRateLimited, subscriptionIncludesExtendedContext } from "./models"
 import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
 import { normalizeJcodeSessionId } from "./adapters/jcode"
@@ -474,15 +476,24 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   proxyLogSilent = finalConfig.silent
   const serverVersion = finalConfig.version ?? "unknown"
 
+  // What code is actually running, for /health. Recomputed per request rather
+  // than frozen at startup because `latest` arrives asynchronously from the
+  // registry check — everything else in it is static.
+  const currentBuild = () =>
+    getBuildInfo({ version: serverVersion, modulePath: import.meta.url, latest: getLatestVersion() })
+
   // Restore persisted active profile from last session
   restoreActiveProfile(finalConfig.profiles)
 
   // Track cumulative discovered tools per SDK session (survives across requests)
-  const sessionDiscoveredTools = new Map<string, Set<string>>()
+  // Bounded for the same reason as sessionMcpCache below: this is per-session
+  // state on a long-lived process, so an unbounded map is a slow leak whose
+  // eventual restart costs every live conversation a cold prompt cache.
+  const sessionDiscoveredTools = new LRUMap<string, Set<string>>(getMaxSessionsLimit())
 
   // Cache last-seen tool definitions per agent session to prevent prompt cache
   // invalidation when clients intermittently omit tools on continuation requests.
-  const sessionToolCache = new Map<string, any[]>()
+  const sessionToolCache = new LRUMap<string, any[]>(getMaxSessionsLimit())
   // Cache the passthrough MCP server per session. Reusing the same server
   // across turns (when the tool set is unchanged) avoids subtle prompt-cache
   // invalidation from MCP server re-creation. Key hashes tool name + schema
@@ -1045,7 +1056,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           declaredAgentMode === "subagent" || requestSource?.startsWith("subagent-") === true
         const agentMode = isSubagentRequest ? "subagent" : declaredAgentMode
         const requestedModel = typeof body.model === "string" ? body.model : "sonnet"
-        let model = mapModelToClaudeModel(requestedModel, authStatus?.subscriptionType, agentMode)
+        let model = mapModelToClaudeModel(requestedModel, authStatus?.subscriptionType, agentMode, profile.id)
         // Explicitly versioned ids override their tier's canonical pin for
         // this request (spread last in query.ts env, so they also beat
         // operator env) — a proxy must never substitute models. Bare aliases
@@ -2114,7 +2125,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 try {
                   for await (const event of runSdkQueryAttempt(buildQueryOptions({
                     prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                    passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
+                    passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                     resumeSessionId, isUndo, resumeSessionAtUuid: undoRollbackUuid ?? passthroughToolCallAssistantUuid, forkSession: busySessionFork || undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                     effort, thinking, taskBudget, outputFormat, betas, settingSources,
                     codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -2205,7 +2216,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     yield* runSdkQueryAttempt(buildQueryOptions({
                       prompt: buildFreshPrompt(allMessages, sanitizeOpts),
                       model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                      passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
+                      passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                       resumeSessionId: undefined, isUndo: false, resumeSessionAtUuid: undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                       effort, thinking, taskBudget, outputFormat, betas, settingSources,
                       codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -2230,7 +2241,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   if (isExtraUsageRequiredError(errMsg) && hasExtendedContext(model)) {
                     const from = model
                     model = stripExtendedContext(model)
-                    recordExtendedContextUnavailable()
+                    recordExtendedContextUnavailable(profile.id)
                     claudeLog("upstream.context_fallback", {
                       mode: "non_stream",
                       from,
@@ -2255,7 +2266,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     yield* runSdkQueryAttempt(buildQueryOptions({
                       prompt: buildFreshPrompt(allMessages, sanitizeOpts),
                       model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                      passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
+                      passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                       resumeSessionId: undefined, isUndo: false, resumeSessionAtUuid: undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                       effort, thinking, taskBudget, outputFormat, betas, settingSources,
                       codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -2291,6 +2302,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     if (hasExtendedContext(model)) {
                       const from = model
                       model = stripExtendedContext(model)
+                      // Bench [1m] for this profile until its window resets. Without
+                      // this the next request maps straight back to [1m], so one rate
+                      // limit costs TWO model switches and a cold prompt cache in both
+                      // directions — routinely more than the rate limit itself (#862).
+                      recordExtendedContextRateLimited(profile.id, priorityCooldownUntil(profile.id, Date.now()))
                       claudeLog("upstream.context_fallback", {
                         mode: "non_stream",
                         from,
@@ -2551,9 +2567,36 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 reason: sdkTerm.reason,
                 captured: capturedToolUses.length,
               })
+              // The success-path logUsage sits inside the try we just threw
+              // out of, so without this a capped tool turn — now the ordinary
+              // shape of a non-streaming passthrough turn — reports its spend
+              // to telemetry but never to the operator tailing the log. Safe
+              // from double-logging for exactly the same reason: the throw
+              // means the success-path call never ran.
+              if (lastUsage) logUsage(requestMeta.requestId, lastUsage)
               // Do not rethrow — execution continues into the merge block, which
               // backfills contentBlocks from capturedToolUses and builds a clean
               // stop_reason:"tool_use" response.
+            } else if (passthrough && sdkTerm.reason === "max_turns" && contentBlocks.length > 0) {
+              // The turn hit its budget without producing a forwardable tool
+              // call, but it did produce content. Throwing here would answer a
+              // 200-able turn with a 500 — and the streaming path already does
+              // the honest thing instead, reporting the turn as truncated. Match
+              // it: `max_tokens` is the signal a client can act on (retry or
+              // continue), where a 500 is a dead end and `end_turn` would be the
+              // silent-turn lie #768 exists to prevent.
+              //
+              // Reachable before this change too (any max_turns with nothing
+              // captured), just rarer while the budget was 3. The single-turn
+              // cap makes max_turns the ordinary terminal state, so the
+              // degradation has to be honest rather than incidental.
+              lastStopReason = "max_tokens"
+              claudeLog("passthrough.capped_turn_truncated", {
+                mode: "non_stream",
+                blocks: contentBlocks.length,
+              })
+              plog(`[PROXY] ${requestMeta.requestId} capped turn produced no forwardable tool call — reporting as truncated`)
+              if (lastUsage) logUsage(requestMeta.requestId, lastUsage)
             } else {
               claudeLog("upstream.failed", {
                 mode: "non_stream",
@@ -2959,7 +3002,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   try {
                     for await (const event of runSdkQueryAttempt(buildQueryOptions({
                       prompt: makePrompt(), model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                      passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
+                      passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                       resumeSessionId, isUndo, resumeSessionAtUuid: undoRollbackUuid ?? passthroughToolCallAssistantUuid, forkSession: busySessionFork || undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                       effort, thinking, taskBudget, outputFormat, betas, settingSources,
                       codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -3029,7 +3072,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       yield* runSdkQueryAttempt(buildQueryOptions({
                         prompt: buildFreshPrompt(allMessages, sanitizeOpts),
                         model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                        passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
+                        passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                         resumeSessionId: undefined, isUndo: false, resumeSessionAtUuid: undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                         effort, thinking, taskBudget, outputFormat, betas, settingSources,
                         codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -3050,7 +3093,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     if (isExtraUsageRequiredError(errMsg) && hasExtendedContext(model)) {
                       const from = model
                       model = stripExtendedContext(model)
-                      recordExtendedContextUnavailable()
+                      recordExtendedContextUnavailable(profile.id)
                       claudeLog("upstream.context_fallback", {
                         mode: "stream",
                         from,
@@ -3075,7 +3118,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       yield* runSdkQueryAttempt(buildQueryOptions({
                         prompt: buildFreshPrompt(allMessages, sanitizeOpts),
                         model, workingDirectory, clientWorkingDirectory, systemContext, claudeExecutable,
-                        passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools,
+                        passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                         resumeSessionId: undefined, isUndo: false, resumeSessionAtUuid: undefined, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
                         effort, thinking, taskBudget, outputFormat, betas, settingSources,
                         codeSystemPrompt: sdkFeatures.codeSystemPrompt, clientSystemPrompt: sdkFeatures.clientSystemPrompt === false ? false : undefined,
@@ -3111,6 +3154,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       if (hasExtendedContext(model)) {
                         const from = model
                         model = stripExtendedContext(model)
+                        // Bench [1m] for this profile until its window resets. Without
+                        // this the next request maps straight back to [1m], so one rate
+                        // limit costs TWO model switches and a cold prompt cache in both
+                        // directions — routinely more than the rate limit itself (#862).
+                        recordExtendedContextRateLimited(profile.id, priorityCooldownUntil(profile.id, Date.now()))
                         claudeLog("upstream.context_fallback", {
                           mode: "stream",
                           from,
@@ -3744,7 +3792,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     // The nudge asks for prose, but a tool call is an equally
                     // valid answer — so the tool surface has to stay identical.
                     passthrough, stream: true, sdkAgents, passthroughMcp,
-                    cleanEnv: profileEnv, envOverrides, hasDeferredTools,
+                    cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                     resumeSessionId: currentSessionId || resumeSessionId,
                     isUndo: false,
                     // Fork rather than extend: the silent turn is now this
@@ -4086,13 +4134,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 return
               }
 
-              if (passthrough && streamedToolUseIds.size > 0 && !sawCanonicalResult) {
-                // The client may already have advanced past this tool turn, so
-                // a failed hidden drain invalidates even an older cached mapping.
-                evictSession(profileSessionId, profileScopedCwd, body.messages || [])
-                claudeLog("passthrough.noncanonical_session_evicted", { mode: "stream", reason: "drain_error" })
-              }
-
               const stderrOutput = stderrLines.join("\n").trim()
               if (stderrOutput && error instanceof Error && !error.message.includes(stderrOutput)) {
                 error.message = `${error.message}\nSubprocess stderr: ${stderrOutput}`
@@ -4144,6 +4185,49 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 capturedToolUses: capturedToolUses.length,
                 abortIsOurs: sawDuplicateToolUse,
               }) && messageStartEmitted
+
+              // A turn-cap stop is the one drain failure whose checkpoint is
+              // safe to keep, and the reason is specific: the SDK can only
+              // report `max_turns` from a `result` message it has already
+              // enqueued, and it awaits its transcript flush on `result`
+              // (Query.readMessages in the bundled agent SDK builds the error
+              // text from lastErrorResultText, which only a delivered result
+              // populates). So the transcript is committed by the time we see
+              // this — categorically unlike the abort-shaped failure that
+              // motivated the eviction, where a SIGTERM'd subprocess emits no
+              // result at all. That is the invariant passthroughEarlyStop.ts
+              // requires before a resumeSessionAt UUID may be published.
+              //
+              // Which also means `sawCanonicalResult` is already true here, so
+              // the eviction below would not have fired on this path anyway;
+              // naming the case in the guard is belt-and-braces, and the
+              // load-bearing half is the storeSession further down.
+              //
+              // Keeping it lets the next request rewind to the tool-use
+              // boundary and append the client's real tool_result, instead of
+              // replaying the conversation against a cold cache. Other drain
+              // failures remain unsafe and are evicted.
+              const recoverableCheckpoint =
+                canRecoverAsToolUse &&
+                sdkTerm.reason === "max_turns" &&
+                Boolean(currentSessionId) &&
+                Boolean(nextPassthroughToolCallAssistantUuid) &&
+                Boolean(nextPassthroughToolCallIds?.length) &&
+                earlyStopFired &&
+                !isIndependentSession &&
+                !sawDuplicateToolUse
+
+              if (
+                passthrough &&
+                streamedToolUseIds.size > 0 &&
+                !sawCanonicalResult &&
+                !recoverableCheckpoint
+              ) {
+                // The client may already have advanced past this tool turn, so
+                // a failed hidden drain invalidates even an older cached mapping.
+                evictSession(profileSessionId, profileScopedCwd, body.messages || [])
+                claudeLog("passthrough.noncanonical_session_evicted", { mode: "stream", reason: "drain_error" })
+              }
 
               if (canRecoverAsToolUse) {
                 // Log the recovery at session level (not error) — it's a
@@ -4207,7 +4291,28 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 ), "recover_message_stop")
 
                 recordEnvelopeViolations(checkUndeliveredToolUses(capturedToolUses, streamedToolUseIds))
+
+                if (recoverableCheckpoint) {
+                  storeSession(
+                    profileSessionId,
+                    body.messages || [],
+                    currentSessionId!,
+                    profileScopedCwd,
+                    sdkUuidMap,
+                    lastUsage,
+                    nextPassthroughToolCallAssistantUuid!,
+                    nextPassthroughToolCallIds!,
+                  )
+                  commitSessionTurn()
+                  claudeLog("passthrough.checkpoint_persisted", {
+                    mode: "stream",
+                    reason: "single_turn_boundary",
+                    toolCalls: nextPassthroughToolCallIds!.length,
+                  })
+                }
+
                 // Record as success — the client got a usable response.
+                if (lastUsage) logUsage(requestMeta.requestId, lastUsage)
                 const recoverTotalMs = Date.now() - requestStartAt
                 const recoverQueueWaitMs = totalQueueWaitMs(requestMeta)
                 telemetryStore.record({
@@ -4238,6 +4343,20 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   contentBlocks: eventsForwarded + unseenToolUses.length,
                   textEvents: textEventsForwarded,
                   error: null,
+                  // The capped tool handoff makes this the ordinary path for a
+                  // passthrough tool turn, not a rare failure. Omitting tokens
+                  // here would leave the highest-volume turn in the system
+                  // reporting nothing, and would understate passthrough spend
+                  // in exactly the dashboards used to watch it. The SDK's
+                  // terminal result carries the authoritative usage even when
+                  // it reports max_turns, so lastUsage is populated by now.
+                  // The operator-facing line comes from the same source; see
+                  // the logUsage call above this record.
+                  inputTokens: lastUsage?.input_tokens,
+                  outputTokens: lastUsage?.output_tokens,
+                  cacheReadInputTokens: lastUsage?.cache_read_input_tokens,
+                  cacheCreationInputTokens: lastUsage?.cache_creation_input_tokens,
+                  cacheHitRate: computeCacheHitRate(lastUsage),
                   ...(envelopeViolations.length > 0 ? { envelopeViolations: [...envelopeViolations] } : {}),
                 })
 
@@ -4732,6 +4851,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         return c.json({
           status: "degraded",
           version: serverVersion,
+          build: currentBuild(),
           error: "Could not verify auth status",
           mode: envBool("PASSTHROUGH") ? "passthrough" : "internal",
         })
@@ -4740,6 +4860,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         return c.json({
           status: "unhealthy",
           version: serverVersion,
+          build: currentBuild(),
           error: "Not logged in. Run: claude login",
           auth: { loggedIn: false }
         }, 503)
@@ -4768,6 +4889,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       return c.json({
         status: "healthy",
         version: serverVersion,
+        build: currentBuild(),
         auth: {
           loggedIn: true,
           email: auth.email,
@@ -4782,6 +4904,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       return c.json({
         status: "degraded",
         version: serverVersion,
+        build: currentBuild(),
         error: "Could not verify auth status",
         mode: envBool("PASSTHROUGH") ? "passthrough" : "internal",
       })
@@ -5614,6 +5737,23 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
   const { app, config: finalConfig, initPlugins, beginDrain, getInFlightCount } = createProxyServer(config)
   if (initPlugins) await initPlugins()
 
+  // Cached, once a day, never on the request path. Opt out with
+  // MERIDIAN_NO_UPDATE_CHECK=1. The banner below reports build-source drift
+  // synchronously; this callback reports version drift whenever it resolves.
+  startUpdateCheck({
+    onResolved: (latest) => {
+      if (finalConfig.silent) return
+      const build = getBuildInfo({
+        version: finalConfig.version ?? "unknown",
+        modulePath: import.meta.url,
+        latest,
+      })
+      if (build.source !== "npm" || !build.updateAvailable) return
+      console.log(`\n[meridian] Update available: ${build.version} → ${latest}`)
+      console.log(`  npm install -g @rynfar/meridian@latest`)
+    },
+  })
+
   if (finalConfig.installProcessErrorHandlers) {
     installProxyProcessErrorHandlers()
   }
@@ -5637,6 +5777,15 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
       if (claudeInfo) {
         console.log(`Claude executable: ${claudeInfo.path} (resolved via ${claudeInfo.source})`)
       }
+      // A build that did not come from npm reports the tree's last released
+      // version, which is indistinguishable from the real thing. Say so once,
+      // at startup, rather than letting the version string imply otherwise.
+      const buildDrift = describeBuildDrift(getBuildInfo({
+        version: finalConfig.version ?? "unknown",
+        modulePath: import.meta.url,
+        latest: getLatestVersion(),
+      }))
+      if (buildDrift) console.log(`Build: ${buildDrift}`)
       console.log(`\nPoint any Anthropic-compatible tool at this endpoint:`)
       console.log(`  ANTHROPIC_API_KEY=x ANTHROPIC_BASE_URL=http://${finalConfig.host}:${info.port}`)
     }
@@ -5706,6 +5855,7 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
         clearInterval(profileTokenRefreshInterval)
         if (authKeepaliveInterval) clearInterval(authKeepaliveInterval)
         stopBackgroundRefresh()
+        stopUpdateCheck()
 
         // Stop admitting new requests, then give whatever is already in flight
         // up to SHUTDOWN_GRACE_MS to finish naturally before pulling the plug.
