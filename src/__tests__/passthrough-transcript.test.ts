@@ -26,6 +26,9 @@ function denialBlock(id: string) {
   return { type: "tool_result", tool_use_id: id, is_error: true, content: PASSTHROUGH_DENY_REASON }
 }
 
+/** The row-level stamps the CLI puts beside a denial and not beside a real result. */
+const denialStamps = { toolDenialKind: "permission-rule", toolUseResult: `Error: ${PASSTHROUGH_DENY_REASON}` }
+
 function rows() {
   return [
     { type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "read a and b" } },
@@ -33,8 +36,8 @@ function rows() {
       { type: "tool_use", id: "call_a", name: "read", input: { file_path: "a" } },
       { type: "tool_use", id: "call_b", name: "read", input: { file_path: "b" } },
     ] } },
-    { type: "user", uuid: "d1", parentUuid: "a1", message: { role: "user", content: [denialBlock("call_a")] } },
-    { type: "user", uuid: "d2", parentUuid: "a1", message: { role: "user", content: [denialBlock("call_b")] } },
+    { type: "user", uuid: "d1", parentUuid: "a1", ...denialStamps, message: { role: "user", content: [denialBlock("call_a")] } },
+    { type: "user", uuid: "d2", parentUuid: "a1", ...denialStamps, message: { role: "user", content: [denialBlock("call_b")] } },
     { type: "attachment", uuid: "t1", parentUuid: "d2", attachment: {} },
     { type: "last-prompt", leafUuid: "d2", explicit: true },
   ]
@@ -78,6 +81,10 @@ describe("rewriteDenialRows", () => {
     expect([...changed]).toEqual([rs[2]!])
     const rewritten = (rs[2] as any).message.content[0]
     expect(rewritten).toEqual({ type: "tool_result", tool_use_id: "call_a", content: "REAL[alpha]" })
+    // The rewritten row loses the denial stamps; an untouched one keeps them.
+    expect("toolDenialKind" in rs[2]!).toBe(false)
+    expect("toolUseResult" in rs[2]!).toBe(false)
+    expect((rs[3] as any).toolDenialKind).toBe("permission-rule")
     // call_b was not delivered: its denial stays.
     expect((rs[3] as any).message.content[0]).toEqual(denialBlock("call_b"))
     // Topology is untouched: every uuid, parentUuid and leaf hint as before.

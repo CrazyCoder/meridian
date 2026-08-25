@@ -60,15 +60,18 @@ for (const k of ["log", "error", "debug"]) console[k] = (...args) => { proxyLog.
 const inst = await startProxyServer({ port: PORT, host: "127.0.0.1" })
 const short = s => (typeof s === "string" && s.length > 10 ? s.slice(-8) : String(s))
 
-/** Parse either response shape into assistant content blocks. */
+/** Parse either response shape into assistant content blocks plus usage. */
 async function assistantBlocks(res) {
   const text = await res.text()
-  if (!STREAM) return JSON.parse(text).content ?? []
+  if (!STREAM) { const body = JSON.parse(text); return { blocks: body.content ?? [], usage: body.usage ?? {} } }
   const blocks = []
+  let usage = {}
   for (const line of text.split("\n")) {
     if (!line.startsWith("data:")) continue
     let ev
     try { ev = JSON.parse(line.slice(5)) } catch { continue }
+    if (ev.type === "message_start") usage = { ...usage, ...(ev.message?.usage ?? {}) }
+    if (ev.type === "message_delta" && ev.usage) usage = { ...usage, ...ev.usage }
     if (ev.type === "content_block_start") blocks[ev.index] = { ...ev.content_block, ...(ev.content_block.type === "tool_use" ? { _json: "" } : {}) }
     if (ev.type === "content_block_delta") {
       const b = blocks[ev.index]
@@ -76,9 +79,41 @@ async function assistantBlocks(res) {
       if (ev.delta.type === "input_json_delta") b._json += ev.delta.partial_json
     }
   }
-  return blocks.filter(Boolean).map(b => {
+  return { usage, blocks: blocks.filter(Boolean).map(b => {
     if (b.type === "tool_use") { const { _json, ...rest } = b; return { ...rest, input: _json ? JSON.parse(_json) : (b.input ?? {}) } }
     return b
+  }) }
+}
+
+/** One line of prompt-cache accounting: what was read from cache vs paid for. */
+const usageLine = u => {
+  const read = u.cache_read_input_tokens ?? 0, created = u.cache_creation_input_tokens ?? 0, fresh = u.input_tokens ?? 0
+  const total = read + created + fresh
+  return `cache_read=${read} cache_create=${created} input=${fresh} (${total ? Math.round(100 * read / total) : 0}% of ${total} input read from cache)`
+}
+
+// Prompt-cache continuity across resumes. Every continuation turn's prompt is
+// the previous turn's prompt plus a delta, so its cache_read must cover what
+// the previous turn had in cache (cache_read + cache_create). Measured, the
+// two are equal to the token; a shortfall means the resumed transcript no
+// longer matches what was sent — which is exactly what a repair that wrote a
+// different byte than the client delivered would cause.
+const CACHE_FLOOR = 0.95
+let priorCached = 0
+const cacheMisses = []
+function checkCache(label, usage, lineage) {
+  const read = usage.cache_read_input_tokens ?? 0
+  if (lineage.includes("continuation") && priorCached > 0 && read < CACHE_FLOOR * priorCached) {
+    cacheMisses.push(`${label}: cache_read=${read} < ${CACHE_FLOOR} x prior cached ${priorCached}`)
+  }
+  priorCached = read + (usage.cache_creation_input_tokens ?? 0)
+}
+
+async function send(messages) {
+  return fetch(`http://127.0.0.1:${PORT}/v1/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": "dummy", "x-opencode-session": sessionId, "user-agent": "opencode/1.0.0" },
+    body: JSON.stringify({ model: MODEL, max_tokens: 2048, stream: STREAM, tools: [READ_TOOL], messages }),
   })
 }
 
@@ -110,12 +145,8 @@ let finalText = ""
 
 for (let turn = 1; turn <= MAX_TURNS; turn++) {
   const logFrom = proxyLog.length
-  const res = await fetch(`http://127.0.0.1:${PORT}/v1/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": "dummy", "x-opencode-session": sessionId, "user-agent": "opencode/1.0.0" },
-    body: JSON.stringify({ model: MODEL, max_tokens: 2048, stream: STREAM, tools: [READ_TOOL], messages }),
-  })
-  const blocks = await assistantBlocks(res)
+  const res = await send(messages)
+  const { blocks, usage } = await assistantBlocks(res)
   const calls = blocks.filter(b => b.type === "tool_use")
   const text = blocks.filter(b => b.type === "text").map(b => b.text).join("")
   const turnLog = proxyLog.slice(logFrom)
@@ -127,6 +158,8 @@ for (let turn = 1; turn <= MAX_TURNS; turn++) {
   say(`  calls: ${calls.map(c => `${c.name}(${String(c.input?.file_path ?? "").slice(-5)})#${short(c.id)}`).join(", ") || "none"}`)
   if (text) say(`  text: ${JSON.stringify(text.slice(0, 200))}`)
   say(`  lineage: ${lineage}`)
+  say(`  usage: ${usageLine(usage)}`)
+  checkCache(`turn ${turn}`, usage, lineage)
   say(`  proxy repair log: ${repaired.length ? repaired.map(l => l.replace(/^.*denials_rewrit/, "denials_rewrit").slice(0, 220)).join(" | ") : "none"}`)
   if (res.status !== 200) { say(`  body: ${JSON.stringify(blocks).slice(0, 300)}`); break }
 
@@ -142,6 +175,21 @@ for (let turn = 1; turn <= MAX_TURNS; turn++) {
     return { type: "tool_result", tool_use_id: c.id, content: `REALOUTPUT[${content}]` }
   })
   messages.push({ role: "user", content: results })
+}
+
+// One more turn after the answer. Its prompt runs THROUGH the repaired rows —
+// the CLI's loader now splices them back beside the real results — so this is
+// where a byte of difference between what turn N+1 sent and what the repair
+// wrote would show up as a cache miss. Expect cache_read to cover the prior turn.
+if (finalText) {
+  const logFrom = proxyLog.length
+  const res = await send([...messages, { role: "user", content: "Reply with the single word OK." }])
+  const { usage } = await assistantBlocks(res)
+  const lineage = proxyLog.slice(logFrom).map(l => l.match(/lineage=\S+ session=\S+/)?.[0]).find(Boolean) ?? "?"
+  say(`\n=== follow-up turn (stream=${STREAM}) http ${res.status} ===`)
+  say(`  lineage: ${lineage}`)
+  say(`  usage: ${usageLine(usage)}`)
+  checkCache("follow-up", usage, lineage)
 }
 
 // The CLI flushes the transcript as the query settles; give it a beat.
@@ -160,9 +208,10 @@ for (const f of resumedFiles) {
   staleDenials += denials.length
   say(`  ${f}\n    forwarded denials still stored for delivered ids: ${denials.length}${denials.length ? "   <-- REPLAYED ON THE NEXT RESUME" : "   (clean)"}`)
 }
+say(`  prompt cache across resumes: ${cacheMisses.length ? cacheMisses.join("; ") + "   <-- PREFIX LOST" : "every continuation read the prior turn's cache in full"}`)
 if (touched.length === 0) say("  no session JSONL was written — inconclusive")
 else if (resumedFiles.length === 0) say(`  no turn resumed a session (${touched.length} file(s) touched, all abandoned) — the stale-denial check cannot apply; the defect needs a resume`)
-const pass = quotes.length === 3 && !claimsUnanswered && staleDenials === 0 && resumedFiles.length > 0
+const pass = quotes.length === 3 && !claimsUnanswered && staleDenials === 0 && resumedFiles.length > 0 && cacheMisses.length === 0
 say(`  ${pass ? "PASS" : "FAIL"}: one call, one answer, the real one`)
 
 await inst.stop?.()

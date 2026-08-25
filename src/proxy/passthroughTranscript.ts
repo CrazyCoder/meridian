@@ -42,7 +42,12 @@ export interface DeliveredToolResult {
 }
 
 type Block = { type?: string; tool_use_id?: string; content?: unknown; is_error?: boolean; [k: string]: unknown }
-type Row = { type?: string; message?: { content?: unknown }; [k: string]: unknown }
+/**
+ * A transcript row. Beside the message, the CLI stamps a denial row with
+ * `toolDenialKind` and mirrors the denial text into `toolUseResult`; a row it
+ * writes for a real result carries neither.
+ */
+type Row = { type?: string; message?: { content?: unknown }; toolDenialKind?: unknown; toolUseResult?: unknown; [k: string]: unknown }
 
 function blockText(block: Block): string {
   if (typeof block.content === "string") return block.content
@@ -94,6 +99,10 @@ export function rewriteDenialRows(rows: ReadonlyArray<Row>, results: ReadonlyArr
       block.content = real.content
       if (real.is_error) block.is_error = true
       else delete block.is_error
+      // The row-level denial stamps go too, so the row is what the CLI would
+      // have written for a real result and nothing keyed on them sees a denial.
+      delete row.toolDenialKind
+      delete row.toolUseResult
       changed.add(row)
     }
   }
