@@ -38,6 +38,7 @@ export type {
 // transforms through the same runner meridian uses internally.
 export { runTransformHook, runObserveHook, buildPipeline, createRequestContext } from "./transform"
 import { claudeLog } from "../logger"
+import { PASSTHROUGH_DENY_REASON, deliveredToolResults, repairForwardedDenials, transcriptConfigDirs } from "./passthroughTranscript"
 import { exec as execCallback } from "child_process"
 import { promisify } from "util"
 import { randomUUID } from "crypto"
@@ -1664,6 +1665,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               })
             }
           }
+          // The session already answered these calls with the hook's denial,
+          // and resumeSessionAt never removes it — the CLI's loader splices
+          // it back on the next resume and keeps it over the real result. So
+          // the denial is rewritten with the real result before the resume
+          // starts. See passthroughTranscript.ts.
+          if (resumeSessionId && passthroughToolCallAssistantUuid) {
+            const results = deliveredToolResults(messagesToConvert)
+            const repair = repairForwardedDenials({ sessionId: resumeSessionId, configDirs: transcriptConfigDirs(profileEnv), results })
+            claudeLog("passthrough.denials_rewritten", {
+              sessionId: resumeSessionId, delivered: results.length, rewritten: repair.rewritten, file: repair.file,
+            })
+          }
         } else {
           // First request: all messages (system context now passed via appendSystemPrompt)
           for (const m of messagesToConvert) {
@@ -2084,10 +2097,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 }
                 return {
                   decision: "block" as const,
-                  reason:
-                    "This tool call has been forwarded to the client for execution. " +
-                    "The result will be delivered in a future turn. " +
-                    "Do not retry, do not call additional tools, and do not generate further text — end your turn now.",
+                  reason: PASSTHROUGH_DENY_REASON,
                 }
               }],
             }],
