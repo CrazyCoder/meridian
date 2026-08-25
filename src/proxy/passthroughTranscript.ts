@@ -76,12 +76,13 @@ export function deliveredToolResults(messages: ReadonlyArray<{ role?: string; co
 
 /**
  * Rewrite, in place, every forwarded denial whose id has a delivered result.
- * Pure over the parsed rows; returns how many blocks changed.
+ * Pure over the parsed rows; returns the rows that changed, so a caller
+ * re-serializes those and nothing else.
  */
-export function rewriteDenialRows(rows: Row[], results: ReadonlyArray<DeliveredToolResult>): number {
-  if (results.length === 0) return 0
+export function rewriteDenialRows(rows: ReadonlyArray<Row>, results: ReadonlyArray<DeliveredToolResult>): Set<Row> {
+  const changed = new Set<Row>()
+  if (results.length === 0) return changed
   const byId = new Map(results.map(r => [r.tool_use_id, r]))
-  let rewritten = 0
   for (const row of rows) {
     if (row.type !== "user") continue
     const content = row.message?.content
@@ -93,10 +94,10 @@ export function rewriteDenialRows(rows: Row[], results: ReadonlyArray<DeliveredT
       block.content = real.content
       if (real.is_error) block.is_error = true
       else delete block.is_error
-      rewritten++
+      changed.add(row)
     }
   }
-  return rewritten
+  return changed
 }
 
 /**
@@ -136,7 +137,9 @@ export interface RepairOutcome {
 /**
  * Rewrite the session's forwarded denials with the delivered results. Reads
  * the JSONL, rewrites the matching blocks, writes it back through a rename so
- * the CLI never observes a half-written file. A session with nothing to
+ * the CLI never observes a half-written file. Only the lines that changed are
+ * re-serialized: every other line, parsable or not, goes back verbatim, so
+ * the CLI's own formatting is never touched. A session with nothing to
  * rewrite is left untouched.
  */
 export function repairForwardedDenials(opts: {
@@ -152,10 +155,10 @@ export function repairForwardedDenials(opts: {
     if (l.trim().length === 0) return null
     try { return JSON.parse(l) as Row } catch { return null }
   })
-  const rewritten = rewriteDenialRows(rows.filter((r): r is Row => r !== null), opts.results)
+  const changed = rewriteDenialRows(rows.filter((r): r is Row => r !== null), opts.results)
+  const rewritten = changed.size
   if (rewritten === 0) return { file, rewritten }
-  // Re-serialize only parsed rows; unparsable or blank lines go back verbatim.
-  const out = lines.map((l, i) => (rows[i] ? JSON.stringify(rows[i]) : l)).join("\n")
+  const out = lines.map((l, i) => (rows[i] && changed.has(rows[i]) ? JSON.stringify(rows[i]) : l)).join("\n")
   const tmp = `${file}.meridian-tmp`
   writeFileSync(tmp, out)
   renameSync(tmp, file)

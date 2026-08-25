@@ -74,8 +74,8 @@ describe("rewriteDenialRows", () => {
   test("replaces the denial with the real result and touches nothing else", () => {
     const rs = rows()
     const before = JSON.parse(JSON.stringify(rs))
-    const n = rewriteDenialRows(rs, [{ tool_use_id: "call_a", content: "REAL[alpha]" }])
-    expect(n).toBe(1)
+    const changed = rewriteDenialRows(rs, [{ tool_use_id: "call_a", content: "REAL[alpha]" }])
+    expect([...changed]).toEqual([rs[2]!])
     const rewritten = (rs[2] as any).message.content[0]
     expect(rewritten).toEqual({ type: "tool_result", tool_use_id: "call_a", content: "REAL[alpha]" })
     // call_b was not delivered: its denial stays.
@@ -97,8 +97,8 @@ describe("rewriteDenialRows", () => {
 
   test("an already rewritten denial is not rewritten again, and unknown ids are ignored", () => {
     const rs = rows()
-    expect(rewriteDenialRows(rs, [{ tool_use_id: "call_a", content: "first" }])).toBe(1)
-    expect(rewriteDenialRows(rs, [{ tool_use_id: "call_a", content: "second" }, { tool_use_id: "nope", content: "x" }])).toBe(0)
+    expect(rewriteDenialRows(rs, [{ tool_use_id: "call_a", content: "first" }]).size).toBe(1)
+    expect(rewriteDenialRows(rs, [{ tool_use_id: "call_a", content: "second" }, { tool_use_id: "nope", content: "x" }]).size).toBe(0)
     expect((rs[2] as any).message.content[0].content).toBe("first")
   })
 })
@@ -109,9 +109,13 @@ describe("locate + repair on disk", () => {
     const project = join(configDir, "projects", "C--some-cwd-slug")
     mkdirSync(project, { recursive: true })
     const file = join(project, `${SESSION}.jsonl`)
-    // A blank line and an unparsable line, both of which must survive verbatim.
+    // A blank line, an unparsable line, and a parsable line the CLI did not
+    // write canonically (spaces, escaped unicode, a float), all of which must
+    // survive verbatim. The last one is the real check: JSON.parse followed by
+    // JSON.stringify would silently normalise it.
     const lines = rows().map(r => JSON.stringify(r))
     lines.splice(2, 0, "")
+    lines.push('{ "type": "summary", "summary": "caf\\u00e9", "n": 1.0 }')
     lines.push("{not json")
     writeFileSync(file, lines.join("\n") + "\n")
     return { configDir, file }
@@ -138,6 +142,7 @@ describe("locate + repair on disk", () => {
     expect(after.length).toBe(before.length)
     for (const [i, line] of after.entries()) {
       if (i === 3 || i === 4) continue // the two denial rows
+      // Every other line, canonical or not, is the same bytes.
       expect(line).toBe(before[i]!)
     }
     expect(JSON.parse(after[3]!).message.content[0]).toEqual({ type: "tool_result", tool_use_id: "call_a", content: "REAL[alpha]" })

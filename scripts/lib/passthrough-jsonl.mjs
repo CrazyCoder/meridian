@@ -2,29 +2,20 @@
  * Shared reader for the session JSONL the CLI writes behind Meridian.
  *
  * The passthrough probes all answer the same question — what would
- * resumeSessionAt keep? — so they read the transcript the same way. One copy,
- * because three drifted: two matched only "forwarded to the client" while a
- * third also matched "was NOT executed", which silently changes what each
- * reports as a denial.
+ * resumeSessionAt keep? — so they read the transcript the same way, from one
+ * copy.
  *
- * Deny detection is STRUCTURAL, not prose. The reason text lives in server.ts
- * and is edited freely; a probe keyed on it reports "0 denials surviving —
- * clean" the moment the wording moves, which is a green meaning "detection
- * broke" on exactly the thing these probes exist to catch. In a passthrough
- * transcript every tool_result the CLI writes for a forwarded call is the
- * synthetic denial (the client's real results are injected on the next request
- * and carry no is_error), so `is_error === true` identifies it without knowing
- * a single word of the reason.
- *
- * DENY_TEXT_MARKER stays only as a drift signal: callers can report whether the
- * prose still matches, so a wording change is visible rather than silent.
+ * A denial is whatever src/proxy/passthroughTranscript.ts says it is: the
+ * proxy's own detector, imported rather than restated, so the probes and the
+ * repair can never disagree about which rows are the hook's denials. That
+ * matters after a repair: a delivered result that was itself an error is
+ * rewritten in place with is_error still set, and a reader keyed on is_error
+ * alone would count it as a surviving denial.
  */
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-
-/** Current phrasing of the forwarded-call denial. A cross-check, never a test. */
-export const DENY_TEXT_MARKER = "forwarded to the client"
+import { isForwardedDenial } from "../../src/proxy/passthroughTranscript.ts"
 
 const PROJECTS_ROOT = join(homedir(), ".claude", "projects")
 
@@ -73,14 +64,7 @@ export function toolResultText(block) {
 }
 
 /** A synthetic denial: the CLI's answer to a call the hook refused. */
-export function isDenyResult(block) {
-  return block?.type === "tool_result" && block.is_error === true
-}
-
-/** Does the denial still read the way the probes' commentary claims? */
-export function denyTextMatchesMarker(block) {
-  return toolResultText(block).includes(DENY_TEXT_MARKER)
-}
+export const isDenyResult = isForwardedDenial
 
 /**
  * Guard against a silent detection failure: a turn that forwarded calls must
@@ -88,12 +72,7 @@ export function denyTextMatchesMarker(block) {
  * the transcript is clean. Returns a warning string, or null when all is well.
  */
 export function denyDetectionWarning({ forwardedCalls, denyResults }) {
-  if (forwardedCalls === 0 || denyResults.length > 0) {
-    const drifted = denyResults.length > 0 && !denyResults.some(denyTextMatchesMarker)
-    return drifted
-      ? `deny wording no longer contains ${JSON.stringify(DENY_TEXT_MARKER)} — update DENY_TEXT_MARKER (detection itself is structural and still correct)`
-      : null
-  }
+  if (forwardedCalls === 0 || denyResults.length > 0) return null
   return `${forwardedCalls} call(s) were forwarded but NO deny tool_result was found — ` +
     `treat every "clean" result below as unproven; the reader, not the transcript, is probably wrong`
 }

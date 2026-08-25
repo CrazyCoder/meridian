@@ -1600,20 +1600,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         messagesToConvert = allMessages
       }
 
-      // TEMPORARY DIAGNOSTIC — what the SDK actually receives this turn.
-      claudeLog("debug.messages_to_convert", {
-        isResume,
-        resumeFrom,
-        resumeContentFrom,
-        allMessages: allMessages.length,
-        shape: (messagesToConvert as Array<{ role: string; content: any }>)
-          .map((m) =>
-            `${m.role}[${Array.isArray(m.content)
-              ? m.content.map((b: any) => b?.type).join(",")
-              : "text"}]`)
-          .join(" -> "),
-      })
-
       // Rewinding to a tool-use checkpoint is valid only when the immediate
       // delta settles that exact batch. Partial, late, duplicate, or unknown
       // results get one safe fresh replay rather than an invalid SDK resume.
@@ -1672,10 +1658,19 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           // starts. See passthroughTranscript.ts.
           if (resumeSessionId && passthroughToolCallAssistantUuid) {
             const results = deliveredToolResults(messagesToConvert)
-            const repair = repairForwardedDenials({ sessionId: resumeSessionId, configDirs: transcriptConfigDirs(profileEnv), results })
-            claudeLog("passthrough.denials_rewritten", {
-              sessionId: resumeSessionId, delivered: results.length, rewritten: repair.rewritten, file: repair.file,
-            })
+            try {
+              const repair = repairForwardedDenials({ sessionId: resumeSessionId, configDirs: transcriptConfigDirs(profileEnv), results })
+              claudeLog("passthrough.denials_rewritten", {
+                sessionId: resumeSessionId, delivered: results.length, rewritten: repair.rewritten, file: repair.file,
+              })
+            } catch (err) {
+              // The resume is still valid without the repair; the denial then
+              // survives for the model to see, which is the un-repaired
+              // outcome, not a failed turn. Say so and carry on.
+              claudeLog("passthrough.denials_rewrite_failed", {
+                sessionId: resumeSessionId, delivered: results.length, error: err instanceof Error ? err.message : String(err),
+              })
+            }
           }
         } else {
           // First request: all messages (system context now passed via appendSystemPrompt)
@@ -1744,12 +1739,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // Resume deltas are tail-only and stay bare.
         const resumeDelta = promptTurns.map((t: { text: string }) => t.text).filter(Boolean).join("\n\n") || ""
         textPrompt = isResume ? resumeDelta : frameReplayTurns(promptTurns)
-        // TEMPORARY DIAGNOSTIC — the exact prompt handed to the SDK.
-        claudeLog("debug.text_prompt", {
-          isResume,
-          len: (textPrompt ?? "").length,
-          head: (textPrompt ?? "").slice(0, 500),
-        })
       }
 
       // Create a fresh prompt value — can be called multiple times for retry
