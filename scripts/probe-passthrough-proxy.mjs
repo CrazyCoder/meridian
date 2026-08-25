@@ -116,7 +116,7 @@ function analyze(file) {
 }
 
 async function drive(label, stream) {
-  // run's refusal would otherwise be reported against a later, healthy one.
+  const before = snapshot()
   const sessionId = `probe-${stream ? "stream" : "nonstream"}-${process.pid}`
   const body = {
     model: MODEL,
