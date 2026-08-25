@@ -44,7 +44,7 @@ import { randomUUID } from "crypto"
 import { withClaudeLogContext } from "../logger"
 import { createPassthroughMcpServer, stripMcpPrefix, normalizeToolInput, computeToolSetKey, toolUseSignature, PASSTHROUGH_MCP_NAME, PASSTHROUGH_MCP_PREFIX } from "./passthroughTools"
 import { detectServerTools, serverToolErrorMessage } from "./tools"
-import { clientAbortDisposition, createEarlyStopTracker, isCompleteToolResultContinuation, noteAssistantMessage, noteUserContent, settledToolCallAssistantUuid, shouldEarlyStop } from "./passthroughEarlyStop"
+import { clientAbortDisposition, createEarlyStopTracker, isClientForwardedToolUse, isCompleteToolResultContinuation, noteAssistantMessage, noteOrderingUnsafe, noteUserContent, settledToolCallAssistantUuid, shouldEarlyStop } from "./passthroughEarlyStop"
 import { checkEmptyToolInputs, checkUndeliveredToolUses, type EnvelopeViolation } from "./envelopeIntegrity"
 import { classifyTurnOutcome, createRecoveryLifter, shouldAttemptRecovery, shouldInjectSilentTurn, SILENT_TURN_NUDGE } from "./turnOutcome"
 import { resolveAgentAlias } from "./agentMatch"
@@ -140,6 +140,24 @@ let claudeExecutable = ""
 // to abort the same hung model — see the coordination contract in
 // streamIdleGuard.ts.
 const UPSTREAM_IDLE_MS = envInt("UPSTREAM_IDLE_MS", 90_000)
+
+// How long a passthrough deny may be held waiting for the turn-generation
+// boundary. Derived from UPSTREAM_IDLE_MS, never a standalone number, because
+// this is the same coordination contract: guardUpstreamIdle owns model-stream
+// liveness, so every other timer must sit ABOVE it and let it decide.
+//
+// The hazard this guards is a CLI version that serialises hook-then-stream, in
+// which case a held deny blocks generation forever. That case is already
+// covered by the layer that owns it: no upstream messages flow, so
+// guardUpstreamIdle throws UpstreamIdleError and the turn fails loudly. A
+// shorter timer here would only pre-empt that with a WORSE outcome — releasing
+// mid-generation lets the CLI cancel the in-flight request, which beheads every
+// parallel call still generating and hands the client a truncated tool set
+// under a 200 (measured: 1 of 3 calls delivered).
+//
+// An override BELOW UPSTREAM_IDLE_MS deliberately re-enables that race; that is
+// how scripts/probe-passthrough-proxy.mjs reproduces the leak on demand.
+const DENY_HOLD_TIMEOUT_MS = envInt("DENY_HOLD_TIMEOUT_MS", UPSTREAM_IDLE_MS + 30_000)
 
 // Bounds how long ProxyInstance.close() waits for in-flight /v1/messages
 // requests to finish (after beginDrain() stops admitting new ones) before it
@@ -1776,8 +1794,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // beheads trailing parallel calls (#552 red reads: `glob {}` aborted)
       // and re-loops the model. Fix: hold every deny response until turn-1
       // generation completes (message_delta observed), so the cancel can
-      // never land mid-generation. Timeout is a deadlock backstop in case a
-      // CLI version serializes hook-then-stream.
+      // never land mid-generation. The hold defers to guardUpstreamIdle for
+      // liveness — see DENY_HOLD_TIMEOUT_MS — so its own timer sits above that
+      // limit and is a last-ditch backstop, not the thing that decides.
       // Envelope integrity: violations of the proxy's own output contract
       // (dangling blocks, undelivered captured calls, empty required tool
       // inputs). Logged loudly + counted on /telemetry so #552-family
@@ -1790,7 +1809,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           diagnosticLog.error(`${requestMeta.requestId} ENVELOPE VIOLATION [${v.type}] ${v.detail}`, requestMeta.requestId)
         }
       }
-      const DENY_HOLD_TIMEOUT_MS = 8000
       const pendingDenyReleases: Array<() => void> = []
       // True while a model turn is actively generating (message_start seen,
       // no message_delta/message_stop yet). Hooks dispatched AFTER generation
@@ -1798,6 +1816,22 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // hooks can fire post-turn) must NOT hold — there is no in-flight
       // request left to protect, and holding would only add dead time.
       let turnGenerating = false
+      // Whether this request ever saw a raw turn-boundary event. Partial
+      // messages are requested for passthrough on both paths, but if they are
+      // ever absent (an older CLI, a mocked SDK) the gates below must degrade to
+      // the previous assistant-message behaviour rather than wedge waiting for a
+      // boundary that will never arrive.
+      let sawTurnBoundarySignal = false
+      // One line per turn that gave up its checkpoint, so a path that leaks
+      // into the text-path fallback shows up in OUR telemetry rather than as a
+      // slow, expensive turn nobody can explain.
+      let orderingUnsafeLogged = false
+      const logCheckpointRefused = (mode: string): void => {
+        if (orderingUnsafeLogged || !earlyStop.orderingUnsafeReason) return
+        orderingUnsafeLogged = true
+        claudeLog("passthrough.checkpoint_refused", { mode, reason: earlyStop.orderingUnsafeReason })
+        plog(`[PROXY] ${requestMeta.requestId} checkpoint_refused: ${earlyStop.orderingUnsafeReason} (${mode}) — next turn replays through the text path`)
+      }
       const releaseHeldDenies = (reason: string): void => {
         turnGenerating = false
         if (pendingDenyReleases.length === 0) return
@@ -1808,6 +1842,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         new Promise<void>((resolve) => {
           const timer = setTimeout(() => {
             claudeLog("passthrough.deny_hold_timeout", { afterMs: DENY_HOLD_TIMEOUT_MS })
+            // The deny is about to land while the turn may still be emitting
+            // per-block assistant rows, so the log order can no longer be
+            // sliced cleanly. Refuse the checkpoint instead of storing one that
+            // would replay this deny to the model.
+            noteOrderingUnsafe(earlyStop, "deny_hold_timeout")
             resolve()
           }, DENY_HOLD_TIMEOUT_MS)
           pendingDenyReleases.push(() => {
@@ -2093,6 +2132,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           claudeLog("upstream.start", { mode: "non_stream", model })
           let lastUsage: TokenUsage | undefined
           let lastStopReason: string | undefined
+          // Completeness oracle, the non-stream twin of the streaming path's
+          // `streamedToolUseIds`. Built from content_block_start, so it names
+          // every tool_use the turn actually produced — including calls whose
+          // assistant fragment the iterator has not surfaced yet. Without it the
+          // checkpoint can freeze on the fragments consumed so far and silently
+          // drop the rest from the client-facing set.
+          const streamedToolUseIds = new Set<string>()
           let nextPassthroughToolCallAssistantUuid: string | undefined
           let nextPassthroughToolCallIds: string[] | undefined
           let sawCanonicalResult = false
@@ -2394,7 +2440,20 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 assistantAddedForwardedCall = earlyStop.expected.size > expectedBefore
               } else if (passthrough && message.type === "user" && !earlyStopFired) {
                 noteUserContent(earlyStop, (message as any).message?.content)
-                if (earlyStopEnabled && shouldEarlyStop(earlyStop)) {
+                // The completeness gate the streaming path already applies:
+                // generation has ended AND the tracker has caught up with every
+                // tool_use the wire actually carried. Either half alone is not
+                // enough — a deny can settle the calls known so far while a
+                // later assistant fragment is still to come, and freezing there
+                // drops it.
+                const hasCompleteStreamedSet =
+                  streamedToolUseIds.size > 0 &&
+                  earlyStop.expected.size === streamedToolUseIds.size &&
+                  [...streamedToolUseIds].every((id) => earlyStop.expected.has(id))
+                const turnComplete = sawTurnBoundarySignal
+                  ? !turnGenerating && hasCompleteStreamedSet
+                  : true // no boundary events from this CLI — previous behaviour
+                if (earlyStopEnabled && turnComplete && shouldEarlyStop(earlyStop)) {
                   nextPassthroughToolCallAssistantUuid = settledToolCallAssistantUuid(earlyStop)
                   nextPassthroughToolCallIds = [...earlyStop.expected]
                   earlyStopFired = true
@@ -2414,10 +2473,32 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   })
                 }
               }
+              // #592/#625: the turn-generation boundary, now observable on this
+              // path too (includePartialMessages). Releasing on the first
+              // assistant message instead — which is what this path used to do —
+              // is too early: the CLI emits one assistant message per tool-use
+              // block, so the release landed while later parallel blocks were
+              // still generating. Their denies then cancelled the in-flight
+              // request, and the checkpoint froze on call 1 with calls 2..N
+              // dropped past it.
+              if (message.type === "stream_event") {
+                const event = (message as any).event as any
+                const eventType = event?.type
+                if (eventType === "message_delta" || eventType === "message_stop") {
+                  sawTurnBoundarySignal = true
+                  releaseHeldDenies(eventType)
+                } else if (eventType === "message_start") {
+                  sawTurnBoundarySignal = true
+                  turnGenerating = true
+                } else if (passthrough && eventType === "content_block_start") {
+                  // The predicate the tracker arms `expected` with, so the two
+                  // sets are comparable by construction.
+                  const block = event.content_block
+                  if (isClientForwardedToolUse(block)) streamedToolUseIds.add(block.id)
+                }
+              }
               if (message.type === "assistant") {
-                // #592: the turn's generation is complete — held denies can
-                // return without the CLI cancelling anything in flight.
-                releaseHeldDenies("assistant_message")
+                if (!sawTurnBoundarySignal) releaseHeldDenies("assistant_message")
                 assistantMessages += 1
                 // One Anthropic assistant response may combine several SDK
                 // assistant fragments (for example parallel tool calls).
@@ -2529,6 +2610,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             // #592: safety net — any deny still held at loop exit belongs to
             // a turn that is no longer generating.
             releaseHeldDenies("non_stream_loop_exit")
+            logCheckpointRefused("non_stream")
 
             claudeLog("upstream.completed", {
               mode: "non_stream",
@@ -3642,6 +3724,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // Never leak a held deny: if the loop exits for any reason
                 // (abort, error, natural end), unblock pending hook responses.
                 releaseHeldDenies("stream_loop_exit")
+                logCheckpointRefused("stream")
               }
 
               if (outputFormat) {
