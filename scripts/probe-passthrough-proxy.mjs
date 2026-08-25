@@ -15,16 +15,19 @@
  *
  *   bun scripts/probe-passthrough-proxy.mjs
  */
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
+import {
+  snapshotSessionFiles as snapshot,
+  readRows,
+  blocksOf,
+  isDenyResult as isDeny,
+  denyDetectionWarning,
+} from "./lib/passthrough-jsonl.mjs"
 
 process.env.MERIDIAN_PASSTHROUGH = "1"
 const { startProxyServer } = await import("../src/proxy/server.ts")
 
 const PORT = Number(process.env.PROBE_PORT ?? 3521)
 const MODEL = process.env.PROBE_MODEL ?? "claude-sonnet-5"
-const ROOT = join(homedir(), ".claude", "projects")
 
 const READ_TOOL = {
   name: "read",
@@ -41,37 +44,6 @@ const READ_TOOL = {
 const proxyLog = []
 console.error = (...args) => { proxyLog.push(args.map(String).join(" ")) }
 const inst = await startProxyServer({ port: PORT, host: "127.0.0.1" })
-
-/** Every session JSONL currently on disk, with its mtime. */
-function snapshot() {
-  const seen = new Map()
-  if (!existsSync(ROOT)) return seen
-  for (const dir of readdirSync(ROOT)) {
-    const full = join(ROOT, dir)
-    let entries
-    try { entries = readdirSync(full) } catch { continue }
-    for (const f of entries) {
-      if (!f.endsWith(".jsonl")) continue
-      const p = join(full, f)
-      try { seen.set(p, statSync(p).mtimeMs) } catch { /* raced */ }
-    }
-  }
-  return seen
-}
-
-function readRows(file) {
-  return readFileSync(file, "utf8").split("\n").filter(l => l.trim())
-    .map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
-}
-
-const blocksOf = row => (Array.isArray(row.message?.content) ? row.message.content : [])
-
-function isDeny(block) {
-  const text = typeof block.content === "string"
-    ? block.content
-    : Array.isArray(block.content) ? block.content.map(x => x.text ?? "").join("") : ""
-  return text.includes("forwarded to the client") || text.includes("was NOT executed")
-}
 
 /**
  * Replay the tracker's own checkpoint rule over the log.
@@ -128,7 +100,9 @@ function analyze(file) {
     .filter(([id, mid]) => !expected.has(id) && mid !== undefined && mid === checkpointTurnId)
     .length
   const turnIds = new Set([...turnOfCall.values()].filter(Boolean))
+  const allDenies = rows.flatMap(r => blocksOf(r).filter(isDeny))
   return {
+    warning: denyDetectionWarning({ forwardedCalls: expected.size + dropped, denyResults: allDenies }),
     file,
     calls: expected.size + dropped,
     delivered: expected.size,
@@ -191,7 +165,8 @@ async function drive(label, stream) {
     results.push(a)
     console.log(`  ${a.file}`)
     console.log(`    model called ${a.calls}  order=${a.shape}  checkpoint=row ${a.checkpointIndex}`)
-    console.log(`    denials surviving the slice: ${a.survivors}${a.survivors > 0 ? "   <-- REPLAYED TO THE MODEL" : "   (clean)"}`)
+    if (a.warning) console.log(`    !! ${a.warning}`)
+    console.log(`    denials surviving the slice: ${a.survivors}${a.survivors > 0 ? "   <-- REPLAYED TO THE MODEL" : a.warning ? "   (UNPROVEN)" : "   (clean)"}`)
     console.log(`    calls delivered to client:  ${a.delivered} of ${a.calls} across ${a.turns} model turn(s)`)
     if (a.dropped > 0) {
       console.log(`      left out: ${a.dropped} (${a.sameTurnDropped} from the checkpoint's OWN turn${a.sameTurnDropped > 0 ? " <-- REAL DROP" : ", i.e. none — the rest are later-turn calls, correctly excluded"})`)

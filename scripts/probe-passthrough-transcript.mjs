@@ -21,9 +21,10 @@
  */
 import { query, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod"
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs"
-import { tmpdir, homedir } from "node:os"
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { findSessionFile, readRows, toolResultText, isDenyResult } from "./lib/passthrough-jsonl.mjs"
 import { resolveClaudeExecutableAsync } from "../src/proxy/models.ts"
 
 const MODEL = process.env.PROBE_MODEL ?? "sonnet"
@@ -126,25 +127,6 @@ async function drive(prompt, maxTurns, extra) {
 
 const short = s => (typeof s === "string" && s.length > 10 ? s.slice(-8) : String(s))
 
-/** Locate the session JSONL the CLI wrote for this session id. */
-function findSessionFile(sessionId) {
-  const root = join(homedir(), ".claude", "projects")
-  if (!existsSync(root)) return null
-  for (const dir of readdirSync(root)) {
-    const candidate = join(root, dir, `${sessionId}.jsonl`)
-    if (existsSync(candidate)) return candidate
-  }
-  return null
-}
-
-function readRows(file) {
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter(l => l.trim().length > 0)
-    .map(l => { try { return JSON.parse(l) } catch { return null } })
-    .filter(Boolean)
-}
-
 /** One-line summary of a JSONL row: what it is and what it answers. */
 function describe(row) {
   const kind = row.type ?? "?"
@@ -155,13 +137,8 @@ function describe(row) {
       .map(b => {
         if (b.type === "tool_use") return `tool_use:${short(b.id)}(${b.name})`
         if (b.type === "tool_result") {
-          const text = typeof b.content === "string"
-            ? b.content
-            : Array.isArray(b.content)
-              ? b.content.map(c => c.text ?? "").join("")
-              : ""
-          const isDeny = text.includes("forwarded to the client")
-          return `tool_result:${short(b.tool_use_id)}${b.is_error ? "!err" : ""}=${isDeny ? "DENY" : JSON.stringify(text.slice(0, 24))}`
+          const text = toolResultText(b)
+          return `tool_result:${short(b.tool_use_id)}${b.is_error ? "!err" : ""}=${isDenyResult(b) ? "DENY" : JSON.stringify(text.slice(0, 24))}`
         }
         return b.type
       })
@@ -179,10 +156,7 @@ function toolResultsIn(row) {
   const out = []
   for (const b of content) {
     if (b?.type !== "tool_result") continue
-    const text = typeof b.content === "string"
-      ? b.content
-      : Array.isArray(b.content) ? b.content.map(c => c.text ?? "").join("") : ""
-    out.push({ id: b.tool_use_id, deny: text.includes("forwarded to the client"), text })
+    out.push({ id: b.tool_use_id, deny: isDenyResult(b), text: toolResultText(b) })
   }
   return out
 }

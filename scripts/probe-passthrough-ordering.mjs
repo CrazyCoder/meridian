@@ -37,9 +37,10 @@
  */
 import { query, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod"
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs"
-import { tmpdir, homedir } from "node:os"
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { findSessionFile, readRows, blocksOf, isDenyResult as isDeny } from "./lib/passthrough-jsonl.mjs"
 import { resolveClaudeExecutableAsync } from "../src/proxy/models.ts"
 
 const MODEL = process.env.PROBE_MODEL ?? "sonnet"
@@ -95,33 +96,6 @@ function options(holdMs) {
       }],
     },
   }
-}
-
-function findSessionFile(sessionId) {
-  const root = join(homedir(), ".claude", "projects")
-  if (!existsSync(root)) return null
-  for (const dir of readdirSync(root)) {
-    const candidate = join(root, dir, `${sessionId}.jsonl`)
-    if (existsSync(candidate)) return candidate
-  }
-  return null
-}
-
-function readRows(file) {
-  return readFileSync(file, "utf8").split("\n").filter(l => l.trim())
-    .map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
-}
-
-function blocksOf(row) {
-  const c = row.message?.content
-  return Array.isArray(c) ? c : []
-}
-
-function isDeny(block) {
-  const text = typeof block.content === "string"
-    ? block.content
-    : Array.isArray(block.content) ? block.content.map(x => x.text ?? "").join("") : ""
-  return text.includes("forwarded to the client")
 }
 
 async function run(label, fileCount, holdMs) {
