@@ -3556,13 +3556,23 @@ executes each forwarded call itself, and replays the full history with the
 
 - The final answer quotes all three delivered results and does not say a call
   went unanswered
-- The session JSONL holds **no** forwarded denial for an id whose real result
-  was delivered (the denial was rewritten in place by `passthroughTranscript.ts`)
+- The session JSONL of every session the proxy **resumed** (`lineage=continuation`
+  in the per-turn readout) holds **no** forwarded denial for an id whose real
+  result was delivered (the denial was rewritten in place by
+  `passthroughTranscript.ts`). Sessions the proxy abandoned are not counted: a
+  passthrough tool turn without a checkpoint is evicted, so its transcript is
+  never loaded again and a denial left in it is dead, not stale. A run in which
+  no turn resumed (e.g. `MERIDIAN_PASSTHROUGH_EARLY_STOP=0`, where every turn is
+  `lineage=new`) says so and fails as inconclusive rather than passing vacuously
 
 **Proving the gate bites:** `git stash push src/proxy/server.ts`, run it, `git
 stash pop`. Unfixed it fails on both counts by the third turn — the model
 answers *"[Error: tool call forwarded to client, no content returned]"* for the
 first two files.
+
+`PROBE_PARALLEL=1` asks for the three reads in one turn instead of a chain, so
+the hook's denies arrive mid-generation and are held; the per-turn readout then
+also shows any `checkpoint_refused` the proxy logged.
 
 **Mechanism at the SDK level:** `bun scripts/probe-passthrough-accumulation.mjs`
 drives the raw SDK the same way behind a recording proxy on
