@@ -72,7 +72,7 @@ import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
 import { normalizeJcodeSessionId } from "./adapters/jcode"
 import { translateResponsesToAnthropic, translateAnthropicToResponses, createResponsesSseTranslator, reasoningRequested, type ResponsesRequest, type AnthropicSseEvent as ResponsesAnthropicSseEvent } from "./openaiResponses"
-import { extractAdvisorModel, extractSystemText, getLastUserMessage, hasActiveToolLoop, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, MULTIMODAL_TYPES, buildToolUseIndex, describeToolCall, frameReplayTurns } from "./messages"
+import { extractAdvisorModel, extractSystemText, getLastUserMessage, hasActiveToolLoop, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, MULTIMODAL_TYPES, buildToolUseIndex, describeToolCall, frameReplayTurns, TOOL_RESULT_DELIVERY_NOTE } from "./messages"
 import { requireAuth, authEnabled } from "./auth"
 import { detectAdapter } from "./adapters/detect"
 import { buildQueryOptions, type QueryContext } from "./query"
@@ -321,12 +321,14 @@ function flattenUserContent(
 ): string {
   if (typeof content === "string") return sanitizeTextContent(content, sanitizeOpts)
   if (!Array.isArray(content)) return String(content ?? "")
-  return content
+  let sawLabeledResult = false
+  const flattened = content
     .map((b: any) => {
       if (b?.type === "text" && b.text) return sanitizeTextContent(b.text, sanitizeOpts)
       if (b?.type === "tool_result") {
         const info = toolIndex?.get(b.tool_use_id)
         const label = info ? describeToolCall(info) : undefined
+        if (label) sawLabeledResult = true
         const inner = b.content
         let flat = ""
         if (typeof inner === "string") flat = inner
@@ -346,6 +348,9 @@ function flattenUserContent(
     })
     .filter(Boolean)
     .join("\n")
+  // Only when a label was actually emitted: an unlabeled turn is ordinary
+  // user text, and heading it with a tool-delivery note would be a lie.
+  return sawLabeledResult ? `${TOOL_RESULT_DELIVERY_NOTE}\n\n${flattened}` : flattened
 }
 
 
@@ -2028,12 +2033,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 return {
                   decision: "block" as const,
                   reason:
-                    "This tool call has been forwarded to the client, which will execute it. " +
-                    "Its real output arrives in a later turn as an ordinary tool result in this " +
-                    "conversation: when you see it, it is genuine output from this call, not something " +
-                    "you produced, and you should rely on it. Not seeing a result now is expected and " +
-                    "does not mean the call failed. " +
-                    "Do not retry, do not call additional tools, and do not generate further text — end your turn now.",
+                    `This tool call has been forwarded to the client, which will execute it. You will ` +
+                    `not see its output during this turn. That is how every tool call works here and ` +
+                    `does not mean the call failed. Its real output arrives at the start of your next ` +
+                    `turn, inside a user message, under the label "[your ${toolName} ...]". Treat what ` +
+                    `you find there as the genuine result of this call and do not run it again. ` +
+                    `Do not retry, do not call additional tools, and do not generate further text — end your turn now.`,
                 }
               }],
             }],

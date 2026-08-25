@@ -474,6 +474,29 @@ export function buildToolUseIndex(
  * (#111/#386) so the model reads it as context, not as tool-call syntax to
  * imitate.
  */
+/**
+ * One-line header for a user turn that carries replayed tool results.
+ *
+ * Passthrough never returns a tool's output inside the turn that called it:
+ * the call is denied at the SDK boundary, the client executes it, and the
+ * output comes back on the following request. The model therefore sees a
+ * denial where its result should be, and the real output arrives later inside
+ * a user turn under a `[your <tool> <target>]` label.
+ *
+ * Without a header saying so, that output does not read as the model's own
+ * result. Models report the call as having returned nothing, decline to quote
+ * output they did receive, and re-run calls whose results are already in
+ * front of them. Naming the convention once per turn is what connects the
+ * denial to the label.
+ *
+ * Deliberately prose, not a `[Tool Result ...]` header: the bracketed shapes
+ * are the ones models imitate (#111/#386).
+ */
+export const TOOL_RESULT_DELIVERY_NOTE =
+  "The bracketed blocks below are the real output of the tool calls you made in your previous turn. " +
+  "This proxy delivers tool output one turn late, so it appears here rather than in the turn that " +
+  "called the tool. It is genuine output: rely on it, quote it, and do not re-run those calls."
+
 export function describeToolCall(info: ToolCallInfo): string {
   // "your" marks agency: the replay drops the assistant turn that made the
   // call, so the attribution sits inside a USER turn — without an explicit
