@@ -394,7 +394,7 @@ describe("PreToolUse hook: passthrough ToolSearch", () => {
     // Reason must explicitly tell the model NOT to retry or emit further
     // tools — without this nudge, modern Claude treats the deny as "try
     // something else" and burns the maxTurns budget on retries.
-    expect(result.reason).toContain("has been forwarded to the client")
+    expect(result.reason).toContain("forwarded to the client for execution")
     expect(result.reason.toLowerCase()).toContain("do not retry")
     expect(result.reason.toLowerCase()).toContain("end your turn")
   })
@@ -455,7 +455,7 @@ describe("PreToolUse hook: deny reasons must not promise delivery for dropped ca
     const hookFn = await getHook()
     const result = await callHook(hookFn, "toolu_a", { file_path: "/a.txt" })
     expect(result.decision).toBe("block")
-    expect(result.reason).toContain("has been forwarded to the client")
+    expect(result.reason).toContain("forwarded to the client for execution")
   })
 
   it("same-tool re-calls with new args say NOT executed and to re-issue — no delivery promise", async () => {
@@ -463,7 +463,8 @@ describe("PreToolUse hook: deny reasons must not promise delivery for dropped ca
     await callHook(hookFn, "toolu_a", { file_path: "/a.txt" })
     const result = await callHook(hookFn, "toolu_b", { file_path: "/b.txt" })
     expect(result.decision).toBe("block")
-    expect(result.reason).not.toContain("has been forwarded")
+    expect(result.reason).not.toContain("forwarded to the client for execution")
+    expect(result.reason).not.toContain("will be delivered")
     expect(result.reason.toLowerCase()).toContain("not executed")
     expect(result.reason.toLowerCase()).toContain("re-issue")
   })

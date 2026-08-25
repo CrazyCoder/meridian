@@ -270,40 +270,6 @@ describe("tool-result attribution on full-history replay (#552)", () => {
     assertNoFlattenedToolBlocks(getCaptured()?.prompt)
   })
 
-  it("heads a turn carrying replayed results with the delivery note", async () => {
-    // Without it the labelled output does not read as the model's own result:
-    // it reports the call as having returned nothing, declines to quote output
-    // it did receive, and re-runs calls whose results are already in front of
-    // it. Passthrough never returns a tool's output inside the calling turn,
-    // so the note is what connects the denial to the label.
-    const app = createTestApp()
-    await postWithSession(app, "delivery-note-session", toolLoopHistory, "sdk-note-1")
-
-    const prompt = promptToString(getCaptured()?.prompt)
-    expect(prompt).toContain("real output of the tool calls you made in your previous turn")
-    expect(prompt).toContain("do not re-run those calls")
-    // The note introduces the labels, so it has to precede them.
-    expect(prompt.indexOf("real output of the tool calls"))
-      .toBeLessThan(prompt.indexOf("[your read tmp/test1.txt]"))
-    assertNoFlattenedToolBlocks(getCaptured()?.prompt)
-  })
-
-  it("leaves a turn without replayed results unheaded", async () => {
-    // Guards the instrument: heading every user turn would make the assertion
-    // above pass whether or not the turn carries tool output.
-    const app = createTestApp()
-    await postWithSession(
-      app,
-      "delivery-note-plain",
-      [{ role: "user", content: [{ type: "text", text: "just a question" }] }],
-      "sdk-note-2",
-    )
-
-    const prompt = promptToString(getCaptured()?.prompt)
-    expect(prompt).toContain("just a question")
-    expect(prompt).not.toContain("real output of the tool calls")
-  })
-
   it("replays edit calls with a truncated summary of what changed (#496 follow-up)", async () => {
     const app = createTestApp()
     const editHistory = [

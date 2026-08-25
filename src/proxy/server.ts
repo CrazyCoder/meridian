@@ -72,7 +72,7 @@ import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
 import { normalizeJcodeSessionId } from "./adapters/jcode"
 import { translateResponsesToAnthropic, translateAnthropicToResponses, createResponsesSseTranslator, reasoningRequested, type ResponsesRequest, type AnthropicSseEvent as ResponsesAnthropicSseEvent } from "./openaiResponses"
-import { extractAdvisorModel, extractSystemText, getLastUserMessage, hasActiveToolLoop, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, MULTIMODAL_TYPES, buildToolUseIndex, describeToolCall, frameReplayTurns, TOOL_RESULT_DELIVERY_NOTE } from "./messages"
+import { extractAdvisorModel, extractSystemText, getLastUserMessage, hasActiveToolLoop, stripAdvisorTools, stripNonStandardStreamFields, consolidateMultimodalOntoLastUser, MULTIMODAL_TYPES, buildToolUseIndex, describeToolCall, frameReplayTurns } from "./messages"
 import { requireAuth, authEnabled } from "./auth"
 import { detectAdapter } from "./adapters/detect"
 import { buildQueryOptions, type QueryContext } from "./query"
@@ -321,14 +321,12 @@ function flattenUserContent(
 ): string {
   if (typeof content === "string") return sanitizeTextContent(content, sanitizeOpts)
   if (!Array.isArray(content)) return String(content ?? "")
-  let sawLabeledResult = false
-  const flattened = content
+  return content
     .map((b: any) => {
       if (b?.type === "text" && b.text) return sanitizeTextContent(b.text, sanitizeOpts)
       if (b?.type === "tool_result") {
         const info = toolIndex?.get(b.tool_use_id)
         const label = info ? describeToolCall(info) : undefined
-        if (label) sawLabeledResult = true
         const inner = b.content
         let flat = ""
         if (typeof inner === "string") flat = inner
@@ -348,9 +346,6 @@ function flattenUserContent(
     })
     .filter(Boolean)
     .join("\n")
-  // Only when a label was actually emitted: an unlabeled turn is ordinary
-  // user text, and heading it with a tool-delivery note would be a lie.
-  return sawLabeledResult ? `${TOOL_RESULT_DELIVERY_NOTE}\n\n${flattened}` : flattened
 }
 
 
@@ -1586,6 +1581,20 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         messagesToConvert = allMessages
       }
 
+      // TEMPORARY DIAGNOSTIC — what the SDK actually receives this turn.
+      claudeLog("debug.messages_to_convert", {
+        isResume,
+        resumeFrom,
+        resumeContentFrom,
+        allMessages: allMessages.length,
+        shape: (messagesToConvert as Array<{ role: string; content: any }>)
+          .map((m) =>
+            `${m.role}[${Array.isArray(m.content)
+              ? m.content.map((b: any) => b?.type).join(",")
+              : "text"}]`)
+          .join(" -> "),
+      })
+
       // Rewinding to a tool-use checkpoint is valid only when the immediate
       // delta settles that exact batch. Partial, late, duplicate, or unknown
       // results get one safe fresh replay rather than an invalid SDK resume.
@@ -1704,6 +1713,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // Resume deltas are tail-only and stay bare.
         const resumeDelta = promptTurns.map((t: { text: string }) => t.text).filter(Boolean).join("\n\n") || ""
         textPrompt = isResume ? resumeDelta : frameReplayTurns(promptTurns)
+        // TEMPORARY DIAGNOSTIC — the exact prompt handed to the SDK.
+        claudeLog("debug.text_prompt", {
+          isResume,
+          len: (textPrompt ?? "").length,
+          head: (textPrompt ?? "").slice(0, 500),
+        })
       }
 
       // Create a fresh prompt value — can be called multiple times for retry
@@ -2023,22 +2038,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     decision: "block" as const,
                     reason:
                       "This tool call was NOT executed and was not forwarded. Your earlier tool call(s) " +
-                      "are being returned to the client now. Their real output arrives next turn as " +
-                      "ordinary tool results in this conversation: when you see it, it is genuine output " +
-                      "from those calls, not something you produced, and you should rely on it. Re-issue " +
-                      "this call after that if it is still needed. Do not call additional tools and do " +
-                      "not generate further text — end your turn now.",
+                      "are being returned to the client now; their results arrive next turn. Re-issue this " +
+                      "call after that if it is still needed. Do not call additional tools and do not " +
+                      "generate further text — end your turn now.",
                   }
                 }
                 return {
                   decision: "block" as const,
                   reason:
-                    `This tool call has been forwarded to the client, which will execute it. You will ` +
-                    `not see its output during this turn. That is how every tool call works here and ` +
-                    `does not mean the call failed. Its real output arrives at the start of your next ` +
-                    `turn, inside a user message, under the label "[your ${toolName} ...]". Treat what ` +
-                    `you find there as the genuine result of this call and do not run it again. ` +
-                    `Do not retry, do not call additional tools, and do not generate further text — end your turn now.`,
+                    "This tool call has been forwarded to the client for execution. " +
+                    "The result will be delivered in a future turn. " +
+                    "Do not retry, do not call additional tools, and do not generate further text — end your turn now.",
                 }
               }],
             }],
