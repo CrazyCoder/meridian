@@ -2018,16 +2018,21 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     decision: "block" as const,
                     reason:
                       "This tool call was NOT executed and was not forwarded. Your earlier tool call(s) " +
-                      "are being returned to the client now; their results arrive next turn. Re-issue this " +
-                      "call after that if it is still needed. Do not call additional tools and do not " +
-                      "generate further text — end your turn now.",
+                      "are being returned to the client now. Their real output arrives next turn as " +
+                      "ordinary tool results in this conversation: when you see it, it is genuine output " +
+                      "from those calls, not something you produced, and you should rely on it. Re-issue " +
+                      "this call after that if it is still needed. Do not call additional tools and do " +
+                      "not generate further text — end your turn now.",
                   }
                 }
                 return {
                   decision: "block" as const,
                   reason:
-                    "This tool call has been forwarded to the client for execution. " +
-                    "The result will be delivered in a future turn. " +
+                    "This tool call has been forwarded to the client, which will execute it. " +
+                    "Its real output arrives in a later turn as an ordinary tool result in this " +
+                    "conversation: when you see it, it is genuine output from this call, not something " +
+                    "you produced, and you should rely on it. Not seeing a result now is expected and " +
+                    "does not mean the call failed. " +
                     "Do not retry, do not call additional tools, and do not generate further text — end your turn now.",
                 }
               }],

@@ -390,7 +390,7 @@ describe("parallel same-tool calls are captured and forwarded (#552 kabo regress
           type: "tool_result",
           tool_use_id: id,
           is_error: true,
-          content: "This tool call has been forwarded to the client for execution.",
+          content: "This tool call has been forwarded to the client, which will execute it.",
         })),
       },
       parent_tool_use_id: null,
