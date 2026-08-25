@@ -26,6 +26,20 @@
  * deferred tools, advisors, structured output, and the kill switch. In those
  * configurations the digest turn does generate and is discarded here.
  *
+ * Settlement is necessary but NOT sufficient to freeze the checkpoint. Two
+ * further conditions belong to the caller, which owns the wire:
+ *
+ *   - the turn has stopped generating, so no further call can appear, and
+ *   - trackerCoversStreamedCalls agrees the tracker has caught up with every
+ *     forwarded call the wire carried.
+ *
+ * Both exist because `expected` is armed from assistant messages, which the SDK
+ * can surface after the deny that settles them — so "everything I know about is
+ * answered" is true long before "everything is answered". Freezing on the
+ * former drops the calls still in flight, silently, from the client's set.
+ * noteOrderingUnsafe is the escape hatch for when the ordering the checkpoint
+ * depends on cannot be trusted at all.
+ *
  * Pure module — no I/O, no imports from server.ts or session/.
  */
 

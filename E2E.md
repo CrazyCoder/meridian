@@ -123,6 +123,8 @@ cat /tmp/proxy-e2e.log | strings | grep "\[PROXY\]" | tail -5
 
 **Session header.** All curl tests use `x-opencode-session` to control session identity. This is the header the OpenCode adapter reads.
 
+**Diagnostics vs gates.** `scripts/e2e-*.mjs` are gates: they assert and exit non-zero. `scripts/probe-*.mjs` are not — they drive the same real stack but print findings for a human to read, and are deliberately absent from the index above so a green run is never mistaken for a passing gate. The passthrough probes reconstruct what `resumeSessionAt` would keep by reading the session JSONL the CLI wrote, which is the one thing the mocked suites cannot check. They need Claude Max and cost real tokens.
+
 **Cleanup.** Each test section is independent. Kill the proxy and clear the session store between sections if you need isolation:
 ```bash
 kill $(lsof -ti :3456) 2>/dev/null

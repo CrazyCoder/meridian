@@ -189,16 +189,10 @@ describe("assistant resume checkpoint", () => {
  * real output for.
  */
 describe("ordering invariant: no deny may precede the checkpoint", () => {
-  const assistantMsg = (uuid: unknown, content: unknown) => ({
-    type: "assistant",
-    uuid,
-    message: { role: "assistant", content },
-  })
-
   it("accepts the held ordering — every assistant row before any deny (A A U U)", () => {
     const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, assistantMsg("a1", [toolUse("t1", "read")]))
-    noteAssistantMessage(tracker, assistantMsg("a2", [toolUse("t2", "read")]))
+    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read")]))
+    noteAssistantMessage(tracker, sdkAssistant("a2", [toolUse("t2", "read")]))
     noteUserContent(tracker, [toolResult("t1")])
     noteUserContent(tracker, [toolResult("t2")])
     expect(tracker.orderingUnsafeReason).toBeUndefined()
@@ -213,9 +207,9 @@ describe("ordering invariant: no deny may precede the checkpoint", () => {
     // real-proxy probe measures zero survivors for exactly this sequence.
     // Refusing here would throw away good checkpoints on the healthy path.
     const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, assistantMsg("a1", [toolUse("t1", "read")]))
+    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read")]))
     noteUserContent(tracker, [toolResult("t1")])
-    noteAssistantMessage(tracker, assistantMsg("a2", [toolUse("t2", "read")]))
+    noteAssistantMessage(tracker, sdkAssistant("a2", [toolUse("t2", "read")]))
     noteUserContent(tracker, [toolResult("t2")])
     expect(tracker.orderingUnsafeReason).toBeUndefined()
     expect(settledToolCallAssistantUuid(tracker)).toBe("a2")
@@ -223,7 +217,7 @@ describe("ordering invariant: no deny may precede the checkpoint", () => {
 
   it("keeps parallel calls in ONE assistant message safe", () => {
     const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, assistantMsg("a1", [toolUse("t1", "read"), toolUse("t2", "grep")]))
+    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read"), toolUse("t2", "grep")]))
     noteUserContent(tracker, [toolResult("t1")])
     noteUserContent(tracker, [toolResult("t2")])
     expect(tracker.orderingUnsafeReason).toBeUndefined()
@@ -234,7 +228,7 @@ describe("ordering invariant: no deny may precede the checkpoint", () => {
     // The causal signal: the hold is what keeps denies after the checkpoint, so
     // an expiry means the log order can no longer be trusted.
     const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, assistantMsg("a1", [toolUse("t1", "read")]))
+    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read")]))
     noteOrderingUnsafe(tracker, "deny_hold_timeout")
     noteUserContent(tracker, [toolResult("t1")])
     expect(settledToolCallAssistantUuid(tracker)).toBeUndefined()
@@ -243,7 +237,7 @@ describe("ordering invariant: no deny may precede the checkpoint", () => {
 
   it("stays refused once marked, whatever the reason", () => {
     const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, assistantMsg("a1", [toolUse("t1", "read")]))
+    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read")]))
     noteUserContent(tracker, [toolResult("t1")])
     noteOrderingUnsafe(tracker, "deny_hold_timeout")
     expect(tracker.orderingUnsafeReason).toBe("deny_hold_timeout")
@@ -255,23 +249,17 @@ describe("ordering invariant: no deny may precede the checkpoint", () => {
 })
 
 describe("trackerCoversStreamedCalls", () => {
-  const assistantMsg = (uuid: unknown, content: unknown) => ({
-    type: "assistant",
-    uuid,
-    message: { role: "assistant", content },
-  })
-
   it("is false while an assistant fragment is still in flight", () => {
     const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, assistantMsg("a1", [toolUse("t1", "read")]))
+    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read")]))
     // The wire carried two calls; only one has been armed so far.
     expect(trackerCoversStreamedCalls(tracker, new Set(["t1", "t2"]))).toBe(false)
   })
 
   it("is true once every streamed call is armed", () => {
     const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, assistantMsg("a1", [toolUse("t1", "read")]))
-    noteAssistantMessage(tracker, assistantMsg("a2", [toolUse("t2", "read")]))
+    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read")]))
+    noteAssistantMessage(tracker, sdkAssistant("a2", [toolUse("t2", "read")]))
     expect(trackerCoversStreamedCalls(tracker, new Set(["t1", "t2"]))).toBe(true)
   })
 
@@ -284,7 +272,7 @@ describe("trackerCoversStreamedCalls", () => {
     // Equal sizes must not be mistaken for equal sets — a regenerated call
     // carries a fresh id, so a stale id would otherwise pass the count check.
     const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, assistantMsg("a1", [toolUse("t1", "read")]))
+    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read")]))
     expect(trackerCoversStreamedCalls(tracker, new Set(["t-other"]))).toBe(false)
   })
 })
