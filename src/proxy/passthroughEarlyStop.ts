@@ -37,8 +37,6 @@
  * can surface after the deny that settles them — so "everything I know about is
  * answered" is true long before "everything is answered". Freezing on the
  * former drops the calls still in flight, silently, from the client's set.
- * noteOrderingUnsafe is the escape hatch for when the ordering the checkpoint
- * depends on cannot be trusted at all.
  *
  * Pure module — no I/O, no imports from server.ts or session/.
  */
@@ -61,45 +59,10 @@ export interface EarlyStopTracker {
   toolCallAssistantUuid?: string
   /** true once shouldEarlyStop has returned true — it fires at most once */
   fired: boolean
-  /** Why the checkpoint cannot be trusted, if it cannot. See
-   *  noteOrderingUnsafe — set once, never cleared. */
-  orderingUnsafeReason?: string
 }
 
 export function createEarlyStopTracker(): EarlyStopTracker {
   return { expected: new Set(), resolved: new Set(), fired: false }
-}
-
-/**
- * Refuse the checkpoint for this turn.
- *
- * resumeSessionAt slices the loaded transcript to (0, checkpointIndex + 1), so
- * a checkpoint is only usable when every synthetic deny lands AFTER it. The CLI
- * writes one assistant row per tool-use block and answers each block's hook as
- * that block closes, so an unheld deny interleaves:
- *
- *     A(call1) U(deny1) A(call2) U(deny2)
- *
- * and the slice at A(call2) replays deny1 to the model — measured, the first
- * N-1 denies of an N-call turn survive. The model then sees one tool_use_id
- * answered twice, "NOT executed" first and the client's real output second, and
- * reports that call as never having run while reporting its siblings correctly.
- *
- * Holding denies until the turn stops generating produces A A U U instead, and
- * that hold is what keeps the log sliceable. When the hold cannot do its job —
- * it expired on the deadlock backstop — the caller marks the turn here and
- * keeps no checkpoint, so the next turn replays through the text path: a cold
- * replay, but never a contradicted transcript.
- *
- * Callers must pass a CAUSAL reason, not an inferred one. Iterator order is not
- * transcript order: the SDK can surface a deny before the per-block assistant
- * metadata of a turn that has already finished generating, and the CLI still
- * writes that transcript cleanly (covered by "stream: waits for late parallel
- * assistant metadata before freezing the checkpoint"). Inferring a violation
- * from iterator order therefore refuses checkpoints that are perfectly good.
- */
-export function noteOrderingUnsafe(tracker: EarlyStopTracker, reason: string): void {
-  tracker.orderingUnsafeReason ??= reason
 }
 
 /**
@@ -266,12 +229,8 @@ export function trackerCoversStreamedCalls(
   return true
 }
 
-/** The cache-stable assistant boundary after every forwarded call settled.
- *  Undefined when the turn's log order would replay a deny past the slice —
- *  the caller then drains canonically and evicts the mapping, exactly as it
- *  already does for a turn whose assistant UUID never arrived. */
+/** The cache-stable assistant boundary after every forwarded call settled. */
 export function settledToolCallAssistantUuid(tracker: EarlyStopTracker): string | undefined {
-  if (tracker.orderingUnsafeReason) return undefined
   return allForwardedCallsResolved(tracker) ? tracker.toolCallAssistantUuid : undefined
 }
 

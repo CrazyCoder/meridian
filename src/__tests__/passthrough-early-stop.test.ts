@@ -19,7 +19,6 @@ import {
   isCompleteToolResultContinuation,
   noteAssistantContent,
   noteAssistantMessage,
-  noteOrderingUnsafe,
   noteUserContent,
   settledToolCallAssistantUuid,
   shouldEarlyStop,
@@ -177,74 +176,6 @@ describe("assistant resume checkpoint", () => {
     noteUserContent(tracker, [toolResult("t1"), toolResult("t2")])
     expect(settledToolCallAssistantUuid(tracker)).toBeUndefined()
     expect(shouldEarlyStop(tracker)).toBe(false)
-  })
-})
-
-/**
- * resumeSessionAt slices the loaded transcript to (0, checkpointIndex + 1), so
- * a checkpoint is only usable when every deny lands after it. An unheld deny
- * interleaves with the per-block assistant rows (A U A U), and measured against
- * the real SDK the first N-1 denies of an N-call turn survive that slice and
- * are replayed to the model as "NOT executed" for calls it then also receives
- * real output for.
- */
-describe("ordering invariant: no deny may precede the checkpoint", () => {
-  it("accepts the held ordering — every assistant row before any deny (A A U U)", () => {
-    const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read")]))
-    noteAssistantMessage(tracker, sdkAssistant("a2", [toolUse("t2", "read")]))
-    noteUserContent(tracker, [toolResult("t1")])
-    noteUserContent(tracker, [toolResult("t2")])
-    expect(tracker.orderingUnsafeReason).toBeUndefined()
-    expect(settledToolCallAssistantUuid(tracker)).toBe("a2")
-    expect(shouldEarlyStop(tracker)).toBe(true)
-  })
-
-  it("does NOT infer a violation from iterator order (A U A U)", () => {
-    // Iterator order is not transcript order. The SDK surfaces a deny before
-    // the late per-block assistant metadata of a turn that already finished
-    // generating, and the CLI still writes that transcript as A A U U — the
-    // real-proxy probe measures zero survivors for exactly this sequence.
-    // Refusing here would throw away good checkpoints on the healthy path.
-    const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read")]))
-    noteUserContent(tracker, [toolResult("t1")])
-    noteAssistantMessage(tracker, sdkAssistant("a2", [toolUse("t2", "read")]))
-    noteUserContent(tracker, [toolResult("t2")])
-    expect(tracker.orderingUnsafeReason).toBeUndefined()
-    expect(settledToolCallAssistantUuid(tracker)).toBe("a2")
-  })
-
-  it("keeps parallel calls in ONE assistant message safe", () => {
-    const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read"), toolUse("t2", "grep")]))
-    noteUserContent(tracker, [toolResult("t1")])
-    noteUserContent(tracker, [toolResult("t2")])
-    expect(tracker.orderingUnsafeReason).toBeUndefined()
-    expect(settledToolCallAssistantUuid(tracker)).toBe("a1")
-  })
-
-  it("refuses the checkpoint when the deny hold expired", () => {
-    // The causal signal: the hold is what keeps denies after the checkpoint, so
-    // an expiry means the log order can no longer be trusted.
-    const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read")]))
-    noteOrderingUnsafe(tracker, "deny_hold_timeout")
-    noteUserContent(tracker, [toolResult("t1")])
-    expect(settledToolCallAssistantUuid(tracker)).toBeUndefined()
-    expect(shouldEarlyStop(tracker)).toBe(false)
-  })
-
-  it("stays refused once marked, whatever the reason", () => {
-    const tracker = createEarlyStopTracker()
-    noteAssistantMessage(tracker, sdkAssistant("a1", [toolUse("t1", "read")]))
-    noteUserContent(tracker, [toolResult("t1")])
-    noteOrderingUnsafe(tracker, "deny_hold_timeout")
-    expect(tracker.orderingUnsafeReason).toBe("deny_hold_timeout")
-    expect(settledToolCallAssistantUuid(tracker)).toBeUndefined()
-    // First reason wins — the earliest cause is the one worth reporting.
-    noteOrderingUnsafe(tracker, "something_else")
-    expect(tracker.orderingUnsafeReason).toBe("deny_hold_timeout")
   })
 })
 

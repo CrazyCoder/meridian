@@ -3571,8 +3571,7 @@ answers *"[Error: tool call forwarded to client, no content returned]"* for the
 first two files.
 
 `PROBE_PARALLEL=1` asks for the three reads in one turn instead of a chain, so
-the hook's denies arrive mid-generation and are held; the per-turn readout then
-also shows any `checkpoint_refused` the proxy logged.
+the hook's denies arrive mid-generation and are held.
 
 **Mechanism at the SDK level:** `bun scripts/probe-passthrough-accumulation.mjs`
 drives the raw SDK the same way behind a recording proxy on

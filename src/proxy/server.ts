@@ -45,7 +45,7 @@ import { randomUUID } from "crypto"
 import { withClaudeLogContext } from "../logger"
 import { createPassthroughMcpServer, stripMcpPrefix, normalizeToolInput, computeToolSetKey, toolUseSignature, PASSTHROUGH_MCP_NAME, PASSTHROUGH_MCP_PREFIX } from "./passthroughTools"
 import { detectServerTools, serverToolErrorMessage } from "./tools"
-import { clientAbortDisposition, createEarlyStopTracker, isClientForwardedToolUse, isCompleteToolResultContinuation, noteAssistantMessage, noteOrderingUnsafe, noteUserContent, settledToolCallAssistantUuid, shouldEarlyStop, trackerCoversStreamedCalls } from "./passthroughEarlyStop"
+import { clientAbortDisposition, createEarlyStopTracker, isClientForwardedToolUse, isCompleteToolResultContinuation, noteAssistantMessage, noteUserContent, settledToolCallAssistantUuid, shouldEarlyStop, trackerCoversStreamedCalls } from "./passthroughEarlyStop"
 import { checkEmptyToolInputs, checkUndeliveredToolUses, type EnvelopeViolation } from "./envelopeIntegrity"
 import { classifyTurnOutcome, createRecoveryLifter, shouldAttemptRecovery, shouldInjectSilentTurn, SILENT_TURN_NUDGE } from "./turnOutcome"
 import { resolveAgentAlias } from "./agentMatch"
@@ -1824,16 +1824,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // to releasing on the assistant message rather than wedge waiting for a
       // boundary that never arrives.
       let sawTurnBoundarySignal = false
-      // One line per turn that gave up its checkpoint, so a path that leaks
-      // into the text-path fallback shows up in OUR telemetry rather than as a
-      // slow, expensive turn nobody can explain.
-      let orderingUnsafeLogged = false
-      const logCheckpointRefused = (mode: string): void => {
-        if (orderingUnsafeLogged || !earlyStop.orderingUnsafeReason) return
-        orderingUnsafeLogged = true
-        claudeLog("passthrough.checkpoint_refused", { mode, reason: earlyStop.orderingUnsafeReason })
-        plog(`[PROXY] ${requestMeta.requestId} checkpoint_refused: ${earlyStop.orderingUnsafeReason} (${mode}) — next turn replays through the text path`)
-      }
       const releaseHeldDenies = (reason: string): void => {
         turnGenerating = false
         if (pendingDenyReleases.length === 0) return
@@ -1844,11 +1834,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         new Promise<void>((resolve) => {
           const timer = setTimeout(() => {
             claudeLog("passthrough.deny_hold_timeout", { afterMs: DENY_HOLD_TIMEOUT_MS })
-            // The deny is about to land while the turn may still be emitting
-            // per-block assistant rows, so the log order can no longer be
-            // sliced cleanly. Refuse the checkpoint instead of storing one that
-            // would replay this deny to the model.
-            noteOrderingUnsafe(earlyStop, "deny_hold_timeout")
+            // The deny lands while the turn may still be emitting per-block
+            // assistant rows, so it can end up INSIDE the checkpoint slice. The
+            // checkpoint stays valid regardless: the transcript repair rewrites
+            // every delivered call's denial before the resume, wherever the row
+            // sits (passthroughTranscript.ts). Refusing it here would cost a
+            // digest turn and a cold replay to avoid a row that gets fixed.
             resolve()
           }, DENY_HOLD_TIMEOUT_MS)
           pendingDenyReleases.push(() => {
@@ -2604,7 +2595,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             // #592: safety net — any deny still held at loop exit belongs to
             // a turn that is no longer generating.
             releaseHeldDenies("non_stream_loop_exit")
-            logCheckpointRefused("non_stream")
 
             claudeLog("upstream.completed", {
               mode: "non_stream",
@@ -3714,7 +3704,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // Never leak a held deny: if the loop exits for any reason
                 // (abort, error, natural end), unblock pending hook responses.
                 releaseHeldDenies("stream_loop_exit")
-                logCheckpointRefused("stream")
               }
 
               if (outputFormat) {

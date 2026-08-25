@@ -126,8 +126,7 @@ for (let turn = 1; turn <= MAX_TURNS; turn++) {
   say(`\n=== turn ${turn} (stream=${STREAM}) http ${res.status} ===`)
   say(`  calls: ${calls.map(c => `${c.name}(${String(c.input?.file_path ?? "").slice(-5)})#${short(c.id)}`).join(", ") || "none"}`)
   if (text) say(`  text: ${JSON.stringify(text.slice(0, 200))}`)
-  const refused = turnLog.find(l => l.includes("checkpoint_refused"))?.match(/"reason":"[^"]+"/)?.[0]
-  say(`  lineage: ${lineage}${refused ? `   checkpoint_refused ${refused}` : ""}`)
+  say(`  lineage: ${lineage}`)
   say(`  proxy repair log: ${repaired.length ? repaired.map(l => l.replace(/^.*denials_rewrit/, "denials_rewrit").slice(0, 220)).join(" | ") : "none"}`)
   if (res.status !== 200) { say(`  body: ${JSON.stringify(blocks).slice(0, 300)}`); break }
 

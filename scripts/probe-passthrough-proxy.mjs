@@ -116,10 +116,7 @@ function analyze(file) {
 }
 
 async function drive(label, stream) {
-  const before = snapshot()
-  // Scope the log scan to THIS request — proxyLog accumulates, so an earlier
   // run's refusal would otherwise be reported against a later, healthy one.
-  const logFrom = proxyLog.length
   const sessionId = `probe-${stream ? "stream" : "nonstream"}-${process.pid}`
   const body = {
     model: MODEL,
@@ -145,7 +142,6 @@ async function drive(label, stream) {
   })
   const text = await res.text()
   const toolCalls = (text.match(/"type":"tool_use"/g) ?? []).length
-  const refused = proxyLog.slice(logFrom).filter(l => l.includes("checkpoint_refused"))
 
   // The CLI flushes the transcript as the query settles; give it a beat.
   await new Promise(r => setTimeout(r, 1500))
@@ -156,7 +152,6 @@ async function drive(label, stream) {
 
   console.log(`\n=== ${label} (stream=${stream}) ===`)
   console.log(`  http ${res.status}  tool_use blocks in response: ${toolCalls}`)
-  console.log(`  checkpoint refused: ${refused.length > 0 ? refused[refused.length - 1].split("checkpoint_refused:")[1]?.trim() : "no"}`)
   if (touched.length === 0) console.log("  no session JSONL was written or updated")
   const results = []
   for (const f of touched) {
