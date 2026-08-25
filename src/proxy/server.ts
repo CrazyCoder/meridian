@@ -1818,9 +1818,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       let turnGenerating = false
       // Whether this request ever saw a raw turn-boundary event. Partial
       // messages are requested for passthrough on both paths, but if they are
-      // ever absent (an older CLI, a mocked SDK) the gates below must degrade to
-      // the previous assistant-message behaviour rather than wedge waiting for a
-      // boundary that will never arrive.
+      // ever absent (an older CLI, a mocked SDK) the gates below must fall back
+      // to releasing on the assistant message rather than wedge waiting for a
+      // boundary that never arrives.
       let sawTurnBoundarySignal = false
       // One line per turn that gave up its checkpoint, so a path that leaks
       // into the text-path fallback shows up in OUR telemetry rather than as a
@@ -2452,7 +2452,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   [...streamedToolUseIds].every((id) => earlyStop.expected.has(id))
                 const turnComplete = sawTurnBoundarySignal
                   ? !turnGenerating && hasCompleteStreamedSet
-                  : true // no boundary events from this CLI — previous behaviour
+                  : true // nothing to gate on — settle on the tracker alone
                 if (earlyStopEnabled && turnComplete && shouldEarlyStop(earlyStop)) {
                   nextPassthroughToolCallAssistantUuid = settledToolCallAssistantUuid(earlyStop)
                   nextPassthroughToolCallIds = [...earlyStop.expected]
@@ -2473,14 +2473,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   })
                 }
               }
-              // #592/#625: the turn-generation boundary, now observable on this
-              // path too (includePartialMessages). Releasing on the first
-              // assistant message instead — which is what this path used to do —
-              // is too early: the CLI emits one assistant message per tool-use
-              // block, so the release landed while later parallel blocks were
-              // still generating. Their denies then cancelled the in-flight
-              // request, and the checkpoint froze on call 1 with calls 2..N
-              // dropped past it.
+              // #592/#625: the turn-generation boundary, observable here because
+              // passthrough requests partial messages on both paths. An assistant
+              // message is NOT this boundary: the CLI emits one per tool-use
+              // block, so releasing there frees the denies while later parallel
+              // blocks are still generating, and those denies cancel the
+              // in-flight request — beheading calls 2..N and freezing the
+              // checkpoint on call 1.
               if (message.type === "stream_event") {
                 const event = (message as any).event as any
                 const eventType = event?.type
