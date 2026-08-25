@@ -44,7 +44,7 @@ import { randomUUID } from "crypto"
 import { withClaudeLogContext } from "../logger"
 import { createPassthroughMcpServer, stripMcpPrefix, normalizeToolInput, computeToolSetKey, toolUseSignature, PASSTHROUGH_MCP_NAME, PASSTHROUGH_MCP_PREFIX } from "./passthroughTools"
 import { detectServerTools, serverToolErrorMessage } from "./tools"
-import { clientAbortDisposition, createEarlyStopTracker, isClientForwardedToolUse, isCompleteToolResultContinuation, noteAssistantMessage, noteOrderingUnsafe, noteUserContent, settledToolCallAssistantUuid, shouldEarlyStop } from "./passthroughEarlyStop"
+import { clientAbortDisposition, createEarlyStopTracker, isClientForwardedToolUse, isCompleteToolResultContinuation, noteAssistantMessage, noteOrderingUnsafe, noteUserContent, settledToolCallAssistantUuid, shouldEarlyStop, trackerCoversStreamedCalls } from "./passthroughEarlyStop"
 import { checkEmptyToolInputs, checkUndeliveredToolUses, type EnvelopeViolation } from "./envelopeIntegrity"
 import { classifyTurnOutcome, createRecoveryLifter, shouldAttemptRecovery, shouldInjectSilentTurn, SILENT_TURN_NUDGE } from "./turnOutcome"
 import { resolveAgentAlias } from "./agentMatch"
@@ -2446,12 +2446,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // enough — a deny can settle the calls known so far while a
                 // later assistant fragment is still to come, and freezing there
                 // drops it.
-                const hasCompleteStreamedSet =
-                  streamedToolUseIds.size > 0 &&
-                  earlyStop.expected.size === streamedToolUseIds.size &&
-                  [...streamedToolUseIds].every((id) => earlyStop.expected.has(id))
                 const turnComplete = sawTurnBoundarySignal
-                  ? !turnGenerating && hasCompleteStreamedSet
+                  ? !turnGenerating && trackerCoversStreamedCalls(earlyStop, streamedToolUseIds)
                   : true // nothing to gate on — settle on the tracker alone
                 if (earlyStopEnabled && turnComplete && shouldEarlyStop(earlyStop)) {
                   nextPassthroughToolCallAssistantUuid = settledToolCallAssistantUuid(earlyStop)
@@ -3360,14 +3356,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     // until generation ended, every block closed, and metadata
                     // names exactly the full forwarded ID set. Recheck on both
                     // assistant and user messages so either ordering can settle.
-                    const hasCompleteStreamedSet =
-                      streamedToolUseIds.size > 0 &&
-                      earlyStop.expected.size === streamedToolUseIds.size &&
-                      [...streamedToolUseIds].every((id) => earlyStop.expected.has(id))
                     if (
                       !turnGenerating &&
                       openClientBlocks.size === 0 &&
-                      hasCompleteStreamedSet &&
+                      trackerCoversStreamedCalls(earlyStop, streamedToolUseIds) &&
                       shouldEarlyStop(earlyStop)
                     ) {
                       nextPassthroughToolCallAssistantUuid = settledToolCallAssistantUuid(earlyStop)
