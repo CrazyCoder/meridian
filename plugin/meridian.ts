@@ -1,7 +1,7 @@
 /**
  * Meridian OpenCode plugin.
  *
- * Injects headers into every Anthropic API request so the proxy can:
+ * Injects headers into every request routed through Meridian so the proxy can:
  *   1. Track sessions reliably (x-opencode-session / x-opencode-request)
  *   2. Select the right model tier per agent (x-opencode-agent-mode)
  *      — primary agents get sonnet[1m] / opus[1m] (full 1M context)
@@ -50,6 +50,23 @@ const BUILTIN_AGENT_MODES: Record<string, string> = {
   compaction: "subagent",
 }
 
+/**
+ * Provider IDs whose traffic goes through Meridian.
+ *
+ * OpenCode binds one base URL per provider ID, so a setup that also reaches
+ * Anthropic directly must give Meridian its own provider ID. Set
+ * MERIDIAN_OPENCODE_PROVIDERS (comma-separated) to those IDs; the direct
+ * provider must be left out, since the proxy headers mean nothing to
+ * api.anthropic.com and only widen the request fingerprint.
+ */
+const providerIDs = (() => {
+  const configured = (process.env.MERIDIAN_OPENCODE_PROVIDERS ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+  return new Set(configured.length > 0 ? configured : ["anthropic"])
+})()
+
 const MeridianPlugin: Plugin = async () => {
   // Modes from the merged config, per plugin instance. Replaced wholesale on
   // every config-hook fire so a reload can't leave stale entries behind.
@@ -79,8 +96,8 @@ const MeridianPlugin: Plugin = async () => {
     },
 
     "chat.headers": async (incoming, output) => {
-      // Only inject headers for Anthropic provider requests
-      if (incoming.model.providerID !== "anthropic") return
+      // Only inject headers for requests routed through Meridian
+      if (!providerIDs.has(incoming.model.providerID)) return
 
       // Session tracking
       output.headers["x-opencode-session"] = incoming.sessionID
