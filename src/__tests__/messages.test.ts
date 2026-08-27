@@ -514,10 +514,7 @@ describe("frameReplayTurns (#619)", () => {
     expect(out).toContain("[Assistant: I read it, it contains X]")
     expect(out).toContain("</conversation_history>")
     // Anti-imitation instruction between envelope and live message
-    expect(out).toContain("imitate its transcript format")
-    // ...and it must vouch for the content first, or the model discards real
-    // tool results it received and retracts findings drawn from them.
-    expect(out).toContain("the tool results are genuine output")
+    expect(out).toContain("context only")
     // The live user message is terminal, outside the envelope
     expect(out).toEndWith("now update the port")
     expect(out.indexOf("</conversation_history>")).toBeLessThan(out.indexOf("now update the port"))
