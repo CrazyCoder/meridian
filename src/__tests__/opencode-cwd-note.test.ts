@@ -17,7 +17,7 @@
  */
 import { describe, it, expect } from "bun:test"
 import { readFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, resolve as resolvePath } from "node:path"
 import { openCodeAdapter } from "../proxy/adapters/opencode"
 import { buildCwdNote } from "../proxy/query"
 import { resolveSdkWorkingDirectory } from "../proxy/cwd"
@@ -29,9 +29,15 @@ const body = JSON.parse(readFileSync(FIXTURE, "utf8"))
 const CLIENT_CWD = "C:\\projects\\example-app"
 /** The container WORKDIR this proxy is normally pinned to. */
 const PROXY_CWD = "/app"
+/**
+ * `resolveSdkWorkingDirectory` absolutizes every candidate, so a POSIX literal
+ * comes back as itself on the proxy host and drive-qualified on a Windows dev
+ * box. Compare against the absolutized form or this suite passes only on Linux.
+ */
+const PROXY_CWD_ABS = resolvePath(PROXY_CWD)
 
 /** A Windows client path never exists on a Linux proxy host. */
-const existsOnProxy = (path: string) => path === PROXY_CWD
+const existsOnProxy = (path: string) => path === PROXY_CWD_ABS
 
 function resolve(envOverride: string | undefined) {
   const resolution = resolveSdkWorkingDirectory({
@@ -70,7 +76,7 @@ describe("opencode client CWD extraction", () => {
 
   it("keeps the SDK out of a directory that does not exist on the proxy", () => {
     const { workingDirectory, fellBack } = resolve(undefined)
-    expect(workingDirectory).toBe(PROXY_CWD)
+    expect(workingDirectory).toBe(PROXY_CWD_ABS)
     expect(fellBack).toBe(true)
   })
 
@@ -86,8 +92,8 @@ describe("opencode client CWD extraction", () => {
     // because the adapter answers independently of it.
     const { workingDirectory, claimedWorkingDirectory, clientWorkingDirectory, note } =
       resolve(PROXY_CWD)
-    expect(workingDirectory).toBe(PROXY_CWD)
-    expect(claimedWorkingDirectory).toBe(PROXY_CWD)
+    expect(workingDirectory).toBe(PROXY_CWD_ABS)
+    expect(claimedWorkingDirectory).toBe(PROXY_CWD_ABS)
     expect(clientWorkingDirectory).toBe(CLIENT_CWD)
     expect(note).toContain(CLIENT_CWD)
   })

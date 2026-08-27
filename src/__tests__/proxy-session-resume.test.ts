@@ -19,24 +19,26 @@ import {
   blockStop,
   messageDelta,
   messageStop,
+  resolveMockSdkSessionId,
 } from "./helpers"
 
 // --- Capture SDK calls ---
 let mockMessages: any[] = []
 let capturedQueryParams: any = null
 let queryCallCount = 0
-
-// Simulate SDK returning a session_id in messages
-const MOCK_SDK_SESSION = "sdk-session-abc123"
+let firstCallerSelectedSessionId: string | undefined
 
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
   query: (params: any) => {
     capturedQueryParams = params
     queryCallCount++
+    const sessionId = resolveMockSdkSessionId(params.options)
+    if (typeof sessionId !== "string") throw new Error("Expected Meridian to select or resume an SDK session ID")
+    if (queryCallCount === 1) firstCallerSelectedSessionId = sessionId
     return (async function* () {
       for (const msg of mockMessages) {
-        // Inject session_id into messages (like the real SDK does)
-        yield { ...msg, session_id: MOCK_SDK_SESSION }
+        // The real SDK honors the caller-selected ID for a fresh session.
+        yield { ...msg, session_id: sessionId }
       }
     })()
   },
@@ -125,6 +127,7 @@ describe("Session resume: session ID tracking", () => {
     clearSessionCache()
     capturedQueryParams = null
     queryCallCount = 0
+    firstCallerSelectedSessionId = undefined
   })
 
   it("should return X-Claude-Session-ID header in response", async () => {
@@ -137,10 +140,10 @@ describe("Session resume: session ID tracking", () => {
     })
 
     const sessionHeader = response.headers.get("x-claude-session-id")
-    expect(sessionHeader).toBeTruthy()
+    expect(sessionHeader).toBe(capturedQueryParams.options.sessionId)
   })
 
-  it("should return X-Claude-Session-ID in streaming response", async () => {
+  it("omits a speculative X-Claude-Session-ID from streaming responses", async () => {
     mockMessages = [
       messageStart(),
       textBlockStart(0),
@@ -159,8 +162,9 @@ describe("Session resume: session ID tracking", () => {
     })
 
     const sessionHeader = response.headers.get("x-claude-session-id")
-    expect(sessionHeader).toBeTruthy()
-    await readStreamFull(response) // consume
+    await readStreamFull(response) // consume so the lazy SDK query is captured
+    expect(capturedQueryParams.options.sessionId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(sessionHeader).toBeNull()
   })
 
   it("should use resume option on follow-up requests with same session", async () => {
@@ -175,7 +179,8 @@ describe("Session resume: session ID tracking", () => {
     }, { "x-opencode-session": "oc-session-1" })
     await r1.json()
 
-    const firstCallParams = { ...capturedQueryParams }
+    const firstCallSessionId = capturedQueryParams.options.sessionId
+    expect(firstCallSessionId).toBe(firstCallerSelectedSessionId)
 
     // Second request — same session, should resume
     mockMessages = [
@@ -194,8 +199,8 @@ describe("Session resume: session ID tracking", () => {
     }, { "x-opencode-session": "oc-session-1" })
     await r2.json()
 
-    // Second call should have resume option set
-    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+    // Second call should resume the exact ID Meridian selected for the first call.
+    expect(capturedQueryParams.options.resume).toBe(firstCallSessionId)
   })
 
   it("should NOT resume for a different session ID", async () => {
@@ -263,7 +268,7 @@ describe("Session resume: session ID tracking", () => {
       ],
     }, headers)).json()
 
-    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+    expect(capturedQueryParams.options.resume).toBe(firstCallerSelectedSessionId)
   })
 })
 
@@ -279,6 +284,7 @@ describe("Session resume: fingerprint fallback", () => {
     clearSessionCache()
     capturedQueryParams = null
     queryCallCount = 0
+    firstCallerSelectedSessionId = undefined
   })
 
   it("should resume via fingerprint when no session header is present", async () => {
@@ -308,7 +314,7 @@ describe("Session resume: fingerprint fallback", () => {
       ],
     })).json()
 
-    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+    expect(capturedQueryParams.options.resume).toBe(firstCallerSelectedSessionId)
   })
 
   it("keeps Claude Code fingerprint resume for tool_result without metadata", async () => {
@@ -339,7 +345,7 @@ describe("Session resume: fingerprint fallback", () => {
       ],
     }, headers)).json()
 
-    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+    expect(capturedQueryParams.options.resume).toBe(firstCallerSelectedSessionId)
   })
 
   it("does not resume a headerless client tool loop when runtime context follows the tool result", async () => {
@@ -418,7 +424,7 @@ describe("Session resume: fingerprint fallback", () => {
       ],
     })).json()
 
-    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+    expect(capturedQueryParams.options.resume).toBe(firstCallerSelectedSessionId)
     // Only the delta is replayed — the opening turn stays in the SDK session.
     expect(capturedQueryParams.prompt).toContain("Tell me more.")
     expect(capturedQueryParams.prompt).not.toContain("Run the tool")
@@ -503,6 +509,7 @@ describe("Session resume: only send last user message on resume", () => {
     clearSessionCache()
     capturedQueryParams = null
     queryCallCount = 0
+    firstCallerSelectedSessionId = undefined
   })
 
   it("should send only the last user message when resuming", async () => {
@@ -570,7 +577,7 @@ describe("Session resume: only send last user message on resume", () => {
     }, { "x-opencode-session": "oc-stream-resume" })
 
     await readStreamFull(r2)
-    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+    expect(capturedQueryParams.options.resume).toBe(firstCallerSelectedSessionId)
     expect(capturedQueryParams.prompt).toContain("Continue please")
     expect(capturedQueryParams.prompt).not.toContain("Start conversation")
   })
@@ -626,6 +633,7 @@ describe("Session resume: embedded runtime session descriptor", () => {
     clearSessionCache()
     capturedQueryParams = null
     queryCallCount = 0
+    firstCallerSelectedSessionId = undefined
   })
 
   it("resumes after a completed tool loop and a later user request", async () => {
@@ -662,7 +670,7 @@ describe("Session resume: embedded runtime session descriptor", () => {
     })).json()
 
     // Resumed, and only the delta is replayed — not the whole history.
-    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+    expect(capturedQueryParams.options.resume).toBe(firstCallerSelectedSessionId)
     expect(capturedQueryParams.prompt).toContain("Tell me more.")
     expect(capturedQueryParams.prompt).not.toContain("Run the tool")
   })
@@ -753,6 +761,7 @@ describe("Session resume: session context descriptor", () => {
     clearSessionCache()
     capturedQueryParams = null
     queryCallCount = 0
+    firstCallerSelectedSessionId = undefined
   })
 
   it("resumes after a completed tool loop and a later user request", async () => {
@@ -788,7 +797,7 @@ describe("Session resume: session context descriptor", () => {
       ],
     })).json()
 
-    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+    expect(capturedQueryParams.options.resume).toBe(firstCallerSelectedSessionId)
     expect(capturedQueryParams.prompt).toContain("Tell me more.")
     expect(capturedQueryParams.prompt).not.toContain("Run the tool")
   })
@@ -855,6 +864,7 @@ describe("Session resume: stale cross-node history", () => {
     clearSessionCache()
     capturedQueryParams = null
     queryCallCount = 0
+    firstCallerSelectedSessionId = undefined
   })
 
   it("fresh-replays all 727 messages when only 514/515 cached messages match", async () => {
@@ -891,7 +901,7 @@ describe("Session resume: stale cross-node history", () => {
     }, { "x-opencode-session": "oc-stale-nonstream" })
     await followUp.json()
 
-    expect(capturedQueryParams.options.resume).toBe(MOCK_SDK_SESSION)
+    expect(capturedQueryParams.options.resume).toBe(firstCallerSelectedSessionId)
     expect(capturedQueryParams.prompt).toContain("Continue after recovery")
     expect(capturedQueryParams.prompt).not.toContain("WINDOWS MAXWELL CSV SENTINEL")
   })
