@@ -5838,8 +5838,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // user message + cwd and cannot distinguish independent headerless chats.
       // Strict serialization is safe only when the adapter supplies a reliable
       // client-session identity.
+      //
+      // Detection has to see the body, not only the headers. Our derived
+      // descriptors — the embedded runtime session id and the session-context
+      // hash — live in the system prompt, so a header-only detection resolves
+      // the wrong adapter and getSessionId returns nothing. That silently skips
+      // both the turn lease and the arrival revision snapshot for exactly the
+      // clients the descriptors exist to key, and an absent snapshot makes the
+      // cross-process check downgrade to "a durable mapping exists, so the
+      // session advanced" — which refuses every new conversation that reuses a
+      // chat-scoped key with an HTTP 400.
       if (Array.isArray(body?.messages)) {
-        const adapter = detectAdapter(c)
+        const adapter = detectAdapter(c, body)
         const agentSessionId = adapter.getSessionId(c, body)
         if (agentSessionId) {
           const arrivalProfileIds = new Set(
