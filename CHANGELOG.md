@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.66.0](https://github.com/rynfar/meridian/compare/meridian-v1.65.2...meridian-v1.66.0) (2026-08-31)
+
+
+### Features
+
+* cancel RLM subagent trees when the parent request aborts ([ad55c22](https://github.com/rynfar/meridian/commit/ad55c22b5e79ac963dec6a695eb05e9d56178c83)), closes [#902](https://github.com/rynfar/meridian/issues/902)
+* emit Retry-After and scope [1m] rate-limit benching per session ([49e04d1](https://github.com/rynfar/meridian/commit/49e04d131a6b168986cef53b99780ef624a092ff))
+
+
+### Bug Fixes
+
+* **openai:** profile-aware model catalog, SSE keepalives, cached-token usage ([#914](https://github.com/rynfar/meridian/issues/914)) ([a167bc1](https://github.com/rynfar/meridian/commit/a167bc1992b883787e33ae37b28fa9ecae8fe0f0))
+
+## [1.65.2](https://github.com/rynfar/meridian/compare/meridian-v1.65.1...meridian-v1.65.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **errors:** classify org spend-limit refusals as rate limits ([#908](https://github.com/rynfar/meridian/issues/908)) ([0fc79a7](https://github.com/rynfar/meridian/commit/0fc79a733539693d35773718315c55dc486b1361))
+
+## [1.65.1](https://github.com/rynfar/meridian/compare/meridian-v1.65.0...meridian-v1.65.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **docker:** initialize machine identity in runtime image ([#903](https://github.com/rynfar/meridian/issues/903)) ([3f18494](https://github.com/rynfar/meridian/commit/3f18494db4267ff6cafe285529645b33c924b9a4))
+
+## [1.65.0](https://github.com/rynfar/meridian/compare/meridian-v1.64.0...meridian-v1.65.0) (2026-08-29)
+
+
+### Features
+
+* **routing:** add durable next-user-turn priority failback ([#897](https://github.com/rynfar/meridian/issues/897)) ([2e51fdb](https://github.com/rynfar/meridian/commit/2e51fdb8e17eed5ff0e26ed0f926de449fe8106e))
+
+
+### Bug Fixes
+
+* **errors:** classify exhausted usage credits ([#890](https://github.com/rynfar/meridian/issues/890)) ([099741d](https://github.com/rynfar/meridian/commit/099741dd7a341daa767b08e20649456c51675b62))
+
 ## [1.64.0](https://github.com/rynfar/meridian/compare/meridian-v1.63.0...meridian-v1.64.0) (2026-08-27)
 
 

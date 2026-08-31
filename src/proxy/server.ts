@@ -9,6 +9,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk"
 import { rateLimitStore } from "./rateLimitStore"
 import { guardUpstreamIdle, UpstreamIdleError } from "./streamIdleGuard"
 import { linkRequestAbort } from "./requestAbort"
+import { processSessionTree, truncateSessionKey, type SessionTreeRegistration } from "./sessionTree"
 import { AbortableSemaphore, getProcessSdkSemaphore, type SemaphoreLease } from "./concurrency"
 import { closeServerWithGracePeriod, trackServerConnections } from "./shutdown"
 import { fetchOAuthUsage, fetchOAuthUsageResult } from "./oauthUsage"
@@ -84,7 +85,25 @@ import { getAdapterTransforms } from "./transforms/registry"
 import { loadPlugins, getActiveTransforms } from "./plugins/loader"
 import type { LoadedPlugin } from "./plugins/types"
 import { resolveProfile, listProfiles, setActiveProfile, getActiveProfileId, getEffectiveProfiles, restoreActiveProfile, type ResolvedProfile } from "./profiles"
-import { getRoutingMode, resolvePriorityOrder, choosePriorityProfile, ProfileExhaustion, AssignmentStore, resolveCooldownUntil } from "./routing"
+import {
+  getRoutingMode,
+  getPriorityFailbackPolicy,
+  shouldPromotePriorityAssignment,
+  resolvePriorityOrder,
+  choosePriorityProfile,
+  ProfileExhaustion,
+  AssignmentStore,
+  resolveCooldownUntil,
+  findCooldownReset,
+  type CooldownWindow,
+  type PriorityAssignment,
+} from "./routing"
+import {
+  retryAfterSeconds,
+  retryAfterHeaders,
+  retryAfterBodyFields,
+  OVERLOADED_RETRY_AFTER_SECONDS,
+} from "./retryAfter"
 import { getSetting, setSetting } from "./settings"
 import { filterBetasForProfile, getBetaPolicyFromEnv } from "./betas"
 import { createFileChangeHook, extractFileChangesFromMessages, formatFileChangeSummary, type FileChange } from "./fileChanges"
@@ -105,7 +124,17 @@ import {
 import { getConversationFingerprint, getPriorityAssignmentKey } from "./session/fingerprint"
 // Re-export for backwards compatibility (existing tests import from here)
 
-import { lookupSession, storeSession, clearSessionCache, getMaxSessionsLimit, evictSession as evictCachedSession, getSessionByClaudeId } from "./session/cache"
+import {
+  lookupSession,
+  storeSession,
+  rollbackPrioritySessionPublication,
+  finalizePrioritySessionPublication,
+  clearSessionCache,
+  getMaxSessionsLimit,
+  evictSession as evictCachedSession,
+  getSessionByClaudeId,
+  type PrioritySessionPublication,
+} from "./session/cache"
 import { processSessionTurns, type SessionTurnLease } from "./session/turnCoordinator"
 import {
   CrossProcessTurnAcquireTimeoutError,
@@ -118,6 +147,10 @@ import {
   lookupSessionRecovery,
   lookupSharedSession,
   lookupSharedSessionResult,
+  lookupPriorityAssignmentResult,
+  claimPriorityAttempt,
+  releasePriorityAttempt,
+  blockPriorityAttempt,
   listStoredSessions,
   readSessionStoreSnapshot,
   readSessionStoreGenerationSnapshot,
@@ -219,14 +252,37 @@ interface RequestMeta {
   sessionTurnLease?: SessionTurnLease
   /** Durable revisions observed before cross-process turn acquisition. */
   sharedSessionRevisionsAtArrival?: Record<string, string | null>
+  /** Verified before queueing so attestation freshness cannot expire while waiting. */
+  routingTurnIdentity?: {
+    readonly kind: "human"
+    readonly turnId: string
+    readonly issuedAt: number
+  }
   /** Permanently retain the session lease when mandatory durable cleanup fails. */
   retainSessionTurnFence?: () => void
+  /**
+   * Cancel this request's live session subtree (see `sessionTree.ts`).
+   *
+   * Present only for a keyed request. Called from the abort paths a CLIENT can
+   * reach — a request-signal abort and a cancelled response body — never from a
+   * turn that merely completed. Latches after the first call, so one client
+   * teardown that trips both paths propagates once.
+   */
+  cascadeSubtreeCancel?: (source: string) => void
+}
+
+interface PriorityAttemptExposure {
+  committed: boolean
+  reason?: string
 }
 
 interface HandleMessagesOptions {
   body: any
   forcedProfileId?: string
   turnWatchdogSignal?: AbortSignal
+  forceFreshPriorityReplay?: boolean
+  priorityPublication?: PrioritySessionPublication
+  priorityAttemptExposure?: PriorityAttemptExposure
 }
 
 function totalQueueWaitMs(meta: RequestMeta): number {
@@ -530,6 +586,32 @@ function checkTokenHealth(
   }
 }
 
+type PriorityDispatchOptions = {
+  readonly context: Context
+  readonly body: any
+  readonly requestMeta: RequestMeta
+  readonly candidateIds: readonly string[]
+  readonly sessionKey: string | null
+  readonly wantsStream: boolean
+  readonly currentProfileId: string | undefined
+  readonly turnWatchdogSignal?: AbortSignal
+  readonly publicationTurn?: {
+    readonly turnId: string
+    readonly issuedAt: number
+  }
+  /** Independently verified current request turn, never stored retention metadata. */
+  readonly claimTurn?: {
+    readonly turnId: string
+    readonly issuedAt: number
+  }
+  readonly durableRoute?: {
+    readonly routeKey: string
+    readonly expectedGeneration: string
+    /** The stored route no longer proves the current mapping generation. */
+    readonly forceFreshReplay?: boolean
+  }
+}
+
 export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServer {
   const finalConfig = { ...DEFAULT_PROXY_CONFIG, ...config }
   proxyLogSilent = finalConfig.silent
@@ -710,6 +792,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       ? { type: "error", error: { type, message } }
       : { error: { type, message, code: null } }
   const DRAIN_MESSAGE = "Meridian is shutting down and is not accepting new requests. Retry against another instance."
+  /** Every transient 503/529 Meridian raises itself — drain, unavailable
+   *  durable state, a contended cross-process turn — clears in seconds rather
+   *  than at a quota boundary, so they share one short hint (#901). */
+  const TRANSIENT_RETRY_AFTER_HEADERS = retryAfterHeaders(OVERLOADED_RETRY_AFTER_SECONDS)
   // Each route answers in its own envelope. /v1/responses reports every other
   // error (both 400s below it) in the OpenAI shape, so handing it the
   // Anthropic one here would make the drain 503 the single reply on that route
@@ -717,7 +803,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   const drainingResponse = (shape: ErrorShape = "anthropic"): Response =>
     new Response(JSON.stringify(errorEnvelope(shape, "overloaded_error", DRAIN_MESSAGE)), {
       status: 503,
-      headers: { "Content-Type": "application/json", "x-meridian-draining": "1" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-meridian-draining": "1",
+        // A drain is a restart, not a spent quota. Tell the client how long to
+        // hold rather than leaving it to guess (#901).
+        ...TRANSIENT_RETRY_AFTER_HEADERS,
+      },
     })
 
   /**
@@ -746,6 +838,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     const headers: Record<string, string> = { "Content-Type": "application/json" }
     const drainingHeader = internalRes.headers.get("x-meridian-draining")
     if (drainingHeader) headers["x-meridian-draining"] = drainingHeader
+    // A compat client is throttled by the same window as an Anthropic-shaped
+    // one; dropping the hint here would leave /v1/responses and
+    // /v1/chat/completions callers with nothing to back off against (#901).
+    const innerRetryAfter = internalRes.headers.get("retry-after")
+    if (innerRetryAfter) headers["Retry-After"] = innerRetryAfter
     return new Response(JSON.stringify(payload), { status: internalRes.status, headers })
   }
 
@@ -875,26 +972,38 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     return Array.isArray(setting) && setting.length > 0 ? setting : undefined
   }
 
-  /** Tier 1 + 3: this profile's own observed five_hour reset, else a
-   *  conservative default so a mis-mark self-heals. Never blocks.
+  /** This profile's usage windows, normalized for the cooldown resolvers.
    *
-   *  Gated the same way as tier 2's `refinePriorityCooldown`: a healthy
-   *  account always has a `five_hour` window with a future `resetsAt` —
-   *  that boundary exists regardless of consumption, so a scoped entry's
-   *  mere presence doesn't prove the five-hour window caused THIS failure
-   *  (it could be a seven_day cap, or a transient upstream error). Only
-   *  trust the entry's `resetsAt` when it says the window was actually
-   *  exhausted (`status === "rejected"`, or `utilization >= 1` for older
-   *  entries that predate the `status` field); otherwise fall through to
-   *  the conservative default so tier 2 isn't left refining a wrong mark
-   *  it has no way to challenge. */
-  function priorityCooldownUntil(profileId: string, now: number): number {
-    const windows = rateLimitStore.getAll(profileId).map(e => ({
+   *  `exhausted` is deliberately strict: a healthy account always has a
+   *  `five_hour` window with a future `resetsAt` — that boundary exists
+   *  regardless of consumption, so a scoped entry's mere presence doesn't
+   *  prove the five-hour window caused THIS failure (it could be a seven_day
+   *  cap, or a transient upstream error). Only an entry that says the window
+   *  was actually spent (`status === "rejected"`, or `utilization >= 1` for
+   *  older entries that predate the `status` field) may be trusted. */
+  function profileCooldownWindows(profileId: string): CooldownWindow[] {
+    return rateLimitStore.getAll(profileId).map(e => ({
       type: e.rateLimitType ?? "",
       resetsAt: e.resetsAt,
       exhausted: e.status === "rejected" || (e.utilization ?? 0) >= 1,
     }))
-    return resolveCooldownUntil(windows, now, PRIORITY_DEFAULT_COOLDOWN_MS)
+  }
+
+  /** Tier 1 + 3: this profile's own observed five_hour reset, else a
+   *  conservative default so a mis-mark self-heals. Never blocks. Falling
+   *  through to the default is what keeps tier 2 from being left refining a
+   *  wrong mark it has no way to challenge. */
+  function priorityCooldownUntil(profileId: string, now: number): number {
+    return resolveCooldownUntil(profileCooldownWindows(profileId), now, PRIORITY_DEFAULT_COOLDOWN_MS)
+  }
+
+  /** When this account's own usage windows say it frees up, or null when
+   *  nothing proves a window is spent. Feeds `Retry-After` (#901) — telling a
+   *  client to wait until a boundary that was never the problem is worse than
+   *  the conservative constant. */
+  function observedResetAtMs(profileId: string | undefined, now: number): number | null {
+    if (!profileId) return null
+    return findCooldownReset(profileCooldownWindows(profileId), now)
   }
 
   /** Tier 2: the authoritative per-account reset from Anthropic's usage
@@ -1023,7 +1132,19 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     }
     if (failure) {
       await reader.cancel().catch(() => {})
-      return { failed: true, errorPayload: failure.payload, errorType: failure.type, response: res }
+      // The original response body is now locked and consumed. Preserve the
+      // exact bytes already read so a no-retry exposure barrier can still
+      // return a usable account-error response to the client.
+      const replay = new ReadableStream<Uint8Array>({
+        start(ctrl) {
+          for (const chunk of consumed) ctrl.enqueue(chunk)
+          ctrl.close()
+        },
+      })
+      const response = new Response(replay, { status: res.status, headers: res.headers })
+      const completion = responseCompletions.get(res)
+      if (completion) responseCompletions.set(response, completion)
+      return { failed: true, errorPayload: failure.payload, errorType: failure.type, response }
     }
     const rest = new ReadableStream<Uint8Array>({
       start(ctrl) { for (const chunk of consumed) ctrl.enqueue(chunk) },
@@ -1040,30 +1161,97 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     return { failed: false, errorPayload: null, errorType: null, response }
   }
 
-  async function dispatchPriority(
-    c: Context,
-    body: any,
-    requestMeta: RequestMeta,
-    orderedCandidateIds: string[],
-    sessionKey: string | null,
-    wantsStream: boolean,
-    turnWatchdogSignal?: AbortSignal,
-  ): Promise<Response> {
+  async function dispatchPriority(options: PriorityDispatchOptions): Promise<Response> {
+    let attemptOwnerToken: string | undefined
+    if (options.durableRoute && options.publicationTurn) {
+      try {
+        const claim = claimPriorityAttempt({
+          routeKey: options.durableRoute.routeKey,
+          expectedAssignmentGeneration: options.durableRoute.expectedGeneration,
+          turn: options.claimTurn,
+        })
+        if (!claim) {
+          return options.context.json({
+            type: "error",
+            error: { type: "overloaded_error", message: "Durable priority attempt state is unavailable" },
+          }, 503, TRANSIENT_RETRY_AFTER_HEADERS)
+        }
+        attemptOwnerToken = claim.ownerToken
+      } catch (error) {
+        claudeLog("priority.attempt_claim_failed", {
+          routeKey: options.durableRoute.routeKey,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        return options.context.json({
+          type: "error",
+          error: { type: "overloaded_error", message: "Durable priority attempt state is unavailable" },
+        }, 503, TRANSIENT_RETRY_AFTER_HEADERS)
+      }
+    }
+    const settleAttempt = (disposition: "release" | "block"): boolean => {
+      if (!attemptOwnerToken || !options.durableRoute) return true
+      try {
+        return disposition === "block"
+          ? blockPriorityAttempt(options.durableRoute.routeKey, attemptOwnerToken)
+          : releasePriorityAttempt(options.durableRoute.routeKey, attemptOwnerToken)
+      } catch (error) {
+        claudeLog("priority.attempt_settle_failed", {
+          routeKey: options.durableRoute.routeKey,
+          disposition,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        return false
+      }
+    }
+    const unavailableAttemptResponse = (): Response => options.context.json({
+      type: "error",
+      error: { type: "overloaded_error", message: "Durable priority attempt state is unavailable" },
+    }, 503, TRANSIENT_RETRY_AFTER_HEADERS)
+
     let lastError: unknown = null
     let lastStatus = 429
     let previous: string | null = null
     let previousReason = "rate_limit_error"
-    for (const [attempt, candidate] of orderedCandidateIds.entries()) {
-      const inner = await handleMessages(c, forkAttemptMeta(requestMeta, attempt), {
-        body,
+    // When every candidate is spent, the honest wait is until the FIRST one
+    // frees up, not the last one tried. Tracked across the loop so the caller's
+    // Retry-After names the pool's earliest opening (#901).
+    let earliestPoolReset: number | null = null
+    for (const [attempt, candidate] of options.candidateIds.entries()) {
+      const exposure: PriorityAttemptExposure = { committed: false }
+      const priorityPublication = options.durableRoute && options.publicationTurn
+        ? {
+            routeKey: options.durableRoute.routeKey,
+            profileId: candidate,
+            lastHumanTurnDigest: options.publicationTurn.turnId,
+            lastHumanTurnIssuedAt: options.publicationTurn.issuedAt,
+            attemptOwnerToken: attemptOwnerToken!,
+            expectedAssignmentGeneration: options.durableRoute.expectedGeneration,
+          }
+        : undefined
+      const inner = await handleMessages(options.context, forkAttemptMeta(options.requestMeta, attempt), {
+        body: options.body,
         forcedProfileId: candidate,
-        turnWatchdogSignal,
+        turnWatchdogSignal: options.turnWatchdogSignal,
+        forceFreshPriorityReplay: priorityPublication !== undefined
+          && (options.durableRoute?.forceFreshReplay === true
+            || (options.currentProfileId !== undefined && candidate !== options.currentProfileId)),
+        priorityPublication,
+        priorityAttemptExposure: exposure,
       })
       const sniffed = await sniffAccountFailure(inner)
       if (!sniffed.failed) {
-        if (sessionKey) priorityAssignments.set(sessionKey, candidate)
+        if (options.sessionKey && !options.durableRoute) {
+          // Process memory preserves only legacy/keyless new-conversation
+          // affinity. Trusted attempts publish authority at the atomic durable
+          // terminal barrier and must not poison adoption on errors or cancel.
+          const previousAssignment = priorityAssignments.get(options.sessionKey)
+          priorityAssignments.set(options.sessionKey, {
+            profileId: candidate,
+            requestId: options.publicationTurn?.turnId ?? previousAssignment?.requestId,
+          })
+        }
         if (previous) {
-          claudeLog("profile.failover", { from: previous, to: candidate, reason: previousReason, sessionKey })
+          claudeLog("profile.failover", { from: previous, to: candidate, reason: previousReason, sessionKey: options.sessionKey })
           plog(`[PROXY] PRIORITY failover ${previous} -> ${candidate} (${previousReason})`)
         }
         return sniffed.response
@@ -1071,37 +1259,58 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       await responseCompletions.get(inner)?.catch(() => {})
       const reason = sniffed.errorType
       // Only a quota refusal has a reset to look up. Both cooldown tiers read
-      // the account's five-hour window, which says nothing about entitlement:
-      // a refused subscription would be suppressed until an unrelated quota
-      // boundary, and `refinePriorityCooldown` could only push that further
-      // out (`mark` lets a later refinement extend a cooldown, never shorten
-      // it). The conservative default stands instead, so the account is
-      // re-probed once the subscription may plausibly have been fixed.
+      // the account's five-hour window, which says nothing about entitlement.
       const quotaRefusal = isQuotaRefusal(reason)
       const cooldownUntil = quotaRefusal
         ? priorityCooldownUntil(candidate, Date.now())
         : Date.now() + PRIORITY_DEFAULT_COOLDOWN_MS
       priorityExhaustion.mark(candidate, cooldownUntil, reason)
+      if (earliestPoolReset === null || cooldownUntil < earliestPoolReset) {
+        earliestPoolReset = cooldownUntil
+      }
       claudeLog("priority.exhausted", { profile: candidate, until: cooldownUntil, reason })
       if (quotaRefusal) refinePriorityCooldown(candidate)
       lastError = sniffed.errorPayload
       lastStatus = inner.status
       previous = candidate
       previousReason = reason
+      if (exposure.committed) {
+        // The SDK may already have emitted content, structured output, or a
+        // tool side effect even though a non-stream handler ultimately returned
+        // an account-shaped error. Never replay that attempt on another account.
+        claudeLog("priority.failover_withheld", { profile: candidate, reason: exposure.reason ?? "attempt_exposed" })
+        if (!settleAttempt("block")) return unavailableAttemptResponse()
+        return sniffed.response
+      }
     }
-    // Every candidate failed: surface the LAST tried profile's error (owner
-    // decision). Stream sniff consumed the inner body, so reconstruct the
-    // exact frame for SSE requests; non-stream errors pass through as JSON,
-    // carrying the status that came with them — a pool refused for billing
-    // must not reach the client as a 429 it would dutifully back off from.
-    if (wantsStream) {
+    // Every candidate ended before exposure. Release the exact durable claim
+    // before the client can retry; failure stays fail-closed and never advances
+    // to another account or returns a retryable account-shaped response.
+    if (!settleAttempt("release")) return unavailableAttemptResponse()
+    // Surface the LAST tried profile's error (owner decision). Stream sniff
+    // consumed the inner body, so reconstruct the exact frame for SSE requests.
+    // The SSE frame carries its own `retry_after` field, relayed verbatim from
+    // whichever attempt produced it — headers are unavailable to a stream.
+    if (options.wantsStream) {
       return new Response(`event: error\ndata: ${JSON.stringify(lastError)}\n\n`, {
         status: 200,
         headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
       })
     }
-    return new Response(JSON.stringify(lastError), { status: lastStatus, headers: { "content-type": "application/json" } })
+    // The wait belongs to the POOL, not to the last account tried: the caller
+    // can proceed as soon as ANY candidate frees up. `earliestPoolReset` is a
+    // real observed boundary when a quota refusal supplied one and the
+    // conservative default otherwise, so it is always safe to say (#901).
+    const poolRetryAfter = retryAfterSeconds({
+      status: lastStatus,
+      resetAtMs: earliestPoolReset,
+    })
+    return new Response(JSON.stringify(lastError), {
+      status: lastStatus,
+      headers: { "content-type": "application/json", ...retryAfterHeaders(poolRetryAfter) },
+    })
   }
+
   app.use("/auth/*", requireAuth)
 
   app.get("/", (c) => {
@@ -1112,7 +1321,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         status: "ok",
         service: "meridian",
         format: "anthropic",
-        endpoints: ["/v1/messages", "/messages", "/v1/chat/completions", "/v1/responses", "/v1/models", "/v1/design/*", "/design-login", "/telemetry", "/metrics", "/health"]
+        endpoints: ["/v1/messages", "/messages", "/v1/chat/completions", "/v1/responses", "/v1/models", "/v1/sessions/:key/cancel", "/v1/design/*", "/design-login", "/telemetry", "/metrics", "/health"]
       })
     }
     return c.html(landingHtml)
@@ -1143,32 +1352,101 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // transcript. A failed durable invalidation after that point must retain
       // the logical-turn fence; failures before any resume are safe to release.
       let resumedMappingMayBeAdvanced = false
+      let priorityTerminalCommitted = false
+      let recoveryPublishedTarget: TranscriptLocator | undefined
+      let priorityRollbackRetirement: Promise<void> | undefined
       const evictSession = (...args: Parameters<typeof evictCachedSession>): boolean => {
         try {
+          if (priorityTerminalCommitted && options.priorityPublication) return true
+          if (options.priorityPublication?.rollback) {
+            const rollbackScopeKey = options.priorityPublication.rollback.key
+            const restoredGeneration = rollbackPrioritySessionPublication(
+              args[0],
+              args[2] ?? options.body.messages ?? [],
+              args[1],
+              options.priorityPublication,
+            )
+            if (!restoredGeneration) {
+              requestMeta.retainSessionTurnFence?.()
+              return false
+            }
+            requestMeta.sessionTurnLease?.markRolledBack(rollbackScopeKey)
+            resumedMappingMayBeAdvanced = false
+            const retirements: Promise<void>[] = []
+            if (managedForkTarget && managedForkPublished) {
+              // The exact rollback removed this target from durable authority.
+              // Retire its live lifecycle record and keep its GC pin until the
+              // durable retired transition completes.
+              managedForkPublished = false
+              retirements.push(abandonManagedFork("priority_publication_rollback"))
+            }
+            if (recoveryPublishedTarget) {
+              const recoveryTarget = recoveryPublishedTarget
+              recoveryPublishedTarget = undefined
+              retirements.push(abandonFork(recoveryTarget, sessionGcOptions).catch((error) => {
+                claudeLog("session.fork_abandon_failed", {
+                  reason: "priority_recovery_publication_rollback",
+                  error: error instanceof Error ? error.message : String(error),
+                })
+              }))
+            }
+            if (retirements.length > 0) {
+              const pending = Promise.all(retirements).then(() => undefined)
+              priorityRollbackRetirement = priorityRollbackRetirement
+                ? Promise.all([priorityRollbackRetirement, pending]).then(() => undefined)
+                : pending
+            }
+            return true
+          }
+          if (options.priorityPublication) {
+            // Every durable resume writes an isolated managed fork. Before its
+            // atomic publication, the old routed mapping remains exact and must
+            // not be deleted merely to authorize a noncanonical terminal.
+            return false
+          }
           const evicted = evictCachedSession(...args)
           if (!evicted && resumedMappingMayBeAdvanced) {
-            // A failed generation-fenced invalidation of a mapping this turn
-            // actually resumed is just as uncertain as an exception. Keep both
-            // turn fences held so no peer can resume a transcript this request
-            // may already have advanced physically. Fresh turns have no source
-            // generation to quarantine, so an absent mapping is harmless.
             requestMeta.retainSessionTurnFence?.()
           }
-          if (evicted) resumedMappingMayBeAdvanced = false
+          if (evicted) {
+            resumedMappingMayBeAdvanced = false
+            const retirements: Promise<void>[] = []
+            if (managedForkTarget && managedForkPublished) {
+              managedForkPublished = false
+              retirements.push(abandonManagedFork("mapping_evicted_after_publication"))
+            }
+            if (recoveryPublishedTarget) {
+              const recoveryTarget = recoveryPublishedTarget
+              recoveryPublishedTarget = undefined
+              retirements.push(abandonFork(recoveryTarget, sessionGcOptions).catch((error) => {
+                claudeLog("session.fork_abandon_failed", {
+                  reason: "recovery_mapping_evicted_after_publication",
+                  error: error instanceof Error ? error.message : String(error),
+                })
+              }))
+            }
+            if (retirements.length > 0) {
+              const pending = Promise.all(retirements).then(() => undefined)
+              priorityRollbackRetirement = priorityRollbackRetirement
+                ? Promise.all([priorityRollbackRetirement, pending]).then(() => undefined)
+                : pending
+            }
+          }
           return evicted
         } catch (error) {
-          // If durable cleanup is uncertain, keep both process-local and
-          // cross-process turn fences held. Releasing would let another proxy
-          // resume the mapping we failed to invalidate.
-          if (resumedMappingMayBeAdvanced) requestMeta.retainSessionTurnFence?.()
+          if (resumedMappingMayBeAdvanced || options.priorityPublication?.rollback) {
+            requestMeta.retainSessionTurnFence?.()
+          }
           throw error
         }
       }
+
       let managedForkTarget: TranscriptLocator | undefined
       let managedForkSource: TranscriptLocator | undefined
       let managedForkCommitted = false
       let managedForkPublished = false
       let managedForkAbandoned = false
+      let managedForkAbandonment: Promise<void> | undefined
       let managedForkSuperseded = false
       // A fresh transcript uses the caller-selected SDK sessionId as its
       // identity. Returned event IDs are advisory for this supported SDK path;
@@ -1182,32 +1460,38 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         releaseManagedForkPins = undefined
       }
 
-      const abandonManagedFork = async (reason: string): Promise<void> => {
-        if (unexpectedManagedForkTarget) {
-          const unexpected = unexpectedManagedForkTarget
-          unexpectedManagedForkTarget = undefined
-          await registerLiveTranscript(unexpected, sessionGcOptions)
-            .then((exact) => abandonFork(exact, sessionGcOptions))
-            .catch((error) => {
-              claudeLog("session.unexpected_fork_track_failed", {
-                reason,
-                sessionId: unexpected.sessionId,
-                error: error instanceof Error ? error.message : String(error),
+      const abandonManagedFork = (reason: string): Promise<void> => {
+        if (managedForkAbandonment) return managedForkAbandonment
+        const pending = (async (): Promise<void> => {
+          if (unexpectedManagedForkTarget) {
+            const unexpected = unexpectedManagedForkTarget
+            unexpectedManagedForkTarget = undefined
+            await registerLiveTranscript(unexpected, sessionGcOptions)
+              .then((exact) => abandonFork(exact, sessionGcOptions))
+              .catch((error) => {
+                claudeLog("session.unexpected_fork_track_failed", {
+                  reason,
+                  sessionId: unexpected.sessionId,
+                  error: error instanceof Error ? error.message : String(error),
+                })
               })
-            })
-        }
-        if (!managedForkTarget || managedForkPublished || managedForkAbandoned) {
-          if (managedForkPublished || !managedForkTarget) releaseManagedPins()
-          return
-        }
-        managedForkAbandoned = true
-        await abandonFork(managedForkTarget, sessionGcOptions).catch((error) => {
-          const message = error instanceof Error ? error.message : String(error)
-          claudeLog("session.fork_abandon_failed", { reason, error: message })
-        })
-        releaseManagedPins()
-        void sweepSessionGc()
+          }
+          if (!managedForkTarget || managedForkPublished || managedForkAbandoned) {
+            if (managedForkPublished || !managedForkTarget) releaseManagedPins()
+            return
+          }
+          managedForkAbandoned = true
+          await abandonFork(managedForkTarget, sessionGcOptions).catch((error) => {
+            const message = error instanceof Error ? error.message : String(error)
+            claudeLog("session.fork_abandon_failed", { reason, error: message })
+          })
+          releaseManagedPins()
+          void sweepSessionGc()
+        })()
+        managedForkAbandonment = pending
+        return pending
       }
+
 
       const commitManagedFork = async (): Promise<void> => {
         if (!managedForkTarget || managedForkSuperseded || managedForkCommitted) return
@@ -1218,6 +1502,35 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         managedForkCommitted = true
       }
 
+      const assertPriorityPublicationReady = (): void => {
+        if (options.priorityPublication && !options.priorityPublication.rollback) {
+          throw new Error("Durable priority attempt reached terminal without atomic publication")
+        }
+      }
+
+      const finalizePriorityPublication = (): void => {
+        assertPriorityPublicationReady()
+        const publication = options.priorityPublication
+        if (!publication) return
+        if (requestAbort.controller.signal.aborted || durableWritesRevoked) {
+          throw new Error("Durable priority attempt was revoked before terminal finalization")
+        }
+        if (!finalizePrioritySessionPublication(publication)) {
+          // Publication is not terminal authority until its exact attempt claim
+          // and rollback marker are removed together. Withhold terminal bytes.
+          throw new Error("Durable priority attempt changed before terminal finalization")
+        }
+        // From this synchronous terminal boundary onward, body cancellation may
+        // discard queued bytes but must never revoke already-authoritative state.
+        priorityTerminalCommitted = true
+      }
+
+      // The outer catch runs outside the profile's scope but still has to
+      // answer 429/503, and a Retry-After derived from this account's own
+      // observed reset beats a constant (#901). Stays undefined when the
+      // failure fired before the profile resolved.
+      let resolvedProfileId: string | undefined
+
       try {
         const body = options.body
         // Re-detect with the parsed body: the last detection rule matches a
@@ -1225,6 +1538,28 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // visible from headers alone. Header-only detection above stays as the
         // value used if parsing itself throws.
         adapter = detectAdapter(c, body)
+        const markPriorityAttemptExposure = (reason: string): void => {
+          const exposure = options.priorityAttemptExposure
+          if (!exposure || exposure.committed) return
+          exposure.committed = true
+          exposure.reason = reason
+        }
+        const observePriorityAttemptMessage = (message: any): void => {
+          if (message?.type === "assistant" && Array.isArray(message.message?.content) && message.message.content.length > 0) {
+            markPriorityAttemptExposure("assistant_content")
+            return
+          }
+          if (message?.type === "stream_event") {
+            const type = message.event?.type
+            if (type === "message_start" || type === "content_block_start" || type === "content_block_delta") {
+              markPriorityAttemptExposure("stream_content")
+              return
+            }
+          }
+          if (message?.type === "result" && message.structured_output !== undefined) {
+            markPriorityAttemptExposure("structured_output")
+          }
+        }
 
         // Validate required fields
         if (!Array.isArray(body.messages)) {
@@ -1278,53 +1613,173 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // so a session and its subagent/fork requests land on one account.
         const routingMode = getRoutingMode(process.env.MERIDIAN_ROUTING ?? getSetting("routing"))
         // Priority mode (opt-in): unpinned requests are dispatched across the
-        // ordered pool with per-request failover. Pinned requests (explicit
-        // x-meridian-profile — including our own internal hops) bypass the
-        // pool entirely and take the normal path below.
+        // ordered pool with per-request failover. Pinned requests bypass it.
         if (routingMode === "priority" && !options.forcedProfileId && !c.req.header("x-meridian-profile")) {
           const effectivePool = getEffectiveProfiles(finalConfig.profiles)
           if (effectivePool.length > 1) {
             const { order, unknown } = resolvePriorityOrder(effectivePool.map(p => p.id), priorityProfileOrderSetting())
             if (unknown.length > 0) claudeLog("priority.unknown_order_ids", { unknown })
-            // Keyless clients (pylon's main process, OpenCode setups that omit
-            // x-opencode-session) fall back to the conversation fingerprint —
-            // without it they re-pick an account every turn and bounce back to
-            // the preferred profile the moment its cooldown expires, replaying
-            // the whole history against a cold cache.
-            // Deliberately not clientWorkingDirectory (computed below): no
-            // MERIDIAN_WORKDIR/CLAUDE_PROXY_WORKDIR override here — that
-            // override would collapse every client's account key to one
-            // shared value.
             const assignmentCwd = adapter.extractClientWorkingDirectory?.(body)
               ?? adapter.extractWorkingDirectory(body)
+            const adapterSessionId = adapter.getSessionId(c, body)
             const sessionKey = getPriorityAssignmentKey(
-              adapter.getSessionId(c, body),
+              adapterSessionId,
               lineageMessages,
               assignmentCwd,
             )
-            const assigned = sessionKey ? priorityAssignments.get(sessionKey) : undefined
-            // Assignment affinity: an existing conversation stays on its
-            // account while that account is healthy (protects warm prompt
-            // caches). Only NEW sessions drain back after a reset.
-            let first: string
-            if (assigned && order.includes(assigned) && !priorityExhaustion.isExhausted(assigned)) {
-              first = assigned
-            } else {
+            const preferred = order[0]
+            if (preferred !== undefined) {
+              const trustedTurn = requestMeta.routingTurnIdentity
+              let promotionTurn = trustedTurn
+              let publicationTurn: PriorityDispatchOptions["publicationTurn"]
+              const failbackPolicy = getPriorityFailbackPolicy(
+                process.env.MERIDIAN_PRIORITY_FAILBACK ?? getSetting("priorityFailback"),
+              )
+              let durableRoute: PriorityDispatchOptions["durableRoute"]
+              let assignment: PriorityAssignment | undefined
+              let routeMappingIsCurrent = false
+              if (adapterSessionId) {
+                // Adapter namespacing prevents an unrelated client family from
+                // retaining or adopting an OpenCode route with a colliding ID.
+                const routeKey = `${adapter.name}:${adapterSessionId}`
+                const routeResult = lookupPriorityAssignmentResult(routeKey)
+                if (routeResult.status === "error") {
+                  return c.json({
+                    type: "error",
+                    error: { type: "overloaded_error", message: "Durable priority routing state is unavailable" },
+                  }, 503, TRANSIENT_RETRY_AFTER_HEADERS)
+                }
+                if (routeResult.status === "found") {
+                  durableRoute = { routeKey, expectedGeneration: routeResult.generation }
+                  assignment = {
+                    profileId: routeResult.assignment.profileId,
+                    requestId: routeResult.assignment.lastHumanTurnDigest,
+                  }
+                  // Existing signed metadata is retention-only authority. It
+                  // may refresh this exact route atomically, but promotionTurn
+                  // below remains the sole permission to move profiles.
+                  publicationTurn = {
+                    turnId: routeResult.assignment.lastHumanTurnDigest,
+                    issuedAt: routeResult.assignment.lastHumanTurnIssuedAt,
+                  }
+                  if (trustedTurn) {
+                    const sameHumanTurn = trustedTurn.turnId === routeResult.assignment.lastHumanTurnDigest
+                    const strictlyNewer = trustedTurn.issuedAt > routeResult.assignment.lastHumanTurnIssuedAt
+                    if (sameHumanTurn) {
+                      publicationTurn = {
+                        turnId: trustedTurn.turnId,
+                        issuedAt: Math.max(trustedTurn.issuedAt, routeResult.assignment.lastHumanTurnIssuedAt),
+                      }
+                    } else if (strictlyNewer) {
+                      publicationTurn = trustedTurn
+                    } else {
+                      // A valid but older/equal changed token is a replay or an
+                      // ambiguous same-second turn. Retain and republish the
+                      // current route, but never let it trigger failback.
+                      promotionTurn = undefined
+                      claudeLog("priority.attestation_replay_withheld", {
+                        routeKey,
+                        issuedAt: trustedTurn.issuedAt,
+                        highWater: routeResult.assignment.lastHumanTurnIssuedAt,
+                      })
+                    }
+                  }
+                  const mapped = lookupSharedSessionResult(routeResult.assignment.mappingKey)
+                  if (mapped.status === "error") {
+                    return c.json({
+                      type: "error",
+                      error: { type: "overloaded_error", message: "Durable priority session state is unavailable" },
+                    }, 503, TRANSIENT_RETRY_AFTER_HEADERS)
+                  }
+                  routeMappingIsCurrent = mapped.status === "found"
+                    && mapped.generation === routeResult.assignment.mappingGeneration
+                  if (!routeMappingIsCurrent) {
+                    // Never resume an unproved mapping generation. Only a fresh,
+                    // trusted human-turn proof may atomically repair authority;
+                    // unsigned/internal work retains the route and fails closed.
+                    if (!promotionTurn) {
+                      return c.json({
+                        type: "error",
+                        error: { type: "overloaded_error", message: "Durable priority session state is unavailable" },
+                      }, 503, TRANSIENT_RETRY_AFTER_HEADERS)
+                    }
+                    durableRoute = { ...durableRoute, forceFreshReplay: true }
+                  }
+                } else if (routeResult.attempt && !trustedTurn) {
+                  // An absent route can still carry a durable uncertain-attempt
+                  // blocker. Missing/invalid identity cannot bypass it.
+                  return c.json({
+                    type: "error",
+                    error: { type: "overloaded_error", message: "Durable priority attempt state is unavailable" },
+                  }, 503, TRANSIENT_RETRY_AFTER_HEADERS)
+                } else if (trustedTurn) {
+                  durableRoute = { routeKey, expectedGeneration: routeResult.generation }
+                  publicationTurn = trustedTurn
+                } else if (sessionKey) {
+                  // A process-local assignment preserves legacy/keyless affinity
+                  // but can never create durable promotion authority.
+                  assignment = priorityAssignments.get(sessionKey)
+                }
+              } else if (sessionKey) {
+                assignment = priorityAssignments.get(sessionKey)
+              }
+
+              const shouldPromote = assignment !== undefined
+                && durableRoute !== undefined
+                && routeMappingIsCurrent
+                && assignment.profileId !== preferred
+                && order.includes(assignment.profileId)
+                && !priorityExhaustion.isExhausted(assignment.profileId)
+                && !priorityExhaustion.isExhausted(preferred)
+                && shouldPromotePriorityAssignment({
+                  policy: failbackPolicy,
+                  assignment,
+                  requestId: promotionTurn?.turnId,
+                  requestKind: promotionTurn?.kind,
+                })
+              const assignedProfile = assignment?.profileId
+              const assignmentIsHealthy = assignedProfile !== undefined
+                && order.includes(assignedProfile)
+                && !priorityExhaustion.isExhausted(assignedProfile)
+              const retainOnlyProfile = durableRoute && !promotionTurn
+                ? assignedProfile
+                : undefined
+              if (retainOnlyProfile !== undefined && !order.includes(retainOnlyProfile)) {
+                return c.json({
+                  type: "error",
+                  error: { type: "overloaded_error", message: "Durable priority routing state is unavailable" },
+                }, 503, TRANSIENT_RETRY_AFTER_HEADERS)
+              }
               const pick = choosePriorityProfile(order, id => priorityExhaustion.isExhausted(id))
-              first = pick?.id ?? order[0]!
+              const first = retainOnlyProfile
+                ?? (shouldPromote
+                  ? preferred
+                  : assignmentIsHealthy
+                    ? assignedProfile
+                    : pick?.id ?? preferred)
+              // Unsigned, hidden, replayed, or malformed work may resume only
+              // the retained route. It cannot create a cross-profile transcript
+              // that the durable route has no authenticated authority to adopt.
+              const candidates = retainOnlyProfile
+                ? [retainOnlyProfile]
+                : [first, ...order.filter(id => id !== first && !priorityExhaustion.isExhausted(id))]
+              return dispatchPriority({
+                context: c,
+                body,
+                requestMeta,
+                candidateIds: candidates,
+                sessionKey,
+                wantsStream: body.stream === true,
+                currentProfileId: assignedProfile,
+                turnWatchdogSignal: options.turnWatchdogSignal,
+                publicationTurn,
+                claimTurn: trustedTurn,
+                durableRoute,
+              })
             }
-            const candidates = [first, ...order.filter(id => id !== first && !priorityExhaustion.isExhausted(id))]
-            return dispatchPriority(
-              c,
-              body,
-              requestMeta,
-              candidates,
-              sessionKey,
-              body.stream === true,
-              options.turnWatchdogSignal,
-            )
           }
         }
+
         const profile = resolveProfile(
           finalConfig.profiles,
           finalConfig.defaultProfile,
@@ -1333,6 +1788,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             ? { routingMode, stickySessionKey: adapter.getSessionId(c, body) }
             : undefined
         )
+        resolvedProfileId = profile.id
 
         const authStatus = await getClaudeAuthStatusAsync(
           profile.id !== "default" ? profile.id : undefined,
@@ -1356,7 +1812,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           declaredAgentMode === "subagent" || requestSource?.startsWith("subagent-") === true
         const agentMode = isSubagentRequest ? "subagent" : declaredAgentMode
         const requestedModel = typeof body.model === "string" ? body.model : "sonnet"
-        let model = mapModelToClaudeModel(requestedModel, authStatus?.subscriptionType, agentMode, profile.id)
+        // A rate-limit bench on [1m] is scoped to the session that earned it
+        // (#901), so model mapping needs the conversation identity. Resolved
+        // here rather than reusing `agentSessionId` below because that one is
+        // read after the transform pipeline: recording and reading a bench must
+        // agree, and this is the value both sides see. Undefined for clients
+        // with no session identity — those fall back to the profile-wide bench,
+        // exactly as before.
+        const benchSessionKey = adapter.getSessionId(c, body) || undefined
+        let model = mapModelToClaudeModel(requestedModel, authStatus?.subscriptionType, agentMode, profile.id, benchSessionKey)
         // Explicitly versioned ids override their tier's canonical pin for
         // this request (spread last in query.ts env, so they also beat
         // operator env) — a proxy must never substitute models. Bare aliases
@@ -1850,6 +2314,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             },
           )
         }
+        if (options.forceFreshPriorityReplay) {
+          if (!options.priorityPublication || !agentSessionId || !durableMappingKey) {
+            throw new Error("Fresh priority replay requires trusted keyed durable publication")
+          }
+          // A cross-profile transition replays the complete request into a
+          // pre-journaled fresh target. The old mapping remains authoritative
+          // until the atomic route+mapping CAS wins at the terminal barrier.
+          lineageResult = { type: "diverged", reason: "priority-failback" }
+        }
+
         // Publish the decision to plugins. Core has always known WHICH message
         // stopped matching; the log line only ever reported how many matched
         // ("prefix overlap 50/51"), which is why #767 had to hand-patch a build
@@ -2129,6 +2603,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         managedForkCommitted = false
         managedForkPublished = false
         managedForkAbandoned = false
+        managedForkAbandonment = undefined
         managedForkSuperseded = false
         managedFreshTarget = false
         unexpectedManagedForkTarget = undefined
@@ -2440,6 +2915,20 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // Track tools discovered via ToolSearch (deferred tools that get called)
       const discoveredTools = new Set<string>()
 
+      const priorityExposureHook = options.priorityAttemptExposure
+        ? {
+            matcher: "",
+            hooks: [async (input: unknown) => {
+              const toolName = input && typeof input === "object"
+                ? Reflect.get(input, "tool_name")
+                : undefined
+              if (toolName !== "ToolSearch") markPriorityAttemptExposure(
+                toolName === "StructuredOutput" ? "structured_output_tool" : "tool_use",
+              )
+              return {}
+            }],
+          }
+        : undefined
       const sdkHooks = passthrough
         ? {
             PreToolUse: [{
@@ -2460,7 +2949,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // message arrives without structured_output (HTTP 500). Let
                 // the SDK handle it internally, and never capture it as a
                 // client tool_use.
-                if (input.tool_name === "StructuredOutput") return {}
+                if (input.tool_name === "StructuredOutput") {
+                  markPriorityAttemptExposure("structured_output_tool")
+                  return {}
+                }
+                markPriorityAttemptExposure("tool_use")
                 // Track deferred tools that were discovered via ToolSearch
                 const toolName = stripMcpPrefix(input.tool_name)
                 if (hasDeferredTools && coreSet && !coreSet.has(toolName.toLowerCase())) {
@@ -2605,6 +3098,14 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           }
         : {
             ...(pipelineCtx.sdkHooks ?? {}),
+            ...(priorityExposureHook
+              ? {
+                  PreToolUse: [
+                    priorityExposureHook,
+                    ...(pipelineCtx.sdkHooks?.PreToolUse ?? []),
+                  ],
+                }
+              : {}),
             ...(fileChangeHook ? { PostToolUse: [fileChangeHook] } : {}),
           }
 
@@ -2668,6 +3169,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             if (evicted) mappingInvalidated = true
             return evicted
           }
+          const settleInterruptedNonStreamMapping = (): boolean => {
+            if (
+              options.priorityPublication
+              && !options.priorityPublication.rollback
+              && managedForkTarget
+              && !managedForkPublished
+            ) return true
+            return invalidateNonStreamMapping()
+          }
 
           try {
             // Lazy-resolve executable if not already set (e.g. when using createProxyServer directly)
@@ -2683,7 +3193,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             //   1. Strip [1m] context (immediate, different model tier)
             //   2. Backoff retries on base model (1s, 2s — exponential)
             const MAX_RATE_LIMIT_RETRIES = 2
-            const RATE_LIMIT_BASE_DELAY_MS = 1000
+            const RATE_LIMIT_BASE_DELAY_MS = envInt("RATE_LIMIT_BASE_DELAY_MS", 1000)
 
             const response = (async function* () {
               let rateLimitRetries = 0
@@ -2763,8 +3273,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   // still held for it so retries don't inherit dead holds.
                   releaseHeldDenies("non_stream_attempt_error")
 
-                  // Never retry after response content was yielded — response is committed
-                  if (didYieldContent) throw error
+                  // Tool hooks and structured output are committed exposure
+                  // even when the iterator has not yielded assistant content.
+                  if (didYieldContent || options.priorityAttemptExposure?.committed) throw error
 
                   // Retry: the resume was refused, not answered. Both refusals
                   // that mean "not right now" — the session is busy, or it could
@@ -2924,11 +3435,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     if (hasExtendedContext(model)) {
                       const from = model
                       model = stripExtendedContext(model)
-                      // Bench [1m] for this profile until its window resets. Without
-                      // this the next request maps straight back to [1m], so one rate
-                      // limit costs TWO model switches and a cold prompt cache in both
-                      // directions — routinely more than the rate limit itself (#862).
-                      recordExtendedContextRateLimited(profile.id, priorityCooldownUntil(profile.id, Date.now()))
+                      // Bench [1m] until the window resets. Without this the next
+                      // request maps straight back to [1m], so one rate limit costs
+                      // TWO model switches and a cold prompt cache in both directions
+                      // — routinely more than the rate limit itself (#862).
+                      //
+                      // Benched for THIS SESSION, not the whole profile (#901): a
+                      // harness running N children through one account had every
+                      // sibling downgraded the instant one child was limited, and the
+                      // switch cold-caches each of them. Extra Usage exhaustion is
+                      // still profile-wide — that one really is account-scoped.
+                      recordExtendedContextRateLimited(profile.id, priorityCooldownUntil(profile.id, Date.now()), benchSessionKey)
                       claudeLog("upstream.context_fallback", {
                         mode: "non_stream",
                         from,
@@ -2960,6 +3477,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             })()
 
             for await (const message of response) {
+              observePriorityAttemptMessage(message)
               // Capture session ID from SDK messages
               const observedSessionId = (message as { session_id?: unknown }).session_id
               if (typeof observedSessionId === "string" && observedSessionId) {
@@ -3195,7 +3713,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               (requestAbort.controller.signal.aborted || durableWritesRevoked || failedResumedTurn)
               && !isIndependentSession
             ) {
-              if (!invalidateNonStreamMapping()) {
+              if (!settleInterruptedNonStreamMapping()) {
                 throw new Error("Shared session mapping changed before interrupted non-stream invalidation")
               }
               claudeLog("session.interrupted_mapping_evicted", {
@@ -3211,7 +3729,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             ) {
               // A failed durability drain must not leave either a newly cached
               // checkpoint or an older mapping behind for the advanced client.
-              if (!invalidateNonStreamMapping()) {
+              if (!settleInterruptedNonStreamMapping()) {
                 throw new Error("Shared session mapping changed before non-stream recovery invalidation")
               }
               claudeLog("passthrough.noncanonical_session_evicted", { mode: "non_stream", reason: "drain_error" })
@@ -3499,6 +4017,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     publicationTranscriptLocator(currentSessionId!),
                     managedForkTarget?.sessionId === currentSessionId ? managedForkSource : undefined,
                     mappingExpectedGeneration,
+                    options.priorityPublication,
                       )
                         if (stored) {
                           mappingExpectedGeneration = stored
@@ -3545,6 +4064,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 }
               }
 
+              finalizePriorityPublication()
               const responseSessionId = currentSessionId || resumeSessionId || `session_${Date.now()}`
 
               return new Response(JSON.stringify({
@@ -3729,7 +4249,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               //   1. Strip [1m] context (immediate, different model tier)
               //   2. Backoff retries on base model (1s, 2s — exponential)
               const MAX_RATE_LIMIT_RETRIES = 2
-              const RATE_LIMIT_BASE_DELAY_MS = 1000
+              const RATE_LIMIT_BASE_DELAY_MS = envInt("RATE_LIMIT_BASE_DELAY_MS", 1000)
 
               const response = (async function* () {
                 let rateLimitRetries = 0
@@ -3793,8 +4313,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   } catch (error) {
                     const errMsg = error instanceof Error ? error.message : String(error)
 
-                    // Never retry after client-visible SSE events — response is committed
-                    if (didYieldClientEvent) throw error
+                    // Tool hooks and structured output are committed exposure
+                    // even before the first client-visible SSE event.
+                    if (didYieldClientEvent || options.priorityAttemptExposure?.committed) throw error
 
                     // Retry: the resume was refused, not answered — see the
                     // non-stream branch above for the full rationale. The busy
@@ -3939,11 +4460,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       if (hasExtendedContext(model)) {
                         const from = model
                         model = stripExtendedContext(model)
-                        // Bench [1m] for this profile until its window resets. Without
-                        // this the next request maps straight back to [1m], so one rate
-                        // limit costs TWO model switches and a cold prompt cache in both
-                        // directions — routinely more than the rate limit itself (#862).
-                        recordExtendedContextRateLimited(profile.id, priorityCooldownUntil(profile.id, Date.now()))
+                        // Bench [1m] until the window resets. Without this the next
+                        // request maps straight back to [1m], so one rate limit costs
+                        // TWO model switches and a cold prompt cache in both directions
+                        // — routinely more than the rate limit itself (#862).
+                        //
+                        // Benched for THIS SESSION, not the whole profile (#901): a
+                        // harness running N children through one account had every
+                        // sibling downgraded the instant one child was limited, and the
+                        // switch cold-caches each of them. Extra Usage exhaustion is
+                        // still profile-wide — that one really is account-scoped.
+                        recordExtendedContextRateLimited(profile.id, priorityCooldownUntil(profile.id, Date.now()), benchSessionKey)
                         claudeLog("upstream.context_fallback", {
                           mode: "stream",
                           from,
@@ -4019,6 +4546,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               )
               try {
                 for await (const message of guardedResponse) {
+                  observePriorityAttemptMessage(message)
                   if (streamClosed && !awaitingEarlyStopDrain) {
                     exitedBeforeCanonicalTerminal = true
                     break
@@ -4548,6 +5076,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     publicationTranscriptLocator(currentSessionId!),
                     managedForkTarget?.sessionId === currentSessionId ? managedForkSource : undefined,
                     mappingExpectedGeneration,
+                    options.priorityPublication,
                       )
                       if (stored) {
                         mappingExpectedGeneration = stored
@@ -4751,6 +5280,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     recoveryForkTarget,
                   ])) {
                     const recoveryMessage = event as any
+                    observePriorityAttemptMessage(recoveryMessage)
                     if (recoveryMessage.session_id) {
                       if (recoveryMessage.session_id !== recoveryForkTarget.sessionId) {
                         if (recoveryMessage.session_id !== recoveryForkSource?.sessionId) {
@@ -4866,10 +5396,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     recoveryForkTarget,
                     recoveryForkSource,
                     mappingExpectedGeneration,
+                    options.priorityPublication,
                       )
                       if (stored) {
                         mappingExpectedGeneration = stored
                         recoveryForkPublished = true
+                        recoveryPublishedTarget = recoveryForkTarget
                       }
                       return stored
                     },
@@ -4975,6 +5507,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     })
                     void sweepSessionGc()
                   }
+                  if (priorityRollbackRetirement) await priorityRollbackRetirement
                   releaseRecoveryForkPins?.()
                 }
               }
@@ -5066,6 +5599,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // Emit the terminal pair (both were withheld through the turn
                 // so recovered content lands ahead of them, where clients can
                 // still see it).
+                assertPriorityPublicationReady()
+                finalizePriorityPublication()
                 if (messageStartEmitted) {
                   sendTerminalDelta(streamedToolUseIds.size > 0 ? "tool_use" : undefined)
                   safeEnqueue(encoder.encode(`event: message_stop\ndata: {"type":"message_stop"}\n\n`), "final_message_stop")
@@ -5260,6 +5795,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 : classifyError(errMsg, model)
               claudeLog("proxy.anthropic.error", { error: errMsg, classified: streamErr.type })
 
+              // How long the client should wait before retrying. A streaming
+              // turn's response headers went out with `message_start`, long
+              // before this failure existed, so the error frame is the only
+              // place a hint can still reach the client (#901).
+              const streamRetryAfter = retryAfterSeconds({
+                status: streamErr.status,
+                errorMessage: errMsg,
+                resetAtMs: observedResetAtMs(profile.id, Date.now()),
+              })
+
               // Surface the SDK termination reason (max_turns / process_exit / aborted)
               // and stderr tail to /telemetry/logs?category=error so failures are
               // visible without trawling raw log files.
@@ -5421,6 +5966,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     publicationTranscriptLocator(currentSessionId!),
                     managedForkTarget?.sessionId === currentSessionId ? managedForkSource : undefined,
                     mappingExpectedGeneration,
+                    options.priorityPublication,
                       )
                       if (stored) {
                         mappingExpectedGeneration = stored
@@ -5465,6 +6011,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // Publication or exact source invalidation is now durable. Only
                 // now may the terminal pair authorize the client to submit the
                 // recovered tool results.
+                assertPriorityPublicationReady()
+                finalizePriorityPublication()
                 safeEnqueue(encoder.encode(
                   `event: message_delta\ndata: ${JSON.stringify({
                     type: "message_delta",
@@ -5632,7 +6180,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // client at all.
                 safeEnqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({
                   type: "error",
-                  error: { type: streamErr.type, message: streamErr.message }
+                  error: { type: streamErr.type, message: streamErr.message, ...retryAfterBodyFields(streamRetryAfter) }
                 })}\n\n`), "error_event_before_stop")
                 safeEnqueue(encoder.encode(
                   `event: message_stop\ndata: {"type":"message_stop"}\n\n`
@@ -5642,7 +6190,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // close — the error event is the whole response.
                 safeEnqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({
                   type: "error",
-                  error: { type: streamErr.type, message: streamErr.message }
+                  error: { type: streamErr.type, message: streamErr.message, ...retryAfterBodyFields(streamRetryAfter) }
                 })}\n\n`), "error_event")
               }
               if (!streamClosed) {
@@ -5651,6 +6199,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               }
             } finally {
               await abandonManagedFork("stream_complete_without_commit")
+              if (priorityRollbackRetirement) await priorityRollbackRetirement
               requestAbort.detach()
             }
             })().finally(() => {
@@ -5660,6 +6209,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           cancel(reason) {
             requestAbort.abort(reason)
             requestAbort.detach()
+            // A cancelled response body is the other way a client says "stop",
+            // and the only one an in-process caller can reach. Children are
+            // cancelled here as well, latched so a real socket teardown —
+            // which trips both this and the request signal — propagates once.
+            requestMeta.cascadeSubtreeCancel?.("stream_cancel")
             if (!isIndependentSession && (
               !managedForkTarget || managedForkPublished || clientAssistantContentExposed
             )) {
@@ -5703,6 +6257,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const classified = requestAbort.controller.signal.aborted
           ? { status: 499, type: "request_cancelled", message: "The request was cancelled" }
           : classifyError(errMsg)
+
+        // Non-streaming failures still own their headers here, so the hint goes
+        // out as a real `Retry-After` (#901). `resolvedProfileId` is undefined
+        // when the request died before profile resolution, which just means the
+        // per-status default stands.
+        const retryAfter = retryAfterSeconds({
+          status: classified.status,
+          errorMessage: errMsg,
+          resetAtMs: observedResetAtMs(resolvedProfileId, Date.now()),
+        })
 
         claudeLog("proxy.error", { error: errMsg, classified: classified.type })
 
@@ -5748,8 +6312,20 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         })
 
         return new Response(
-          JSON.stringify({ type: "error", error: { type: classified.type, message: classified.message } }),
-          { status: classified.status, headers: { "Content-Type": "application/json" } }
+          JSON.stringify({
+            type: "error",
+            error: {
+              type: classified.type,
+              message: classified.message,
+              // Mirrored in the body so one field name means one thing on both
+              // the JSON and SSE paths; the header above is the contract.
+              ...retryAfterBodyFields(retryAfter),
+            },
+          }),
+          {
+            status: classified.status,
+            headers: { "Content-Type": "application/json", ...retryAfterHeaders(retryAfter) },
+          }
         )
       } finally {
         if (!streamOwnsAbortLink) {
@@ -5758,6 +6334,35 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         }
       }
     })
+  }
+
+  /**
+   * Report one propagated subtree cancellation.
+   *
+   * Split out so the two client-reachable abort paths (request signal, cancelled
+   * response body) log identically and differ only in `source`.
+   */
+  const logSubtreeCancel = (
+    parentKey: string,
+    cancelled: { readonly keys: readonly string[]; readonly requestIds: readonly string[] },
+    requestId: string,
+    source: string,
+  ): void => {
+    const children = cancelled.keys.map((key) => truncateSessionKey(key))
+    claudeLog("session.tree_cancel_propagated", {
+      requestId,
+      source,
+      parent: truncateSessionKey(parentKey),
+      children,
+      requests: cancelled.requestIds.length,
+    })
+    // Named at session level: an autonomous run has nobody watching the
+    // dashboard, and this is the event that explains why a child turn died.
+    diagnosticLog.session(
+      `${requestId} session_tree_cancel source=${source} parent=${truncateSessionKey(parentKey)} `
+      + `children=${children.join(",")} requests=${cancelled.requestIds.length}`,
+      requestId,
+    )
   }
 
   const handleWithQueue = async (c: Context, endpoint: string) => {
@@ -5772,6 +6377,39 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     claudeLog("request.enter", { requestId, endpoint })
     let sessionTurnLease: SessionTurnLease | undefined
     let crossProcessTurnLease: CrossProcessTurnLease | undefined
+    let sessionTreeRegistration: SessionTreeRegistration | undefined
+    let detachSubtreeAbortWatch: (() => void) | undefined
+    let subtreeSessionKey: string | undefined
+    let subtreeCascaded = false
+    /**
+     * Cancel this request's live session subtree.
+     *
+     * Scope is deliberately narrow. Only a CLIENT abort propagates: a parent
+     * turn that merely completes leaves its children running, because a
+     * subagent routinely outlives the turn that spawned it. The shutdown path
+     * already aborts every in-flight request directly, and the lease watchdog
+     * is a proxy-side fence rather than a user intent, so neither cascades.
+     *
+     * Each child is aborted through its OWN request abort controller — the same
+     * one the lease watchdog and `forceAbortInFlight` use — so the mapping
+     * eviction, SDK permit release, and turn-lease release that follow are the
+     * existing abort path's, not a second implementation of it.
+     *
+     * Latched unconditionally: one client teardown can trip both the request
+     * signal and the response-body cancel, and every child that mattered was
+     * already in flight when the first of them fired.
+     */
+    const cascadeSubtreeCancel = (source: string): void => {
+      const parentKey = subtreeSessionKey
+      if (subtreeCascaded || !parentKey) return
+      subtreeCascaded = true
+      const cancelled = processSessionTree.cancelDescendants(
+        parentKey,
+        new Error(`Parent session ${truncateSessionKey(parentKey)} was cancelled`),
+      )
+      if (cancelled.requestIds.length === 0) return
+      logSubtreeCancel(parentKey, cancelled, requestId, source)
+    }
     const turnWatchdogAbort = new AbortController()
     activeRequestAborts.add(turnWatchdogAbort)
     let finished = false
@@ -5810,12 +6448,19 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       } else {
         releaseSessionTurn(false)
       }
+      // The session tree is live requests only: a settled request is no longer
+      // a cancellation target, and a settled parent no longer cascades.
+      detachSubtreeAbortWatch?.()
+      detachSubtreeAbortWatch = undefined
+      sessionTreeRegistration?.release()
+      sessionTreeRegistration = undefined
       activeRequestAborts.delete(turnWatchdogAbort)
       inFlightRequests--
     }
 
     let body: any
     let sharedSessionRevisionsAtArrival: Record<string, string | null> | undefined
+    let routingTurnIdentity: RequestMeta["routingTurnIdentity"]
     try {
       try {
         body = await c.req.json()
@@ -5850,8 +6495,28 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // chat-scoped key with an HTTP 400.
       if (Array.isArray(body?.messages)) {
         const adapter = detectAdapter(c, body)
+        routingTurnIdentity = adapter.getRoutingTurnIdentity?.(c, body)
         const agentSessionId = adapter.getSessionId(c, body)
         if (agentSessionId) {
+          // Registered BEFORE the turn lease is acquired: a child queued behind
+          // its own session's running turn is exactly the request a parent abort
+          // most needs to reach, and the acquire wait already honors this
+          // controller's signal.
+          sessionTreeRegistration = processSessionTree.register({
+            requestId,
+            sessionKey: agentSessionId,
+            parentKey: adapter.getParentSessionId?.(c, body),
+            abort: (reason) => turnWatchdogAbort.abort(reason),
+          })
+          subtreeSessionKey = agentSessionId
+          const clientSignal = c.req.raw.signal
+          if (clientSignal.aborted) {
+            cascadeSubtreeCancel("client_abort")
+          } else {
+            const onClientAbort = () => cascadeSubtreeCancel("client_abort")
+            clientSignal.addEventListener("abort", onClientAbort, { once: true })
+            detachSubtreeAbortWatch = () => clientSignal.removeEventListener("abort", onClientAbort)
+          }
           const arrivalProfileIds = new Set(
             getEffectiveProfiles(finalConfig.profiles).map((profile) => profile.id),
           )
@@ -5931,7 +6596,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   type: "overloaded_error",
                   message: "Timed out waiting for another process to finish this session turn",
                 },
-              }), { status: 529, headers: { "Content-Type": "application/json" } })
+              }), { status: 529, headers: { "Content-Type": "application/json", ...TRANSIENT_RETRY_AFTER_HEADERS } })
             }
             throw error
           }
@@ -5947,7 +6612,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         sdkActiveDurationMs: 0,
         sessionTurnLease,
         sharedSessionRevisionsAtArrival,
+        routingTurnIdentity,
         retainSessionTurnFence: () => { retainSessionTurnFence = true },
+        cascadeSubtreeCancel,
       }
       const response = await handleMessages(c, requestMeta, {
         body,
@@ -5972,8 +6639,43 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   app.post("/v1/messages", (c) => handleWithQueue(c, "/v1/messages"))
   app.post("/messages", (c) => handleWithQueue(c, "/messages"))
 
+  /**
+   * Cancel a session's live requests and everything live below it.
+   *
+   * The same registry that powers abort propagation answers this for free, so a
+   * harness that wants to stop a subtree without tearing down sockets has a way
+   * to say so. It cancels only what is IN FLIGHT — there is no persistent tree,
+   * so an idle session reports `requests: 0` rather than being remembered.
+   *
+   * Gated by the `/v1/*` auth middleware like every other `/v1` route.
+   */
+  app.post("/v1/sessions/:key/cancel", (c) => {
+    const key = c.req.param("key")
+    if (!key) {
+      return c.json({ type: "error", error: { type: "invalid_request_error", message: "Session key is required" } }, 400)
+    }
+    const cancelled = processSessionTree.cancelSubtree(key, new Error("Session cancelled by request"))
+    if (cancelled.requestIds.length > 0) {
+      claudeLog("session.tree_cancel_requested", {
+        session: truncateSessionKey(key),
+        keys: cancelled.keys.map((cancelledKey) => truncateSessionKey(cancelledKey)),
+        requests: cancelled.requestIds.length,
+      })
+      diagnosticLog.session(
+        `session_tree_cancel_requested session=${truncateSessionKey(key)} requests=${cancelled.requestIds.length}`,
+      )
+    }
+    return c.json({
+      session: key,
+      cancelled: { sessions: cancelled.keys.length, requests: cancelled.requestIds.length },
+      requestIds: cancelled.requestIds,
+    })
+  })
+
   // Telemetry dashboard and API
-  app.route("/telemetry", createTelemetryRoutes())
+  app.route("/telemetry", createTelemetryRoutes({
+    getSessionTree: () => processSessionTree.stats(),
+  }))
 
   // SDK Features settings page and API
   app.get("/settings", (c) => {
@@ -6410,6 +7112,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             buffer = lines.pop() ?? ""
 
             for (const line of lines) {
+              if (line.startsWith(":")) {
+                controller.enqueue(encoder.encode(`${line}\n\n`))
+                continue
+              }
               if (!line.startsWith("data: ")) continue
               const dataStr = line.slice(6).trim()
               if (!dataStr) continue
@@ -6538,6 +7244,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             const lines = buffer.split("\n")
             buffer = lines.pop() ?? ""
             for (const line of lines) {
+              if (line.startsWith(":")) {
+                controller.enqueue(encoder.encode(`${line}\n\n`))
+                continue
+              }
               if (!line.startsWith("data: ")) continue
               const dataStr = line.slice(6).trim()
               if (!dataStr) continue
@@ -6582,7 +7292,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   // comparison here used to advertise 200k to Team accounts that Meridian was
   // already routing to opus[1m] (#826).
   app.get("/v1/models", async (c) => {
-    const authStatus = await getClaudeAuthStatusAsync()
+    const profile = resolveProfile(finalConfig.profiles, finalConfig.defaultProfile)
+    const profileEnvOverrides = Object.keys(profile.env).length > 0 ? profile.env : undefined
+    const authStatus = await getClaudeAuthStatusAsync(
+      profile.id !== "default" ? profile.id : undefined,
+      profileEnvOverrides,
+    )
     const extendedContext = subscriptionIncludesExtendedContext(authStatus?.subscriptionType)
     return c.json({ object: "list", data: buildModelList(extendedContext) })
   })

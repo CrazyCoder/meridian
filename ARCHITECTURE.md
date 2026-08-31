@@ -38,6 +38,8 @@ src/
 ├── proxy/
 │   ├── server.ts              ← HTTP layer: routes, SSE streaming, concurrency, request orchestration
 │   ├── concurrency.ts         ← Abortable SDK query semaphore and concurrency config parsing
+│   ├── requestAbort.ts        ← HTTP request abort → SDK query abort bridge
+│   ├── sessionTree.ts         ← Live parent→child request registry; subtree cancellation (PURE bookkeeping)
 │   ├── shutdown.ts            ← Bounded HTTP drain and connection tracking
 │   ├── adapter.ts             ← AgentAdapter interface (extensibility point for multi-agent support)
 │   ├── adapters/
@@ -46,6 +48,7 @@ src/
 │   │   └── forgecode.ts       ← ForgeCode adapter (fingerprint sessions, XML CWD, passthrough)
 │   ├── query.ts               ← SDK query options builder (shared between stream/non-stream paths)
 │   ├── errors.ts              ← Error classification (SDK errors → HTTP responses)
+│   ├── retryAfter.ts          ← Retry-After computation for 429/503/529 (PURE)
 │   ├── models.ts              ← Model mapping, Claude executable resolution
 │   ├── buildInfo.ts           ← Build provenance: source detection, semver compare (PURE)
 │   ├── updateCheck.ts         ← Cached npm registry lookup for the newest published version
@@ -98,6 +101,9 @@ server.ts (HTTP layer)
     ├── adapters/detect.ts ──► every adapter (incl. custom.ts, for its session key)
     ├── query.ts ──► adapter.ts, mcpTools.ts, passthroughTools.ts
     ├── errors.ts
+    ├── retryAfter.ts
+    ├── requestAbort.ts
+    ├── sessionTree.ts
     ├── models.ts
     ├── tools.ts
     ├── messages.ts
@@ -120,7 +126,7 @@ server.ts (HTTP layer)
 
 2. **`session/cache.ts` owns all mutable session state.** No other module should create or manage LRU caches for sessions.
 
-3. **`errors.ts`, `models.ts`, `tools.ts`, `messages.ts`, `profiles.ts`, `profileCli.ts`, `buildInfo.ts`, `updateCheck.ts` are leaf modules.** They must not import from `server.ts`, `session/`, or `adapter.ts`. `buildInfo.ts` is additionally pure — every export is a function of its arguments plus `process.env`, so the registry I/O lives in `updateCheck.ts` instead.
+3. **`errors.ts`, `retryAfter.ts`, `models.ts`, `tools.ts`, `messages.ts`, `profiles.ts`, `profileCli.ts`, `buildInfo.ts`, `updateCheck.ts` are leaf modules.** They must not import from `server.ts`, `session/`, or `adapter.ts`. `buildInfo.ts` and `retryAfter.ts` are additionally pure — every export is a function of its arguments (plus `process.env` for `buildInfo.ts`), so the registry I/O lives in `updateCheck.ts` instead.
 
 4. **`server.ts` is the only module that imports from Hono** or touches HTTP concerns.
 
@@ -129,6 +135,8 @@ server.ts (HTTP layer)
 6. **`adapter.ts` is an interface only.** No implementation logic. Adapter implementations go in `adapters/`.
 
 7. **`query.ts` builds SDK options through the adapter interface**, never importing tool constants directly.
+
+8. **`sessionTree.ts` holds only live-request bookkeeping.** No HTTP, no I/O, no logging: the caller supplies each entry's abort handle and owns the eviction and telemetry discipline that follows an abort. It must not import from `server.ts`, `session/`, or `adapter.ts`.
 
 ## Agent Adapter Pattern
 
@@ -239,6 +247,65 @@ session and a replay boundary, but updated message counts and hashes are only
 stored after the upstream request succeeds. When Meridian cannot prove that an
 SDK session contains a section of client history, it starts fresh rather than
 silently skipping that section.
+
+## Throttling Contract
+
+Meridian's clients are increasingly harnesses that run many concurrent sessions
+through one account, so a refusal has to say enough for them to coordinate.
+
+**Every 429, 503, and 529 carries a wait.** `retryAfter.ts` computes the number:
+upstream's own `Retry-After` if it survived into the error, then a hint embedded
+in the upstream error text, then the account's observed window reset from
+`rateLimitStore`, then a per-status constant (60s for a rate limit, 5s for
+overload). It is clamped to at least 1 second and at most 24 hours, so no source
+can produce "retry immediately" or "retry never". Non-streaming responses carry
+it as a real `Retry-After` header; SSE turns carry it as `error.retry_after` in
+the error frame, because a stream's headers went out with `message_start` long
+before the failure existed. Under priority routing the wait names the *pool's*
+earliest opening, not the last account tried.
+
+**A `[1m]` bench is scoped to whatever actually failed.** Extra Usage exhaustion
+is an entitlement fact about the account, so it benches the whole profile. A
+plain rate limit benches only the session that hit it (`models.ts`,
+`recordExtendedContextRateLimited`). Benching the profile on a rate limit
+downgraded every concurrent sibling at once, and the model switch cold-caches
+each of them — their cached prefixes were built on the 1M model. Clients with no
+session identity still bench profile-wide; there is nothing narrower to use.
+
+## Cancellation Contract
+
+Cancellation is per-HTTP-request: `requestAbort.ts` forwards one socket's abort
+into that request's SDK abort controller, and the abort path evicts the session
+mapping so no interrupted tail stays resumable.
+
+That is not enough for a client whose subagents are separate requests. Prime
+Agent's RLM children arrive on their own session keys, so cancelling the parent
+left every child running — holding an SDK permit and a turn lease, billing the
+subscription until its own socket closed or the lease watchdog tripped.
+
+`sessionTree.ts` closes the gap. A client that knows its own tree stamps the
+immediate parent alongside the child's session id (`metadata.user_id` →
+`{ session_id, parent_session_id }`); `server.ts` registers that link for the
+lifetime of the request and, on a client abort, aborts every live request whose
+ancestry reaches the aborted key — through each child's own request abort
+controller, so the eviction, permit release, and lease release that follow are
+the existing abort path's rather than a second implementation.
+
+Three properties bound it:
+
+- **Abort, not completion.** A parent turn that finishes normally does not
+  cancel children; a subagent routinely outlives the turn that spawned it. The
+  shutdown path already aborts every request directly, and the lease watchdog is
+  a proxy-side fence rather than a user intent, so neither cascades.
+- **Live requests only.** An entry exists between "admitted" and "settled". A
+  session that was seen once but has nothing in flight is not a cancellation
+  target, so the registry is bounded by concurrency, not by history.
+- **Self-gating.** Propagation can only reach a request that declared a parent,
+  so every client that does not stamp linkage is unaffected with no flag to set.
+
+`POST /v1/sessions/:key/cancel` cancels a subtree explicitly, and
+`GET /telemetry/summary` reports the live gauges and cumulative counts under
+`sessionTree`.
 
 ## Testing Strategy
 

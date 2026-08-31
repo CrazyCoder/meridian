@@ -30,7 +30,7 @@ before investigating anything else.
 
 - **Do not add code to `server.ts` that belongs in a leaf module.** If it's pure logic (no HTTP, no Hono), extract it.
 - **`session/lineage.ts` must stay pure.** No side effects, no I/O, no imports from cache or server.
-- **Leaf modules (`errors.ts`, `models.ts`, `tools.ts`, `messages.ts`) must not import from `server.ts` or `session/`.** Dependencies flow downward only.
+- **Leaf modules (`errors.ts`, `retryAfter.ts`, `models.ts`, `tools.ts`, `messages.ts`) must not import from `server.ts` or `session/`.** Dependencies flow downward only.
 - **No circular dependencies.**
 
 ### Agent-Specific Logic
@@ -69,6 +69,8 @@ OpenCode-specific behavior is documented in `ARCHITECTURE.md` under "Agent-Speci
 ```
 server.ts          → HTTP routes, SSE streaming, concurrency (orchestration only)
 concurrency.ts     → Abortable SDK query semaphore, max-concurrency config
+requestAbort.ts    → HTTP request abort → SDK query abort bridge
+sessionTree.ts     → Live parent→child request registry, subtree cancellation (PURE bookkeeping)
 shutdown.ts        → Bounded HTTP drain, socket tracking, forced close
 adapter.ts         → AgentAdapter interface (extensibility point)
 adapters/
@@ -76,6 +78,7 @@ adapters/
   forgecode.ts     → ForgeCode-specific: XML CWD, patch/shell tools, passthrough
 query.ts           → buildQueryOptions (shared stream/non-stream SDK call builder)
 errors.ts          → classifyError (pure)
+retryAfter.ts      → Retry-After seconds for 429/503/529 (PURE)
 models.ts          → mapModelToClaudeModel, resolveClaudeExecutableAsync
 buildInfo.ts       → build provenance + semver compare (PURE)
 updateCheck.ts     → cached npm registry check for the newest release
