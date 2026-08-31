@@ -10,6 +10,15 @@ import { join } from "node:path"
 // Auth middleware reads this at request time; clear it so tests don't need API keys
 delete process.env.MERIDIAN_API_KEY
 
+// The OpenCode plugin resolves its routed-provider set at module scope, so a
+// developer who exports MERIDIAN_OPENCODE_PROVIDERS to point a real OpenCode
+// install at Meridian would load a plugin that declines the "anthropic"
+// provider the plugin tests send — every asserted header comes back undefined
+// and the whole file fails for a reason that has nothing to do with the code.
+// It has to be cleared here: the read happens at import time, which a
+// beforeEach inside the test file cannot get in front of.
+delete process.env.MERIDIAN_OPENCODE_PROVIDERS
+
 // Point settings.ts at a throwaway directory so the suite never reads the
 // developer's real ~/.config/meridian/settings.json. A live
 // `routing: "priority"` setting made the sticky- and priority-routing
