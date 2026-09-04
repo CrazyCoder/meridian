@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.67.0](https://github.com/rynfar/meridian/compare/meridian-v1.66.0...meridian-v1.67.0) (2026-09-04)
+
+
+### Features
+
+* **models:** add Claude Fable 5.1 ([#928](https://github.com/rynfar/meridian/issues/928)) ([6c85fcd](https://github.com/rynfar/meridian/commit/6c85fcd5de695b2d670146b8d3458000b7f8eedb))
+
+
+### Bug Fixes
+
+* **errors:** classify an oversized prompt as a 400, not a retryable 500 ([#919](https://github.com/rynfar/meridian/issues/919)) ([1ea97d0](https://github.com/rynfar/meridian/commit/1ea97d0122fdd106e9c1bf5c771efdb6d8a30f01))
+* **errors:** classify the credits-era per-tier limit refusal ([#929](https://github.com/rynfar/meridian/issues/929)) ([85d18d9](https://github.com/rynfar/meridian/commit/85d18d9c78d017f1ffe9e06efc75e19e5dd8982c))
+* **nix:** repair nix build, broken on Darwin since 1.62.7 ([#916](https://github.com/rynfar/meridian/issues/916)) ([3ff4c0a](https://github.com/rynfar/meridian/commit/3ff4c0a583c780ec7109a2567325e5be7e02be2e))
+
 ## [1.66.0](https://github.com/rynfar/meridian/compare/meridian-v1.65.2...meridian-v1.66.0) (2026-08-31)
 
 

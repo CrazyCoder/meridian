@@ -55,6 +55,22 @@ const BILLING_SIGNALS: readonly RegExp[] = [
   /update your payment/,
   /(?:out of|draw from|draws from) extra usage/,
   /insufficient (?:credit|funds|balance)/,
+  // The credits-era entitlement cap: "Your group's usage limit is set to $0 ·
+  // run /usage-credits to ask your admin for a higher limit" (#909, verbatim in
+  // the CLI). billing_error rather than rate_limit_error: a provisioned cap is
+  // not a spent window, so isQuotaRefusal must not send the cooldown looking up
+  // a five-hour reset that will never arrive.
+  //
+  // This only disambiguates the wordings that name the cap. The CLI's refusal
+  // builder returns the identical "You've reached your <tier> limit." text for
+  // group/member/seat_tier zero-credit caps as for a genuinely spent window, so
+  // those still classify 429 and still take the five-hour cooldown. Telling
+  // them apart needs a signal the message does not carry.
+  //
+  // Line-anchored for the reason given above: this branch can mark every
+  // profile in a pool exhausted (#796), so an MCP server or an assistant turn
+  // echoing the sentence mid-line must not trigger it.
+  /^\s*(?:(?:error|api error|claude code returned an error result|subprocess stderr):\s*)*your (?:group|organization|org)(?:'|’)s usage limit is set to \$\d/m,
 ]
 
 /** "hit your limit", "hit your session limit", "hit your weekly limit", and any
@@ -99,6 +115,26 @@ const HIT_YOUR_LIMIT = /hit your (?:[\w-]+ )?limit/
  *  in the first place. */
 const HIT_YOUR_SPEND_LIMIT = /^\s*(?:(?:error|api error|claude code returned an error result|subprocess stderr):\s*)*you(?:'|’)ve hit your (?:[\w'’-]+ ){0,4}(?:spend|usage) limit/m
 
+/** Credits-era per-tier banner uses "reached", not the "hit" wording from
+ * #764 and #787. Enumerate tiers rather than wildcarding the qualifier: the
+ * CLI also emits "reached your specified/configured ..." prose that is not
+ * account quota exhaustion (#909). A numeric version suffix accepts real tier
+ * versions without arbitrary words, and only known CLI command suffixes are
+ * accepted: a false positive exhausts a healthy profile pool-wide, so the
+ * banner must occupy its whole line rather than merely open one. New tier
+ * names must be added to the enumeration.
+ *
+ * The bound is the LINE, not the message — `/m`, like HIT_YOUR_SPEND_LIMIT
+ * above and CONTEXT_OVERFLOW_SIGNALS below. `server.ts` appends captured
+ * stderr to `Error.message` before classification, so a message-final anchor
+ * is unreachable in production; and because `stderrLines.join("\n")` labels
+ * only its FIRST line with `Subprocess stderr:`, requiring a labelled line
+ * missed the banner whenever anything preceded it — which on Team plans is
+ * always, the harmless "custom betas" warning being emitted first. Both shapes
+ * then fell through to the code-1 branch, which tells the operator to run
+ * `claude login` for what is actually a quota refusal. */
+const REACHED_YOUR_TIER_LIMIT = /^[ \t]*(?:(?:error|api error|claude code returned an error result|subprocess stderr):[ \t]*)*you(?:'|’)ve reached your (?:claude )?(?:fable|mythos|opus|sonnet|haiku)(?: \d+(?:\.\d+)*)? limit(?:(?:[.!][ \t]+|[ \t]+)(?:(?:run[ \t]+)?\/usage-credits(?:[ \t]+to[ \t]+continue)?(?:[ \t]+or[ \t]+switch[ \t]+models[ \t]+with[ \t]+\/model)?|\/model[ \t]+to[ \t]+switch[ \t]+models)\.?|[.!]?)[ \t\r]*$/m
+
 /** Canonical Claude Code usage-credit banner. Anchor on the raw message or the
  * known SDK wrappers so quoted docs, MCP stderr, and negated/incidental prose
  * cannot exhaust every profile in a priority pool. */
@@ -114,6 +150,51 @@ const HTTP_401 = /(?:^|[^0-9a-f])401(?![0-9a-f]|:\d)/
 const HTTP_429 = /(?:^|[^0-9a-f])429(?![0-9a-f]|:\d)/
 const HTTP_500 = /(?:^|[^0-9a-f])500(?![0-9a-f]|:\d)/
 const HTTP_503 = /(?:^|[^0-9a-f])503(?![0-9a-f]|:\d)/
+/** A request whose input exceeds the model's context window.
+ *
+ *  Distinct from a rate limit in the one way that matters to a caller: waiting
+ *  does not fix it. An identical retry burns a whole upstream turn to fail
+ *  identically, so this must not classify as a 5xx — see the branch in
+ *  classifyError for why the status code is the actual fix.
+ *
+ *  Wordings: the CLI's bare "Prompt is too long", the API's fuller
+ *  "prompt is too long: N tokens > M maximum" (same prefix), its max_tokens
+ *  phrasing (backtick-quoted upstream, matched loosely here), and the
+ *  OpenAI-compatible code the openai adapter can surface.
+ *
+ *  Anchored per-line, tolerating the wrapper prefixes the CLI and SDK prepend —
+ *  the same shape as HIT_YOUR_SPEND_LIMIT above, for the same reason. Unanchored
+ *  these matched their own strings quoted inside arbitrary text: an assistant
+ *  turn discussing the error, a tool_result echoing a grep hit, and a plainly
+ *  negated sentence all classified as 400 before the anchor was added.
+ *
+ *  The asymmetry matters here more than it does for a quota refusal. A false 400
+ *  tells the client the request itself is unfixable, so the retry is abandoned
+ *  and legitimate work is silently dropped; a false 5xx only costs a retry.
+ *
+ *  `subprocess stderr` is in the wrapper list because the CLI surfaces an
+ *  oversized prompt by exiting and appending it to stderr — and without this
+ *  branch that shape reads as a bare code-1 exit, which the process-crash branch
+ *  below reports as an auth failure telling the operator to run `claude login`. */
+const OVERFLOW_PHRASES = [
+  String.raw`prompt is too long`,
+  String.raw`input length and .?max_tokens.? exceed context limit`,
+  String.raw`context[_ ]length[_ ]exceeded`,
+]
+
+/** Either the phrase opens a line (after the known SDK/CLI wrappers), or it
+ *  opens the `message` value of an API error envelope — `API Error: 400
+ *  {"type":"invalid_request_error","message":"prompt is too long: ..."}`, which
+ *  is a real upstream shape and not line-anchored. Requiring the phrase to start
+ *  the message value is what separates it from the same words merely quoted
+ *  somewhere inside arbitrary prose. */
+const CONTEXT_OVERFLOW_SIGNALS: readonly RegExp[] = OVERFLOW_PHRASES.map(
+  phrase => new RegExp(
+    String.raw`(?:^\s*(?:(?:error|api error|claude code returned an error result|subprocess stderr):\s*)*|"message"\s*:\s*")`
+    + phrase,
+    "m",
+  ),
+)
 
 /**
  * Detect specific SDK errors and return helpful messages to the client.
@@ -156,7 +237,7 @@ export function classifyError(errMsg: string, model?: string): ClassifiedError {
   // variants seen so far and the daily/monthly/5-hour ones that would
   // otherwise be the next report.
   if (HTTP_429.test(lower) || lower.includes("rate limit") || lower.includes("too many requests")
-    || HIT_YOUR_LIMIT.test(lower) || HIT_YOUR_SPEND_LIMIT.test(lower)
+    || HIT_YOUR_LIMIT.test(lower) || HIT_YOUR_SPEND_LIMIT.test(lower) || REACHED_YOUR_TIER_LIMIT.test(lower)
     || lower.includes("usage limit reached")
     || OUT_OF_USAGE_CREDITS.test(lower)) {
     const hint = lower.includes("1m") || lower.includes("context")
@@ -181,6 +262,24 @@ export function classifyError(errMsg: string, model?: string): ClassifiedError {
       status: 402,
       type: "billing_error",
       message: "Claude Max subscription issue. Check your subscription status at https://claude.ai/settings/subscription"
+    }
+  }
+
+  // Context overflow. Ordered before the process-crash branch deliberately:
+  // when the CLI surfaces an oversized prompt by exiting rather than returning
+  // a result, that branch reads a bare code-1 exit as an auth failure and tells
+  // the operator to run `claude login` — advice that cannot work and that hides
+  // the real cause.
+  //
+  // The status code is the fix, not the wording. The default 500 reads as
+  // "transient, try again" to every client retry policy, so an overflow that
+  // can only ever fail identically gets replayed at full upstream cost. 400
+  // says the request itself is the problem.
+  if (CONTEXT_OVERFLOW_SIGNALS.some(rx => rx.test(lower))) {
+    return {
+      status: 400,
+      type: "invalid_request_error",
+      message: "Prompt exceeds the model's context window. Compact or trim the conversation before retrying — an identical retry fails the same way."
     }
   }
 
@@ -403,7 +502,7 @@ export function isExtraUsageRequiredError(errMsg: string): boolean {
  * collapses into a generic api_error.
  */
 export interface SdkTermination {
-  reason: "max_turns" | "process_exit" | "aborted" | "upstream_idle" | "unknown"
+  reason: "max_turns" | "process_exit" | "aborted" | "upstream_idle" | "context_overflow" | "unknown"
   /** Turn count when reason=max_turns and parseable. */
   turns?: number
   /** Exit code when reason=process_exit and parseable. */
@@ -513,6 +612,16 @@ export function extractSdkTermination(errMsg: string): SdkTermination {
     return {
       reason: "max_turns",
       ...(m ? { turns: Number(m[1]) } : {}),
+      ...(stderrTail ? { stderrTail } : {}),
+    }
+  }
+
+  // Same ordering rationale as classifyError: an oversized prompt that arrives
+  // as a process exit must name the overflow, not the exit, or the diagnostic
+  // log points at the wrong thing.
+  if (CONTEXT_OVERFLOW_SIGNALS.some(rx => rx.test(lower))) {
+    return {
+      reason: "context_overflow",
       ...(stderrTail ? { stderrTail } : {}),
     }
   }
