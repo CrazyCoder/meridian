@@ -117,21 +117,63 @@ export type LineageResult =
   | { type: "compaction";   session: SessionState; resumeFrom: number; suffixOverlap: number }
   | { type: "undo";         session: SessionState; prefixOverlap: number; rollbackUuid: string | undefined }
   | { type: "diverged";     reason: LineageDivergenceReason; prefixOverlap?: number;
-      /** Which message stopped matching. Present for modified-history, the
-       *  only divergence where the answer is both knowable and useful. */
+      /** Which message stopped matching, when available for a history rewrite
+       *  or an unsafe undo boundary. */
       mismatch?: LineageMismatch }
 
 export type LineageDivergenceReason =
   | "unverifiable"
   | "replayed-request"
   | "modified-history"
+  | "undo-gap"
   | "unrelated-history"
   | "not-found"
   | "independent-request"
   | "priority-failback"
   | "missing-session-header"
+  | "concurrent-race"
 
 // --- Hashing ---
+
+/** Preserve JSON structure without letting object key order affect identity. */
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson)
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>
+    return Object.fromEntries(Object.keys(object).sort()
+      .map(key => [key, canonicalJson(object[key])]))
+  }
+  return value
+}
+
+function semanticBlock(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return ["value", typeof value, value]
+  const block = value as Record<string, unknown>
+  switch (block.type) {
+    case "text": return ["text", block.text]
+    case "tool_use": return ["tool_use", block.id, block.name, canonicalJson(block.input)]
+    case "tool_result": return ["tool_result", block.tool_use_id, block.is_error ?? false, semanticContent(block.content)]
+    default: {
+      const { cache_control, ...content } = block
+      return ["block", canonicalJson(content)]
+    }
+  }
+}
+
+function semanticContent(content: unknown): unknown[] {
+  // NOTE: OpenCode changes plain strings to text blocks between requests.
+  if (typeof content === "string") return [["text", content]]
+  if (!Array.isArray(content)) return [["value", typeof content, content]]
+  return hashableContentBlocks(content).map(semanticBlock)
+}
+
+function lineageDigest(domain: string, value: unknown): string {
+  // Domain-separated structured encoding prevents text, delimiters, roles,
+  // and content blocks from impersonating one another (#887). Old digests
+  // cannot prove this representation and safely fall back to a full replay.
+  return createHash("sha256").update(JSON.stringify(["meridian-lineage-v2", domain, value]))
+    .digest("hex").slice(0, 32)
+}
 
 /**
  * Compute a lineage hash of an ordered message array.
@@ -140,8 +182,18 @@ export type LineageDivergenceReason =
  */
 export function computeLineageHash(messages: Array<{ role: string; content: any }>): string {
   if (!messages || messages.length === 0) return ""
-  const parts = messages.map(m => `${m.role}:${normalizeContent(m.content)}`)
-  return createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 32)
+  return lineageDigest("history", messages.map(m => [m.role, semanticContent(m.content)]))
+}
+
+/** Matching tool IDs do not prove that the history before them is unchanged. */
+export function matchesStoredLineagePrefix(
+  stored: { messageCount?: number; lineageHash?: string },
+  messages: Array<{ role: string; content: unknown }>,
+): boolean {
+  const count = stored.messageCount
+  return typeof count === "number" && Number.isInteger(count) && count > 0
+    && messages.length >= count && typeof stored.lineageHash === "string"
+    && computeLineageHash(messages.slice(0, count)) === stored.lineageHash
 }
 
 /**
@@ -149,10 +201,7 @@ export function computeLineageHash(messages: Array<{ role: string; content: any 
  * Used to build per-message hash arrays for precise diff-based verification.
  */
 export function hashMessage(message: { role: string; content: any }): string {
-  return createHash("sha256")
-    .update(`${message.role}:${normalizeContent(message.content)}`)
-    .digest("hex")
-    .slice(0, 32)
+  return lineageDigest("message", [message.role, semanticContent(message.content)])
 }
 
 /** A message's shape, for diagnostics that must never carry its content. */
@@ -271,13 +320,6 @@ export function computeMessageHashes(messages: Array<{ role: string; content: an
   return messages.map(hashMessage)
 }
 
-function hashNormalizedContent(content: any): string {
-  return createHash("sha256")
-    .update(normalizeContent(content))
-    .digest("hex")
-    .slice(0, 32)
-}
-
 function hashableContentBlocks(content: any): any[] {
   if (!Array.isArray(content)) return [content]
   return content.filter((block: any) => !HASH_IGNORED_BLOCK_TYPES.has(block?.type))
@@ -286,9 +328,8 @@ function hashableContentBlocks(content: any): any[] {
 /** Compute semantic hashes for each content block in every message. */
 export function computeMessageBlockHashes(messages: Array<{ role: string; content: any }>): string[][] {
   if (!messages || messages.length === 0) return []
-  return messages.map((message) =>
-    hashableContentBlocks(message.content).map((block) =>
-      hashNormalizedContent(Array.isArray(message.content) ? [block] : block)))
+  return messages.map((message) => semanticContent(message.content)
+    .map(block => lineageDigest("block", [message.role, block])))
 }
 
 // --- Overlap measurement ---
@@ -386,82 +427,6 @@ function findSuffixAnchorStart(
   return anchor - suffixOverlap + 1
 }
 
-/** Is `incoming` an ordered subsequence of `stored`? */
-function isOrderedSubsequence(stored: readonly string[], incoming: readonly string[]): boolean {
-  let cursor = 0
-  for (const hash of incoming) {
-    while (cursor < stored.length && stored[cursor] !== hash) cursor++
-    if (cursor === stored.length) return false
-    cursor++
-  }
-  return true
-}
-
-/**
- * Did the client only *drop* blocks it had previously sent, changing nothing
- * else in the stored region?
- *
- * Harnesses inject per-turn context into a user message and then drop it: a
- * Claude Code `UserPromptSubmit` hook's stdout, bridged into OpenCode by
- * oh-my-openagent, arrives as a `<user-prompt-submit-hook>` text block on the
- * turn that submitted the prompt and is gone on the next one. The first user
- * message therefore goes `[text, text]` -> `[text]` mid-conversation, message
- * hashes stop matching at index 0, and the whole conversation reads as
- * `unrelated-history`. Every turn then replays from scratch against a cold
- * cache, and a turn that also waited behind the session lease is refused
- * outright with `session_turn_conflict`.
- *
- * Resuming is sound here precisely because the difference is subtractive: the
- * SDK session holds a superset of what the client now claims, so nothing the
- * client believes it sent is missing upstream. That is the opposite of the
- * dangerous direction guarded in #689/#692 and #712, where the client's history
- * contains turns the SDK session never saw and a resume would silently skip
- * them.
- */
-function droppedEphemeralBlocksOnly(
-  cached: SessionState,
-  messages: Array<{ role: string; content: any }>,
-  incomingHashes: string[]
-): boolean {
-  const blockHashes = cached.messageBlockHashes
-  if (!blockHashes || blockHashes.length !== cached.messageCount) return false
-  // Both hash arrays must cover the whole stored region: a short one would make
-  // an out-of-range `undefined` read as "changed" and send a slot into the
-  // block comparison on no evidence.
-  const messageHashes = cached.messageHashes
-  if (!messageHashes || messageHashes.length !== cached.messageCount) return false
-  // Only for a conversation that moved forward. Equal or shorter is an undo or
-  // a replay and keeps the classification it has today.
-  if (messages.length <= cached.messageCount) return false
-
-  let sawDrop = false
-  for (let index = 0; index < cached.messageCount; index++) {
-    if (messageHashes[index] === incomingHashes[index]) continue
-
-    const incoming = messages[index]
-    // Only user turns carry injected context. A changed assistant slot is a
-    // rewritten model turn and must still diverge.
-    if (incoming?.role !== "user" || !Array.isArray(incoming.content)) return false
-
-    const stored = blockHashes[index]
-    if (!stored || stored.length === 0) return false
-
-    const blocks = hashableContentBlocks(incoming.content)
-    // A block the hasher ignores would make the comparison meaningless.
-    if (blocks.length !== incoming.content.length) return false
-
-    const hashes = blocks.map((block) => hashNormalizedContent([block]))
-    // Strictly fewer blocks, every survivor byte-identical and still in order.
-    // Equal or more is growth, which the append-only path in verifyLineage
-    // handles.
-    if (hashes.length === 0 || hashes.length >= stored.length) return false
-    if (!isOrderedSubsequence(stored, hashes)) return false
-
-    sawDrop = true
-  }
-  return sawDrop
-}
-
 // --- Lineage verification ---
 
 /**
@@ -475,16 +440,14 @@ function droppedEphemeralBlocksOnly(
  *   Full prefix match (fast-path)          → continuation (resume from stored count)
  *   Suffix overlap >= MIN_SUFFIX           → compaction   (resume after matched suffix)
  *   Trailing user slot gained blocks       → continuation (resume mid-message)
- *   Stored user slots only lost blocks     → continuation (resume from stored count)
  *   Prefix overlap > 0, no suffix, shrank  → undo         (fork at rollback point)
  *   Cached prefix changed while growing    → diverged     (fresh full-history replay)
  *   No overlap                             → diverged     (fresh full-history replay)
  *
- * The two block-level continuations sit either side of one line: the SDK
- * session must already hold everything the client still claims. Growth is
- * admissible because the appended blocks are sent on; loss is admissible
- * because the session is a superset. A block that *changed* satisfies neither
- * and diverges.
+ * Appended content is admissible only when the complete stored prefix is
+ * unchanged and the new content is delivered. Removed content is a history
+ * rewrite: retaining a superset can preserve instructions the client revoked.
+ * Known transient metadata is canonicalized by the owning agent adapter.
  */
 export function verifyLineage(
   cached: SessionState,
@@ -584,7 +547,7 @@ export function verifyLineage(
     const storedBlocks = cached.messageBlockHashes[boundary]
     if (incomingBoundary?.role === "user" && storedBlocks && Array.isArray(incomingBoundary.content)) {
       const incomingBlocks = hashableContentBlocks(incomingBoundary.content)
-      const incomingBlockHashes = incomingBlocks.map((block) => hashNormalizedContent([block]))
+      const incomingBlockHashes = computeMessageBlockHashes([incomingBoundary])[0]!
       const preservesStoredBlocks =
         incomingBlocks.length === incomingBoundary.content.length &&
         incomingBlockHashes.length > storedBlocks.length &&
@@ -595,6 +558,7 @@ export function verifyLineage(
           .filter((block) => block?.type === "tool_result" && typeof block.tool_use_id === "string")
           .map((block) => block.tool_use_id as string),
       )
+      // NOTE: OpenCode appends reminder text to completed tool-result slots.
       // Non-tool_result blocks may only be appended to a slot that is already a
       // tool-result turn. That is the OpenCode shape — reminder text trailing
       // the results of a turn the client is still completing. Appending text to
@@ -604,9 +568,9 @@ export function verifyLineage(
         .slice(0, storedBlocks.length)
         .some((block) => block?.type === "tool_result")
       // A tool_result must be genuinely new — repeating a tool_use_id the stored
-      // prefix already carries would replay a result the session has seen. Other
-      // block types carry no such identity and cannot collide with the stored
-      // prefix, since they sit strictly beyond it.
+      // prefix already carries would replay a result the session has seen.
+      // Other appended content must sit strictly beyond the intact stored
+      // prefix; it never substitutes for an existing block.
       const appendedBlocksAreNew = appendedBlocks.every((block) => {
         if (block?.type !== "tool_result") return storedPrefixHasToolResult
         if (typeof block.tool_use_id !== "string") return false
@@ -625,27 +589,24 @@ export function verifyLineage(
     }
   }
 
-  // Ephemeral injected blocks the client dropped — droppedEphemeralBlocksOnly
-  // carries the shape and why resuming on it is sound.
-  if (droppedEphemeralBlocksOnly(cached, messages, incomingHashes)) {
-    return { type: "continuation", session: cached, resumeFrom: cached.messageCount }
-  }
-
   // Undo: prefix preserved (beginning intact) but suffix changed,
   // AND the conversation shrank (fewer messages). If the conversation grew
   // after a cached message changed, the old SDK session cannot prove it has
   // the intervening history; that case is handled as divergence below.
   if (prefixOverlap > 0 && suffixOverlap === 0 && messages.length <= cached.messageCount) {
-    // Find the SDK UUID at the last matching position.
-    let rollbackUuid: string | undefined
-    if (cached.sdkMessageUuids) {
-      for (let i = prefixOverlap - 1; i >= 0; i--) {
-        if (cached.sdkMessageUuids[i]) {
-          rollbackUuid = cached.sdkMessageUuids[i]!
-          break
-        }
+    // Undo delivery sends only the final user message. Everything preceding
+    // it must therefore be covered by the preserved prefix; edited intermediate
+    // turns would otherwise be absent from both the fork and its input (#817).
+    if (prefixOverlap !== messages.length - 1 || messages.at(-1)?.role !== "user") {
+      return {
+        type: "diverged", reason: "undo-gap", prefixOverlap,
+        mismatch: describeLineageMismatch(cached, messages, incomingHashes),
       }
     }
+    // The UUID must cover that entire prefix too. An older checkpoint would
+    // silently omit the matching turns after it. With no adjacent UUID the
+    // existing undo-without-rollback path safely replays the full history.
+    const rollbackUuid = cached.sdkMessageUuids?.[prefixOverlap - 1] || undefined
     return { type: "undo", session: cached, prefixOverlap, rollbackUuid }
   }
 

@@ -45,9 +45,9 @@
  *  Duplicated here (with a cross-check test) to keep this module leaf-pure. */
 const CLIENT_TOOL_PREFIX = "mcp__oc__"
 
-/** Internal SDK tool that executes for real (deferred tool discovery) — its
- *  calls are never forwarded to the client and must not arm the tracker. */
-const INTERNAL_TOOLS = new Set(["ToolSearch"])
+/** Internal SDK tools execute inside the SDK. Their results never require
+ *  a client tool_result and must not arm a passthrough checkpoint. */
+const INTERNAL_TOOLS = new Set(["ToolSearch", "StructuredOutput"])
 
 export interface EarlyStopTracker {
   /** tool_use ids of client-forwarded calls awaiting an iterator-observed deny */
@@ -160,6 +160,22 @@ export function allForwardedCallsResolved(tracker: EarlyStopTracker): boolean {
 }
 
 /**
+ * Opt-in flags for the checkpoint continuation validators.
+ */
+export interface CompleteToolResultContinuationOptions {
+  /**
+   * NOTE: agent-specific (claude-code) — with its `mid-conversation-system`
+   * feature on (beta `mid-conversation-system-2026-04-07`; seen on 2.1.259
+   * and 2.1.261), claude-cli ends a tool-result delta with one trailing
+   * `system` reminder turn. The Messages contract has no system role, so the
+   * turn is admitted only here, only as the final message, only behind a
+   * single echo of the complete expected ID set, and is delivered as
+   * unprivileged user text after the results — never as an SDK system prompt.
+   */
+  allowTrailingSystemReminder?: boolean
+}
+
+/**
  * Verify that a resumed tool-result delta settles exactly the tool calls at the
  * stored assistant checkpoint, then coalesce queued user turns into one SDK
  * input. Tool results must precede any ordinary user content, matching the
@@ -167,7 +183,8 @@ export function allForwardedCallsResolved(tracker: EarlyStopTracker): boolean {
  */
 export function coalesceCompleteToolResultContinuation(
   messages: Array<{ role?: unknown; content?: unknown }>,
-  expectedIds: readonly string[]
+  expectedIds: readonly string[],
+  options?: CompleteToolResultContinuationOptions,
 ): Array<{ role: "user"; content: unknown[] }> | undefined {
   if (expectedIds.length === 0 || messages.length === 0) return undefined
   const expected = new Set(expectedIds)
@@ -176,8 +193,33 @@ export function coalesceCompleteToolResultContinuation(
   const content: unknown[] = []
   let sawUser = false
   let sawNonToolResult = false
+  let sawTrailingSystem = false
+  const systemTextBlocks: unknown[] = []
+  let echoMessages = 0
 
   for (const message of messages) {
+    if (message.role === "system") {
+      if (!options?.allowTrailingSystemReminder) return undefined
+      if (!sawUser || sawTrailingSystem) return undefined
+      sawTrailingSystem = true
+      if (typeof message.content === "string") {
+        if (message.content.trim().length === 0) return undefined
+        systemTextBlocks.push({ type: "text", text: message.content })
+        continue
+      }
+      if (Array.isArray(message.content)) {
+        for (const rawBlock of message.content) {
+          const block = rawBlock as { type?: unknown; text?: unknown } | null | undefined
+          if (block?.type !== "text" || typeof block.text !== "string" || block.text.trim().length === 0) return undefined
+          // cache_control survives here; the caller's strip path removes it before the SDK.
+          systemTextBlocks.push(block)
+        }
+        if (systemTextBlocks.length === 0) return undefined
+        continue
+      }
+      return undefined
+    }
+    if (sawTrailingSystem) return undefined
     // The client echoes the just-produced assistant tool_use before its user
     // result. That assistant turn already exists at resumeSessionAt, so the
     // structured SDK delta below intentionally filters it out.
@@ -193,6 +235,7 @@ export function coalesceCompleteToolResultContinuation(
         }
       }
       if (!sawToolUse) return undefined
+      echoMessages++
       continue
     }
     if (message.role !== "user") return undefined
@@ -223,6 +266,11 @@ export function coalesceCompleteToolResultContinuation(
     actual.size !== expected.size ||
     (echoedCalls.size !== 0 && echoedCalls.size !== expected.size)
   ) return undefined
+  // With a reminder the echo must be exactly one message carrying the full ID
+  // set: a split, partial, or absent echo does not prove the checkpoint.
+  if (sawTrailingSystem && (echoMessages !== 1 || echoedCalls.size !== expected.size)) return undefined
+  // Reminder last, as on the wire.
+  if (systemTextBlocks.length > 0) content.push(...systemTextBlocks)
   return [{ role: "user", content }]
 }
 
@@ -230,6 +278,7 @@ export function coalesceCompleteToolResultContinuation(
 export function findCompleteToolResultCheckpoint(
   messages: Array<{ role?: unknown; content?: unknown }>,
   expectedIds: readonly string[],
+  options?: CompleteToolResultContinuationOptions,
 ): Array<{ role: "user"; content: unknown[] }> | undefined {
   if (expectedIds.length === 0) return undefined
   const expected = new Set(expectedIds)
@@ -247,7 +296,7 @@ export function findCompleteToolResultCheckpoint(
     }
     if (malformed || ids.length !== expected.size || new Set(ids).size !== ids.length) continue
     if (!ids.every((id) => expected.has(id))) continue
-    return coalesceCompleteToolResultContinuation(messages.slice(index), expectedIds)
+    return coalesceCompleteToolResultContinuation(messages.slice(index), expectedIds, options)
   }
   return undefined
 }

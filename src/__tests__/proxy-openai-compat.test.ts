@@ -72,6 +72,7 @@ installMcpToolsMock(() => ({
 }))
 
 const { createProxyServer, clearSessionCache } = await import("../proxy/server")
+const { REPLAY_PROVENANCE_NOTE } = await import("../proxy/query")
 
 function createTestApp() {
   const { app } = createProxyServer({ port: 0, host: "127.0.0.1" })
@@ -198,7 +199,134 @@ describe("POST /v1/chat/completions — non-streaming", () => {
     expect(capturedOptions?.effort).toBe("high")
   })
 
-  it("sends the client system prompt verbatim, without the claude_code preset", async () => {
+  it("carries response_format json_schema through to the SDK outputFormat", async () => {
+    // Structured output is enforced by the SDK on the internal /v1/messages
+    // hop. Without this the field is dropped at the endpoint boundary and the
+    // client silently gets prose back instead of schema-valid JSON.
+    const schema = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+      additionalProperties: false,
+    }
+    mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
+    const app = createTestApp()
+
+    await postChatCompletion(app, {
+      stream: false,
+      response_format: { type: "json_schema", json_schema: { name: "answer", schema } },
+      messages: [{ role: "user", content: "Hi" }],
+    })
+
+    expect(capturedOptions?.outputFormat).toEqual({ type: "json_schema", schema })
+  })
+
+  // The test above pins what reaches the SDK, but its request actually ends in
+  // a 500: the mock yields no `result` carrying structured_output, so nothing
+  // downstream of the SDK boundary is exercised. These two supply that result
+  // and assert the bytes the client receives — otherwise the whole point of the
+  // feature (schema-valid JSON in the response) has no coverage.
+  it("returns the validated JSON as the message content", async () => {
+    const schema = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+      additionalProperties: false,
+    }
+    mockMessages = [
+      assistantMessage([{ type: "text", text: "ignored prose" }]),
+      { type: "result", subtype: "success", is_error: false, structured_output: { answer: "42" } },
+    ]
+    const app = createTestApp()
+
+    const res = await postChatCompletion(app, {
+      stream: false,
+      response_format: { type: "json_schema", json_schema: { name: "answer", schema } },
+      messages: [{ role: "user", content: "Hi" }],
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as { choices: Array<{ message: { content: string } }> }
+    expect(JSON.parse(body.choices[0]!.message.content)).toEqual({ answer: "42" })
+  })
+
+  it("serves a request whose response_format is an explicit null", async () => {
+    // Many OpenAI-compatible clients emit `"response_format": null` for an
+    // unset optional instead of omitting the key. Reading `.type` off it threw
+    // out of this handler, which has no try/catch — so a plain chat request
+    // that worked before structured output existed came back 500.
+    mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
+    const app = createTestApp()
+
+    const res = await postChatCompletion(app, {
+      stream: false,
+      response_format: null,
+      messages: [{ role: "user", content: "Hi" }],
+    })
+
+    expect(res.status).toBe(200)
+    expect(capturedOptions?.outputFormat).toBeUndefined()
+  })
+
+  it("rejects response_format json_object instead of silently ignoring it", async () => {
+    // Anthropic has no schema-less JSON mode, so the request cannot be honored.
+    // Failing loudly beats returning prose to a client expecting JSON.
+    mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
+    const app = createTestApp()
+
+    const res = await postChatCompletion(app, {
+      stream: false,
+      response_format: { type: "json_object" },
+      messages: [{ role: "user", content: "Hi" }],
+    })
+
+    expect(res.status).toBe(400)
+  })
+
+  it("keeps tool calling and drops the schema when both are sent", async () => {
+    // OpenAI permits tools + response_format; structured-output mode cannot
+    // honour both, because it replaces the content and swallows the tool_use
+    // turn. This endpoint dropped response_format entirely before structured
+    // output existed, so tool calling worked and clients depend on it — a 400
+    // delivers neither capability, dropping the schema delivers the larger one.
+    mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
+    const app = createTestApp()
+
+    const res = await postChatCompletion(app, {
+      stream: false,
+      response_format: {
+        type: "json_schema",
+        json_schema: { schema: { type: "object", properties: {} } },
+      },
+      tools: [{ type: "function", function: { name: "fn", parameters: {} } }],
+      messages: [{ role: "user", content: "Hi" }],
+    })
+
+    expect(res.status).toBe(200)
+    // The tools still reach the SDK; only the unsatisfiable schema is dropped.
+    expect(capturedOptions?.outputFormat).toBeUndefined()
+  })
+
+  // Same rule applied to json_object: on its own it is a 400, because nothing
+  // can be honoured (see "rejects response_format json_object" above, and note
+  // Anthropic has no schema-less JSON mode). Sent alongside tools there IS
+  // something to honour, so it degrades rather than failing the whole request.
+  it("keeps tool calling when json_object is sent alongside tools", async () => {
+    mockMessages = [assistantMessage([{ type: "text", text: "ok" }])]
+    const app = createTestApp()
+
+    const res = await postChatCompletion(app, {
+      stream: false,
+      response_format: { type: "json_object" },
+      tools: [{ type: "function", function: { name: "fn", parameters: {} } }],
+      messages: [{ role: "user", content: "Hi" }],
+    })
+
+    expect(res.status).toBe(200)
+    expect(capturedOptions?.outputFormat).toBeUndefined()
+  })
+
+  it("keeps client instructions intact with transport provenance and no claude_code preset", async () => {
     // The OpenAI endpoint serves generic chat clients (Open WebUI, curl).
     // Their system prompt must reach the SDK as a plain string — NOT wrapped
     // under the 28KB claude_code preset, which would hijack their intent with
@@ -214,7 +342,7 @@ describe("POST /v1/chat/completions — non-streaming", () => {
       ],
     })
 
-    expect(capturedOptions?.systemPrompt).toBe("You are TestBot. Reply with exactly: ZEBRA-7")
+    expect(capturedOptions?.systemPrompt).toBe("You are TestBot. Reply with exactly: ZEBRA-7" + REPLAY_PROVENANCE_NOTE)
   })
 
   it("response has Content-Type application/json", async () => {
@@ -299,7 +427,7 @@ describe("POST /v1/chat/completions — Jcode session continuity", () => {
     expect(capturedOptionHistory[0]?.resume).toBeUndefined()
     expect(capturedOptionHistory[0]?.sessionId).toMatch(/^[0-9a-f-]{36}$/)
     expect(capturedOptionHistory[1]?.resume).toBe(capturedOptionHistory[0]?.sessionId)
-    expect(capturedOptionHistory[1]?.systemPrompt).toBe("stable system")
+    expect(capturedOptionHistory[1]?.systemPrompt).toBe("stable system" + REPLAY_PROVENANCE_NOTE)
   })
 
   it("keeps distinct Jcode session keys isolated", async () => {
@@ -719,6 +847,36 @@ describe("POST /v1/chat/completions — streaming", () => {
       .find((tc): tc is DeltaToolCall => !!tc && tc.type === "function" && typeof tc.id === "string")
       ?.index
     expect(startIndex).toBe(0)
+  })
+
+  it("streams the validated JSON as a single content delta", async () => {
+    const schema = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+      additionalProperties: false,
+    }
+    mockMessages = [
+      messageStart("msg_1"), textBlockStart(0), textDelta(0, "ignored prose"),
+      blockStop(0), messageDelta("end_turn"), messageStop(),
+      { type: "result", subtype: "success", is_error: false, structured_output: { answer: "42" } },
+    ]
+    const app = createTestApp()
+
+    const res = await postChatCompletion(app, {
+      stream: true,
+      response_format: { type: "json_schema", json_schema: { name: "answer", schema } },
+      messages: [{ role: "user", content: "Hi" }],
+    })
+
+    expect(res.status).toBe(200)
+    const text = await readStream(res)
+    const content = text.split("\n")
+      .filter(l => l.startsWith("data: ") && l !== "data: [DONE]")
+      .map(l => JSON.parse(l.slice(6)) as { choices?: Array<{ delta?: { content?: string } }> })
+      .map(c => c.choices?.[0]?.delta?.content ?? "")
+      .join("")
+    expect(JSON.parse(content)).toEqual({ answer: "42" })
   })
 })
 

@@ -732,6 +732,99 @@ describe("translateOpenAiToAnthropic", () => {
     expect(result!.tools).toHaveLength(1)
     expect(result!.tools![0]!.description).toBe("")
   })
+
+  // --- structured output ---
+
+  const personSchema = {
+    type: "object",
+    properties: { name: { type: "string" } },
+    required: ["name"],
+  }
+
+  it("maps response_format json_schema to output_config.format", () => {
+    const result = translateOpenAiToAnthropic({
+      messages: [{ role: "user", content: "hi" }],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "person", schema: personSchema, strict: true },
+      },
+    })
+    // `name` and `strict` have no Anthropic equivalent and are dropped: the
+    // SDK always validates, which is never weaker than strict asked for.
+    expect(result!.output_config).toEqual({
+      format: { type: "json_schema", schema: personSchema },
+    })
+  })
+
+  it("keeps response_format alongside output_config.effort", () => {
+    const result = translateOpenAiToAnthropic({
+      messages: [{ role: "user", content: "hi" }],
+      output_config: { effort: "high" },
+      response_format: { type: "json_schema", json_schema: { schema: personSchema } },
+    })
+    expect(result!.output_config).toEqual({
+      effort: "high",
+      format: { type: "json_schema", schema: personSchema },
+    })
+  })
+
+  it("passes through an Anthropic-shaped output_config.format unchanged", () => {
+    const format = { type: "json_schema", schema: personSchema }
+    const result = translateOpenAiToAnthropic({
+      messages: [{ role: "user", content: "hi" }],
+      output_config: { format },
+    })
+    expect(result!.output_config).toEqual({ format })
+  })
+
+  it("forwards json_object intact so the boundary can reject it", () => {
+    // Not widened into a permissive schema: Anthropic has no schema-less JSON
+    // mode, and accepting it here would promise an enforcement never applied.
+    const result = translateOpenAiToAnthropic({
+      messages: [{ role: "user", content: "hi" }],
+      response_format: { type: "json_object" },
+    })
+    expect(result!.output_config).toEqual({ format: { type: "json_object" } })
+  })
+
+  it("treats response_format text as no constraint", () => {
+    const result = translateOpenAiToAnthropic({
+      messages: [{ role: "user", content: "hi" }],
+      response_format: { type: "text" },
+    })
+    expect(result!.output_config).toBeUndefined()
+  })
+
+  // Clients that serialize an unset optional as JSON null rather than omitting
+  // the key must behave as if it were absent. This threw a TypeError out of the
+  // /v1/chat/completions handler, which has no try/catch — a 500 on a request
+  // that worked fine before structured output landed.
+  it("treats an explicit null response_format as omission", () => {
+    const result = translateOpenAiToAnthropic({
+      messages: [{ role: "user", content: "hi" }],
+      response_format: null,
+    } as unknown as Parameters<typeof translateOpenAiToAnthropic>[0])
+    expect(result!.output_config).toBeUndefined()
+  })
+
+  it("keeps output_config.effort when response_format is null", () => {
+    const result = translateOpenAiToAnthropic({
+      messages: [{ role: "user", content: "hi" }],
+      response_format: null,
+      output_config: { effort: "high" },
+    } as unknown as Parameters<typeof translateOpenAiToAnthropic>[0])
+    expect(result!.output_config).toEqual({ effort: "high" })
+  })
+
+  // Forwarded rather than dropped, so the boundary check rejects it with a 400
+  // naming the client's own field instead of silently ignoring the request.
+  it("forwards a non-object response_format for rejection downstream", () => {
+    const result = translateOpenAiToAnthropic({
+      messages: [{ role: "user", content: "hi" }],
+      response_format: "json_schema",
+    } as unknown as Parameters<typeof translateOpenAiToAnthropic>[0])
+    expect(result!.output_config?.format).toBe("json_schema")
+  })
 })
 
 // ---------------------------------------------------------------------------

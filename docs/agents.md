@@ -325,6 +325,31 @@ Pi mimics Claude Code's User-Agent, so automatic detection isn't possible. The `
 
 Pi runs in passthrough mode by default — it executes its own tools and Meridian just forwards the `tool_use` blocks. Opt out with `MERIDIAN_PASSTHROUGH=0`.
 
+[Oh My Pi](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent) (`omp`) is
+built on the same runtime and uses the Pi adapter. Its config lives in
+`~/.omp/agent/models.yml` and takes the same three keys:
+
+```yaml
+providers:
+  anthropic:
+    baseUrl: http://127.0.0.1:3456
+    apiKey: x
+    headers:
+      x-meridian-agent: pi
+```
+
+omp runs its main turn, title generation and mid-turn side questions
+concurrently under one session id. Meridian serializes them and answers a
+conflicting late request by replaying its own history. It does not reject that
+request merely because another caller committed while it waited. Normal
+upstream errors and cancellation still apply. The mapping follows the last
+completed caller: if that is a side call, the next main turn may also need a
+fresh replay. Separate session identities avoid this extra replay cost.
+
+Fresh side requests use their own tool declarations. Tool definitions omitted
+on a continuation can be inherited only from that same published SDK branch;
+a failed side request does not replace its tool cache.
+
 ### Prime Agent
 
 [Prime Agent](https://www.npmjs.com/package/prime-agent) is a fork of Pi with a

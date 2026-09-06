@@ -39,9 +39,26 @@ function isTransientUserPromptHook(block: unknown): boolean {
   } catch {
     return false
   }
-  if (!isRecord(parsed) || !isRecord(parsed.hookSpecificOutput)) return false
-  return parsed.hookSpecificOutput.hookEventName === "UserPromptSubmit"
-    && typeof parsed.hookSpecificOutput.additionalContext === "string"
+  if (!isRecord(parsed)) return false
+  if (isRecord(parsed.hookSpecificOutput)) {
+    return parsed.hookSpecificOutput.hookEventName === "UserPromptSubmit"
+      && typeof parsed.hookSpecificOutput.additionalContext === "string"
+  }
+  // NOTE: OpenCode's hook bridge also wraps common SyncHookJSONOutput fields,
+  // e.g. {"continue":true}, without hookSpecificOutput (#872). Recognize the
+  // documented control envelope, not arbitrary JSON or arbitrary removed text.
+  const fields = Object.entries(parsed)
+  return fields.length > 0 && fields.every(([key, value]) => {
+    switch (key) {
+      case "continue":
+      case "suppressOutput": return typeof value === "boolean"
+      case "stopReason":
+      case "systemMessage":
+      case "reason": return typeof value === "string"
+      case "decision": return value === "approve" || value === "block"
+      default: return false
+    }
+  })
 }
 
 export function canonicalizeOpenCodeMessagesForLineage(
@@ -60,6 +77,12 @@ export function canonicalizeOpenCodeMessagesForLineage(
 
 export const openCodeAdapter: AgentAdapter = {
   name: "opencode",
+
+  /**
+   * NOTE: OpenCode-specific. OpenCode can call a network-hosted Meridian while
+   * its tools and environment block remain local to the OpenCode process.
+   */
+  clientEnvironmentMayDifferFromProxy: true,
 
   /**
    * NOTE: OpenCode-specific. OpenCode runs its internal one-shot agents —
@@ -141,20 +164,10 @@ export const openCodeAdapter: AgentAdapter = {
   },
 
   /**
-   * Same parse, exposed separately on purpose.
-   *
-   * `extractWorkingDirectory` feeds `resolveSdkWorkingDirectory`, where
-   * `MERIDIAN_WORKDIR` / `CLAUDE_PROXY_WORKDIR` outrank it. An operator who
-   * pins the SDK to one directory therefore erases the client's path from
-   * `claimedWorkingDirectory`, which is what `server.ts` falls back to when an
-   * adapter leaves this method undefined. `buildCwdNote` then compares the
-   * pinned path against itself, emits nothing, and the SDK's own env block
-   * advertises the proxy's directory to the model.
-   *
-   * Reading the client's path here keeps it out of reach of that override, so
-   * the note still names the user's directory and fingerprint bucketing still
-   * separates unrelated projects. `piAdapter` does the same for the same
-   * reason.
+   * NOTE: OpenCode-specific. Expose the same request parse independently from
+   * `extractWorkingDirectory`: operator overrides may replace the SDK cwd, but
+   * must not replace the path used for project fingerprinting or the client
+   * environment note.
    */
   extractClientWorkingDirectory(body: any): string | undefined {
     return extractClientCwd(body)
