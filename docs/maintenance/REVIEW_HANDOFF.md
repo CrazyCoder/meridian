@@ -1,6 +1,6 @@
 # Upstream review handoff
 
-Checkpoint: 2026-09-08, at PR #969 (issue #967 triage). Refresh GitHub and
+Checkpoint: 2026-09-08, after PR #969 merged (issue #967 triage). Refresh GitHub and
 origin/main before continuing; this is a dated checkpoint, not a live queue.
 The owner requested portable skills and agent instructions so either Claude,
 Codex, or another repository agent can resume this work.
@@ -8,11 +8,10 @@ Codex, or another repository agent can resume this work.
 ## Read first
 
 Follow [meridian-upstream-review](../../.agents/skills/meridian-upstream-review/SKILL.md)
-and [AGENTS.md](../../AGENTS.md). The current item is
-[PR #969](https://github.com/rynfar/meridian/pull/969); check its live state
-rather than trusting this line, since it was written from the branch being
-merged. Continue when the owner asks; this document does not start background
-work or authorize two agents to work the same queue. A prior agent's
+and [AGENTS.md](../../AGENTS.md). The last delivered item was
+[PR #969](https://github.com/rynfar/meridian/pull/969), merged. No new backlog
+fix is in progress. Continue when the owner asks; this document does not start
+background work or authorize two agents to work the same queue. A prior agent's
 paused/blocked goal is not a claim that the backlog is complete.
 
 Keep this checkpoint current after a delivered ticket or meaningful pause.
@@ -113,10 +112,56 @@ haiku in both modes after that commit and stayed green.
   a bare `mcp__*` name as an internal SDK tool, so a foreign-namespace client
   tool would not arm the early-stop tracker if the SDK emitted its bare form.
   It does not today; the E43 foreign-namespace control passes in both modes.
-- **Next action:** PR #969 was taken to green final-head CI and squash-merged
-  with `--match-head-commit` on the verified head; this file was written from
-  that branch, so confirm the merge landed and that #967 is still open before
-  building on it. Then the strongest remaining lead is #767's
+**Merge and closure status (verified after the fact).** PR #969 reached green
+final-head CI on `3a83560d2af620b92ec176eddead25e442c2b192` (`test`, `smoke`,
+`windows-smoke`, `build-push` success; `changelog-duplication` skipped) and was
+squash-merged with `--match-head-commit` on that verified head as
+[`282cbb0b`](https://github.com/rynfar/meridian/commit/282cbb0bd314b935195dc40bc209acb07131dfe0).
+The merged tree `b3a853a0830bc227bdbb47948672e00a4989a99d` is byte-identical to
+the validated tree, the squash body is blank and the subject is the PR title, so
+the `PR_TITLE` / `BLANK` settings are intact. Post-merge CI on main was green
+across `test`, `smoke`, `windows-smoke`, `build-push`, `changelog-duplication`
+and `release-please`, with `docker` and `publish` correctly skipped. The
+delivery branch `codex/fix-oc-prefixed-client-tools` was deleted; the worktree
+was retained.
+
+**Issue #967 is OPEN and must stay open.** It was auto-closed on merge and then
+reopened. Cause worth knowing before writing another PR body: the body's own
+limitation line read "Does not close #967", and GitHub's closing-keyword parser
+does not read negation — it linked that as a closing reference. **Never write
+`close/closes/closed/fix/fixes/resolves #N` in a PR body, even to deny it**;
+phrase it as "issue #N stays open" instead. The body has been corrected.
+
+**Release Please opened [PR #970](https://github.com/rynfar/meridian/pull/970)
+(`chore(main): release meridian 1.68.1`) automatically.** It is NOT authorized
+by this review and was not merged. A release needs the owner's explicit
+authorization and the release reference in the skill.
+
+**New lead found while landing this checkpoint: `windows-smoke` is
+intermittently red for a characterizable reason.** On the checkpoint PR — a
+docs-only diff that cannot influence it — `windows-smoke` failed at
+`src/__tests__/process-incarnation.test.ts:123`, with
+`captureProcessIncarnation()` returning `undefined` after **10265 ms**. That
+duration is exactly `WINDOWS_PROBE_TIMEOUT_MS` (10 s) in
+`src/proxy/session/processIncarnation.ts`, whose Windows path shells out to
+`powershell.exe` via `spawnSync`. The test's own comment budgets "two cold
+PowerShell probes at up to 10s each" under a 25 s test timeout.
+
+So the module did what it is designed to do — fail closed when the host probe
+is uncertain — while the test asserts the capture is *always* defined on
+win32. On a cold or contended GitHub Windows runner the probe exceeds its
+timeout and the assertion fails. This is a test-strictness problem, not a
+proven product defect, and it is a concrete candidate mechanism for part of
+#917 / #933 ("intermittent CI failures", "flaky ~1 in 3").
+
+Scope and honesty limits: this is **one** observation, not a measured
+frequency, and it does not explain the concurrency-test failures #917
+describes. `windows-smoke` was green on `3a83560d` and on main's `282cbb0b`
+immediately before, so it is intermittent rather than newly broken. No fix was
+attempted here — that is a separate bounded item, and it should start by
+reproducing the timeout rather than by loosening the assertion.
+
+- **Next action:** the strongest remaining lead is #767's
   `hasOnlyNewToolResults` trailing-`text` shape — the compounding-replay half of
   #967 — followed by the five unreviewed Codex-adapter PRs (#962–#966).
 
