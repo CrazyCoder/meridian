@@ -13,8 +13,16 @@
 import { createSdkMcpServer, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod"
 
+/** The namespace client tools are nested under unless an adapter overrides it.
+ *  Every adapter used this before `getPassthroughMcpName` existed, so it stays
+ *  the default: changing it would move the model-visible prompt for everyone. */
 export const PASSTHROUGH_MCP_NAME = "oc"
 export const PASSTHROUGH_MCP_PREFIX = `mcp__${PASSTHROUGH_MCP_NAME}__`
+
+/** The model-visible prefix for a given passthrough namespace. */
+export function passthroughMcpPrefix(serverName: string = PASSTHROUGH_MCP_NAME): string {
+  return `mcp__${serverName}__`
+}
 
 /**
  * The JSON Schema subset a client's tool definitions actually use. Anything
@@ -199,6 +207,27 @@ export function getAutoDeferThreshold(): number {
 }
 
 /**
+ * Whether auto-defer applies to a tool set of this size.
+ *
+ * Pure, and exported so the caller can pin the answer for a session.
+ *
+ * The decision was taken from the LIVE tool count, so a client crossing the
+ * threshold mid-conversation — one tool added or removed — flipped deferral for
+ * every non-core tool at once. That moves the `anthropic/alwaysLoad` marker on
+ * each definition, and tools render at position 0 of the prompt, so it
+ * invalidates the tools, system AND message cache tiers. It also flips
+ * `ENABLE_TOOL_SEARCH` and, since #860, `maxTurns` — silently re-enabling the
+ * billed digest turn for that request (#861).
+ */
+export function autoDeferDecision(
+  threshold: number,
+  coreToolNames: readonly string[] | undefined,
+  toolCount: number,
+): boolean {
+  return !!(threshold > 0 && coreToolNames && coreToolNames.length > 0 && toolCount > threshold)
+}
+
+/**
  * Create an MCP server with tool definitions matching OpenCode's request.
  *
  * Auto-defer: when the tool count exceeds the threshold and coreToolNames
@@ -208,12 +237,15 @@ export function getAutoDeferThreshold(): number {
  */
 export function createPassthroughMcpServer(
   tools: Array<{ name: string; description?: string; input_schema?: JsonSchemaNode; defer_loading?: boolean }>,
-  coreToolNames?: readonly string[]
+  coreToolNames?: readonly string[],
+  serverName: string = PASSTHROUGH_MCP_NAME,
+  /** Pinned auto-defer decision for this session, when one has been made (#861). */
+  pinnedAutoDefer?: boolean,
 ) {
   // Auto-defer: if tool count exceeds threshold and adapter provides core tools
   const threshold = getAutoDeferThreshold()
-  const autoDefer = !!(threshold > 0 && coreToolNames && coreToolNames.length > 0 && tools.length > threshold)
-  const coreSet = autoDefer ? new Set(coreToolNames.map(n => n.toLowerCase())) : undefined
+  const autoDefer = pinnedAutoDefer ?? autoDeferDecision(threshold, coreToolNames, tools.length)
+  const coreSet = autoDefer && coreToolNames ? new Set(coreToolNames.map(n => n.toLowerCase())) : undefined
 
   // hasDeferredTools is true when: client explicitly defers any tool, OR auto-defer kicks in
   const hasDeferredTools = tools.some(t => t.defer_loading === true) || autoDefer
@@ -222,10 +254,13 @@ export function createPassthroughMcpServer(
   // order. Non-deterministic ordering changes the SDK system prompt between
   // requests, invalidating prompt cache and causing full context re-reads.
   const sortedTools = [...tools].sort((a, b) => a.name.localeCompare(b.name))
+  // Register under collision-free aliases; alwaysLoad and the deferral decision
+  // still key off the CLIENT's name, which is what coreToolNames describes.
+  const aliases = buildPassthroughToolAliases(sortedTools.map(tool => tool.name), serverName)
   const definitions = sortedTools.map((passthroughTool) => {
     const alwaysLoad = hasDeferredTools && shouldAlwaysLoad(passthroughTool, coreSet)
     const defineTool = (shape: Record<string, z.ZodType>): SdkMcpToolDefinition<Record<string, z.ZodType>> => ({
-      name: passthroughTool.name,
+      name: aliases.aliasByClientName.get(passthroughTool.name) ?? passthroughTool.name,
       description: passthroughTool.description || passthroughTool.name,
       inputSchema: shape,
       handler: async () => ({ content: [{ type: "text" as const, text: "passthrough" }] }),
@@ -249,11 +284,15 @@ export function createPassthroughMcpServer(
     }
   })
 
-  const server = createSdkMcpServer({ name: PASSTHROUGH_MCP_NAME, tools: definitions })
+  const server = createSdkMcpServer({ name: serverName, tools: definitions })
+  const prefix = passthroughMcpPrefix(serverName)
   return {
     server,
-    toolNames: sortedTools.map(tool => `${PASSTHROUGH_MCP_PREFIX}${tool.name}`),
+    serverName,
+    prefix,
+    toolNames: definitions.map(definition => `${prefix}${definition.name}`),
     hasDeferredTools,
+    clientNameByAlias: aliases.clientNameByAlias,
   }
 }
 
@@ -321,11 +360,89 @@ export function toolUseSignature(name: string, input: unknown): string {
  * Strip the MCP prefix from a tool name to get the OpenCode tool name.
  * e.g., "mcp__oc__todowrite" → "todowrite"
  */
-export function stripMcpPrefix(toolName: string): string {
-  if (toolName.startsWith(PASSTHROUGH_MCP_PREFIX)) {
-    return toolName.slice(PASSTHROUGH_MCP_PREFIX.length)
+export function stripMcpPrefix(toolName: string, serverName: string = PASSTHROUGH_MCP_NAME): string {
+  const prefix = passthroughMcpPrefix(serverName)
+  if (toolName.startsWith(prefix)) {
+    return toolName.slice(prefix.length)
   }
   return toolName
+}
+
+export interface PassthroughToolAliases {
+  /** SDK-side name to register a tool under, by the client's declared name. */
+  aliasByClientName: ReadonlyMap<string, string>
+  /** The client's declared name, by the SDK-side registered name. */
+  clientNameByAlias: ReadonlyMap<string, string>
+}
+
+/**
+ * Choose the SDK-side name to register each client tool under.
+ *
+ * Client tools are nested inside our own MCP server, so a tool whose declared
+ * name ALREADY starts with `mcp__oc__` would be advertised to the model as
+ * `mcp__oc__mcp__oc__read`. Verified against SDK 0.2.141 / CLI 2.1.263: the CLI
+ * lists that doubled name but never dispatches it, so the PreToolUse hook never
+ * fires, nothing is captured, and the turn dies at the maxTurns cap — HTTP 500
+ * non-streaming, and streaming leaks a tool_use whose name the blind reverse
+ * strip has reduced to `read`, a tool the client never declared. Either way the
+ * client cannot answer a call it does not recognize, so the result the proxy
+ * promised the model "in a future turn" can never arrive (#967).
+ *
+ * Dropping the redundant prefix makes the canonical SDK name identical to the
+ * name the client already declared, which both dispatches and round-trips.
+ * Tools that need no alias claim their identity first, so an escaped name can
+ * never steal a name a plain tool declared; a genuine clash falls back to a
+ * numbered suffix, which the reverse map still resolves exactly.
+ *
+ * Ordinary tool sets alias to themselves, leaving model-visible names — and so
+ * the prompt cache — byte-identical.
+ */
+export function buildPassthroughToolAliases(
+  names: readonly string[],
+  serverName: string = PASSTHROUGH_MCP_NAME,
+): PassthroughToolAliases {
+  const PREFIX = passthroughMcpPrefix(serverName)
+  const aliasByClientName = new Map<string, string>()
+  const clientNameByAlias = new Map<string, string>()
+  const ordered = [...names].sort((a, b) => a.localeCompare(b))
+  for (const name of ordered) {
+    if (name.startsWith(PREFIX)) continue
+    aliasByClientName.set(name, name)
+    clientNameByAlias.set(name, name)
+  }
+  for (const name of ordered) {
+    if (!name.startsWith(PREFIX)) continue
+    if (aliasByClientName.has(name)) continue
+    // Strip EVERY leading copy, not just one: a name that is already doubled
+    // would otherwise alias straight back to the undispatchable form.
+    let base = name
+    while (base.startsWith(PREFIX)) {
+      base = base.slice(PREFIX.length)
+    }
+    if (!base) base = "tool"
+    let alias = base
+    let attempt = 2
+    while (clientNameByAlias.has(alias)) alias = `${base}_${attempt++}`
+    aliasByClientName.set(name, alias)
+    clientNameByAlias.set(alias, name)
+  }
+  return { aliasByClientName, clientNameByAlias }
+}
+
+/**
+ * Map an SDK-side tool name back to the name the client declared.
+ *
+ * Strips our MCP prefix as before, then resolves the alias. Falls back to the
+ * stripped name so internal SDK tools and legacy callers without a map keep
+ * today's behavior.
+ */
+export function resolveClientToolName(
+  sdkToolName: string,
+  clientNameByAlias?: ReadonlyMap<string, string>,
+  serverName: string = PASSTHROUGH_MCP_NAME,
+): string {
+  const alias = stripMcpPrefix(sdkToolName, serverName)
+  return clientNameByAlias?.get(alias) ?? alias
 }
 
 function toCamelCase(s: string): string {

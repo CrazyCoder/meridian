@@ -320,6 +320,9 @@ describe("buildQueryOptions", () => {
       toolNames: ["mcp__passthrough__custom_tool"],
       server: {} as any,
       hasDeferredTools: false,
+      clientNameByAlias: new Map([["custom_tool", "custom_tool"]]),
+      serverName: "passthrough",
+      prefix: "mcp__passthrough__",
     }
     const result = buildQueryOptions(makeContext({
       passthrough: true,
@@ -349,6 +352,9 @@ describe("buildQueryOptions", () => {
       toolNames: ["mcp__passthrough__custom_tool"],
       server: {} as any,
       hasDeferredTools: false,
+      clientNameByAlias: new Map([["custom_tool", "custom_tool"]]),
+      serverName: "passthrough",
+      prefix: "mcp__passthrough__",
     }
     const result = buildQueryOptions(makeContext({
       passthrough: true,

@@ -231,6 +231,17 @@ export interface LineageMismatch {
   previousDigest?: string
   storedCount: number
   incomingCount: number
+  /** How many blocks the STORED message had at this index. Undefined for a
+   *  session cached before block hashes were recorded (pre-1.61.0). */
+  storedBlockCount?: number
+  /** Blocks the incoming message has at this index, counted over the same
+   *  hashable domain as the stored side so the two are comparable. */
+  incomingBlockCount?: number
+  /** What the client did to this message, when the stored block hashes make it
+   *  decidable. Appended/dropped/rewritten are three different client bugs and
+   *  the log could not tell them apart (#886) — which is precisely the question
+   *  #767 turns on. */
+  blockChange?: "appended" | "dropped" | "rewritten" | "reordered" | "unknown"
 }
 
 function describeShape(message: { role: string; content: any }): MessageShape {
@@ -275,13 +286,49 @@ export function describeLineageMismatch(
   }
   if (index < 0) return base
 
+  // The stored block hashes are already in hand and verifyLineage's own
+  // boundary tolerance consumes them a few lines later; the diagnostic simply
+  // never looked. Counting both sides turns "this message changed" into
+  // "the client appended / dropped / rewrote a block", which is the difference
+  // between a safe continuation and a history the client no longer claims.
+  const storedBlocks = cached.messageBlockHashes?.[index]
+  const incomingMessage = messages[index]
+  const incomingBlocks = incomingMessage
+    ? computeMessageBlockHashes([incomingMessage])[0]
+    : undefined
+
   return {
     ...base,
     storedDigest: storedHashes[index],
     incomingDigest: incomingHashes[index],
-    incomingShape: messages[index] ? describeShape(messages[index]!) : undefined,
+    incomingShape: incomingMessage ? describeShape(incomingMessage) : undefined,
     previousDigest: index > 0 ? storedHashes[index - 1] : undefined,
+    storedBlockCount: storedBlocks?.length,
+    incomingBlockCount: incomingBlocks?.length,
+    blockChange: classifyBlockChange(storedBlocks, incomingBlocks),
   }
+}
+
+/**
+ * Name the block-level edit, using only the hashes both sides already carry.
+ *
+ * `appended` and `dropped` require the shorter side to be an exact ORDERED
+ * PREFIX of the longer one. A count change alone is not enough: dropping one
+ * block and adding two also grows the list, and calling that an append would
+ * describe a rewrite as something safe to resume.
+ */
+function classifyBlockChange(
+  stored: readonly string[] | undefined,
+  incoming: readonly string[] | undefined,
+): LineageMismatch["blockChange"] {
+  if (!stored || !incoming) return "unknown"
+  const isPrefix = (short: readonly string[], long: readonly string[]) =>
+    short.every((hash, i) => long[i] === hash)
+  if (incoming.length > stored.length) return isPrefix(stored, incoming) ? "appended" : "rewritten"
+  if (incoming.length < stored.length) return isPrefix(incoming, stored) ? "dropped" : "rewritten"
+  // Same length: an in-place edit, unless the same blocks merely moved.
+  const same = [...stored].sort().join() === [...incoming].sort().join()
+  return same ? "reordered" : "rewritten"
 }
 
 /**
@@ -305,11 +352,83 @@ export function formatLineageMismatch(mismatch: LineageMismatch): string | undef
   const shape = mismatch.incomingShape
     ? `${mismatch.incomingShape.role}[${mismatch.incomingShape.blocks}] ${mismatch.incomingShape.bytes}B`
     : "unknown"
+  // Block counts and the verdict are integers and a fixed word: no content, so
+  // the line stays as safe to paste into a public issue as it was before.
+  const blocks = mismatch.storedBlockCount !== undefined && mismatch.incomingBlockCount !== undefined
+    ? `, stored ${mismatch.storedBlockCount} blocks -> incoming ${mismatch.incomingBlockCount} blocks`
+      + (mismatch.blockChange && mismatch.blockChange !== "unknown" ? ` (${mismatch.blockChange})` : "")
+    : ", stored block hashes unavailable (session cached before 1.61.0)"
   return (
     `first mismatch at index ${mismatch.index}${trailing}: ` +
     `stored=${short(mismatch.storedDigest)} incoming=${short(mismatch.incomingDigest)}, ` +
-    `incoming now ${shape}`
+    `incoming now ${shape}${blocks}`
   )
+}
+
+/**
+ * Why a request skipped session lookup entirely.
+ *
+ * `independent-request` is assigned in server.ts before `classifyLineage` runs,
+ * so it is the one divergence that emits no diagnostic at all — and four
+ * unrelated causes collapse into that single silent outcome. #820 was a log
+ * full of `lineage=new` with zero explanatory lines; the reporter could only
+ * identify the bypass by reading server.ts.
+ *
+ * Naming the cause is log-only. The `LineageDivergenceReason` handed to the
+ * `onSession` transform hook is unchanged, so plugins switching on it are
+ * unaffected.
+ */
+export type IndependentRequestCause =
+  | "fork-source"
+  | "subagent"
+  | "headerless-tool-result"
+  | "no-cache-identity"
+
+/**
+ * Decide whether a request bypasses session lookup, and say which rule did it.
+ *
+ * The caller derives `isIndependentSession` from this result rather than
+ * computing it separately, so the reported cause cannot drift away from the
+ * decision it explains. Evaluation order mirrors the guards' own precedence.
+ */
+export function independentRequestCause(input: {
+  /** An explicit session key. Distinct flows carry distinct keys, so a keyed
+   *  request cannot collide and never needs the independence guard. */
+  hasSessionKey: boolean
+  /** `x-meridian-source: fork-*` — a declared independent sub-request flow. */
+  forkSource: boolean
+  isSubagent: boolean
+  /** The last message carries a tool_result and the request has no session
+   *  key, so it is a self-contained round of the client's own tool loop. */
+  clientDrivenLoop: boolean
+  /** Whether a session key or a conversation fingerprint could be derived.
+   *  Image-only and otherwise text-free headerless requests have neither. */
+  hasDurableKey: boolean
+}): IndependentRequestCause | undefined {
+  if (!input.hasSessionKey && input.forkSource) return "fork-source"
+  if (!input.hasSessionKey && input.isSubagent) return "subagent"
+  if (input.clientDrivenLoop) return "headerless-tool-result"
+  if (!input.hasDurableKey) return "no-cache-identity"
+  return undefined
+}
+
+/**
+ * The `diverged=` field for the request log line.
+ *
+ * The line renders `lineage=new` for every divergence without a cached
+ * session, so a key that never resolved, a history that did not match and a
+ * request that never looked are indistinguishable (#820). The reason is
+ * already in memory on every request; it was only reachable by writing a
+ * plugin. Reasons are fixed identifiers, never message content.
+ */
+export function formatDivergence(
+  result: LineageResult,
+  cause?: IndependentRequestCause,
+): string | undefined {
+  if (result.type !== "diverged") return undefined
+  return result.reason === "independent-request" && cause
+    ? `${result.reason}:${cause}`
+    : result.reason
 }
 
 /**

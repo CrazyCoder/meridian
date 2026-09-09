@@ -45,7 +45,8 @@ import { exec as execCallback } from "child_process"
 import { promisify } from "util"
 import { randomUUID } from "crypto"
 import { withClaudeLogContext } from "../logger"
-import { createPassthroughMcpServer, stripMcpPrefix, normalizeToolInput, hasRepairableToolInput, computeToolSetKey, toolUseSignature, PASSTHROUGH_MCP_NAME, PASSTHROUGH_MCP_PREFIX } from "./passthroughTools"
+import { createPassthroughMcpServer, resolveClientToolName, normalizeToolInput, hasRepairableToolInput, computeToolSetKey, toolUseSignature, PASSTHROUGH_MCP_NAME, PASSTHROUGH_MCP_PREFIX, passthroughMcpPrefix, autoDeferDecision, getAutoDeferThreshold } from "./passthroughTools"
+import { describeLocalBootIdentity } from "./session/processIncarnation"
 import { detectServerTools, serverToolErrorMessage } from "./tools"
 import { clientAbortDisposition, coalesceCompleteToolResultContinuation, createEarlyStopTracker, isClientForwardedToolUse, noteAssistantMessage, noteUserContent, settledToolCallAssistantUuid, shouldEarlyStop, trackerCoversStreamedCalls } from "./passthroughEarlyStop"
 import { checkEmptyToolInputs, checkUndeliveredToolUses, type EnvelopeViolation } from "./envelopeIntegrity"
@@ -55,7 +56,7 @@ import { LRUMap } from "../utils/lruMap"
 
 import { telemetryStore, diagnosticLog, createTelemetryRoutes, landingHtml, renderPrometheusMetrics } from "../telemetry"
 import type { RequestMetric } from "../telemetry"
-import { canRecoverCapturedToolUses, classifyError, extractSdkTermination, formatSdkTermination, classifyResumeRefusal, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError, isAccountFailoverError, isQuotaRefusal } from "./errors"
+import { canRecoverCapturedToolUses, classifyError, extractSdkTermination, formatSdkTermination, classifyResumeRefusal, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError, isAccountFailoverError, isQuotaRefusal, isOutputTokenCapExceeded } from "./errors"
 import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, getAuthRenewalStatus, resolveRenewalWarnDays, type CredentialStore } from "./tokenRefresh"
 import {
   createFileDesignTokenStore,
@@ -74,7 +75,8 @@ import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDef
 import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
 import { normalizeJcodeSessionId } from "./adapters/jcode"
-import { translateResponsesToAnthropic, translateAnthropicToResponses, createResponsesSseTranslator, reasoningRequested, type ResponsesRequest, type AnthropicSseEvent as ResponsesAnthropicSseEvent } from "./openaiResponses"
+import { isClaudeCodeClient } from "./adapters/claudecode"
+import { translateResponsesToAnthropic, translateAnthropicToResponses, createResponsesSseTranslator, reasoningRequested, buildResponsesToolAliases, resolveCodexThreadIdentity, type ResponsesRequest, type AnthropicSseEvent as ResponsesAnthropicSseEvent } from "./openaiResponses"
 import { flattenAssistantContent, normalizeStructuredUserContent, replayToolResultHeader, frameStructuredReplay, coalesceStructuredUserMessages } from "./replay"
 import { extractAdvisorModel, extractSystemText, getLastUserMessage, hasActiveToolLoop, stripAdvisorTools, stripNonStandardStreamFields, MULTIMODAL_TYPES, buildToolUseIndex, frameReplayTurns } from "./messages"
 import { requireAuth, authEnabled } from "./auth"
@@ -120,6 +122,8 @@ import {
   normalizeContextUsage,
   withClientAssistantUuid,
   reconcileReturnedSessionUuids,
+  independentRequestCause,
+  formatDivergence,
   type LineageResult,
   type TokenUsageIteration,
   type TokenUsage,
@@ -136,6 +140,7 @@ import {
   getMaxSessionsLimit,
   evictSession as evictCachedSession,
   getSessionByClaudeId,
+  warnHeaderlessToolLoopOnce,
   type PrioritySessionPublication,
 } from "./session/cache"
 import { processSessionTurns, type SessionTurnLease } from "./session/turnCoordinator"
@@ -599,6 +604,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   // invalidation from MCP server re-creation. Key hashes tool name + schema
   // so silently-updated tool definitions force a rebuild.
   const sessionMcpCache = new LRUMap<string, { key: string; mcp: ReturnType<typeof createPassthroughMcpServer> }>(getMaxSessionsLimit())
+
+  // The auto-defer decision, pinned for the session's lifetime (#861).
+  //
+  // Taken from the LIVE tool count, one tool added or removed flipped deferral
+  // for every non-core tool at once. Tools render at position 0 of the prompt,
+  // so that moves the `alwaysLoad` marker on every definition, and it also
+  // flipped `maxTurns` — silently re-enabling the billed digest turn.
+  //
+  // Pinned rather than hysteresis-damped: hysteresis only helps a client
+  // oscillating AT the boundary, not one that swings wide, which is what
+  // OpenCode does when it switches agents. Bounded like its neighbours.
+  const sessionDeferPin = new LRUMap<string, boolean>(getMaxSessionsLimit())
 
   // Consecutive upstream-idle stalls per session, for the retry ceiling.
   const idleStalls = new IdleStallTracker(UPSTREAM_IDLE_MAX_CONSECUTIVE, getMaxSessionsLimit())
@@ -1510,6 +1527,26 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // visible from headers alone. Header-only detection above stays as the
         // value used if parsing itself throws.
         adapter = detectAdapter(c, body)
+        // #874: `max_tokens` is required on /v1/messages and is a hard cap on
+        // output, but nothing on this path ever read it. Honour it through the
+        // CLI's own cap (see query.ts). Only a positive finite value counts —
+        // anything else leaves the cap unset rather than inventing one, so a
+        // malformed request keeps today's behaviour instead of clamping to 0.
+        //
+        // OPT-IN, and deliberately so. The cap counts thinking PLUS text, just
+        // as the Anthropic contract says, and an agentic turn spends tokens on
+        // thinking the client never sized for. Measured: a 128-token cap could
+        // no longer complete a turn whose visible answer was ~15 tokens, and a
+        // 16-token cap produced no text at all. Clients here send caps sized
+        // for a direct answer (OpenCode sends 32000), so enforcing it by
+        // default would change behaviour for every existing caller to fix a
+        // conformance gap only some of them care about. Off unless asked for;
+        // when asked for, it is exact.
+        const rawMaxTokens = Number(body?.max_tokens)
+        const clientMaxOutputTokens = envBool("ENFORCE_MAX_TOKENS")
+          && Number.isFinite(rawMaxTokens) && rawMaxTokens > 0
+          ? Math.floor(rawMaxTokens)
+          : undefined
         const idleRequestKey = idleStallRequestKey(body)
         const markPriorityAttemptExposure = (reason: string): void => {
           const exposure = options.priorityAttemptExposure
@@ -2142,8 +2179,22 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // resume the backing SDK session. Older clients may omit metadata, so
         // preserve fingerprint resume instead of treating their tool results
         // as unrelated headerless workflow requests.
+        //
+        // The exemption follows the CLIENT, not the adapter. Behind a gateway
+        // the LiteLLM heuristic claims the request first, so a Claude Code
+        // session arrived on the passthrough adapter and lost the exemption —
+        // and LiteLLM does not forward `x-litellm-session-id` upstream on the
+        // `anthropic/` provider route, so it had no session key either. Every
+        // tool round of the whole agentic loop then took this bypass (#820),
+        // measured at 35k-56k cache-write tokens per turn against 46-53 on a
+        // direct connection. `isClaudeCodeClient` restores the parity: same
+        // fingerprint keying a direct Claude Code request already gets, with
+        // adapter selection untouched.
+        const ownsToolLoopWithResume = adapterBase === "claude-code" || isClaudeCodeClient(c)
         const isClientDrivenLoop =
-          adapterBase !== "claude-code" && !agentSessionId && hasActiveToolLoop(requestMessages)
+          !ownsToolLoopWithResume && !agentSessionId && hasActiveToolLoop(requestMessages)
+        const durableMappingKey = profileSessionId
+          || getConversationFingerprint(lineageMessages, profileScopedCwd)
         // The fork/subagent independence guard protects HEADERLESS flows from
         // colliding on the shared (firstUserMessage, cwd) fingerprint. Adapter
         // mode and generic source declarations share the subagent behavior. An
@@ -2152,15 +2203,25 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // fork/subagent source. Without this, pylon's long-lived subagent
         // workers fresh-replayed every turn: prompt-cache hits decayed to the
         // static-prefix floor and turn latency grew with conversation length.
-        let isIndependentSession =
-          (!agentSessionId && (requestSource?.startsWith("fork-") || isSubagentRequest)) ||
-          isClientDrivenLoop || false
-        const durableMappingKey = profileSessionId
-          || getConversationFingerprint(lineageMessages, profileScopedCwd)
-        // Image-only and otherwise text-free headerless requests have no stable
-        // cache identity. Run them fresh instead of manufacturing a generation
-        // for an empty key or failing before the SDK is called.
-        if (!durableMappingKey) isIndependentSession = true
+        //
+        // A request with no session key and no derivable fingerprint (image-only
+        // and otherwise text-free bodies) has no stable cache identity either,
+        // and runs fresh rather than manufacturing a generation for an empty key.
+        //
+        // One decision, one reported cause: deriving the flag from the cause is
+        // what keeps the log honest. #820 was a log full of `lineage=new` whose
+        // only explanation lived in this file, and a label computed separately
+        // from the decision would drift away from it.
+        const independentCause = independentRequestCause({
+          hasSessionKey: Boolean(agentSessionId),
+          forkSource: Boolean(requestSource?.startsWith("fork-")),
+          isSubagent: isSubagentRequest,
+          clientDrivenLoop: isClientDrivenLoop,
+          hasDurableKey: Boolean(durableMappingKey),
+        })
+        const isIndependentSession = independentCause !== undefined
+        // Once per process: the operator cannot see this in success metrics.
+        if (independentCause === "headerless-tool-result") warnHeaderlessToolLoopOnce(adapter.name)
         const durableMappingAtTurn = durableMappingKey
           ? lookupSharedSessionResult(durableMappingKey)
           : { status: "missing" as const }
@@ -2467,10 +2528,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           return `${m.role}[${contentTypes}]`
         }).join(" → ")
         const lineageType = lineageResult.type === "diverged" && !cachedSession ? "new" : lineageResult.type
+        // `lineage=` renders every divergence without a cached session as the
+        // same `new`, so a key that never resolved, a history that did not
+        // match and a request that never looked were indistinguishable (#820).
+        // Added as its own field rather than folded into `lineage=`: existing
+        // log analysis and the E2E gates match `lineage=<value> session=`, and
+        // widening that value would break them for no gain.
+        const divergedReason = formatDivergence(lineageResult, independentCause)
         const msgCount = Array.isArray(body.messages) ? body.messages.length : 0
         const toolCount = body.tools?.length ?? 0
         const sdkSnapshot = sdkSemaphore.snapshot
-        const requestLogLine = `${requestMeta.requestId} adapter=${adapter.name}${requestSource ? ` source=${requestSource}` : ""}${profile.id !== "default" ? ` profile=${profile.id}${routingMode === "sticky" ? "(sticky)" : options.forcedProfileId ? "(priority)" : ""}` : ""} model=${model} stream=${stream} tools=${toolCount} lineage=${lineageType} session=${resumeSessionId?.slice(0, 8) || "new"}${isUndo && undoRollbackUuid ? ` rollback=${undoRollbackUuid.slice(0, 8)}` : ""}${agentMode ? ` agent=${agentMode}` : ""} sdkActive=${sdkSnapshot.active}/${sdkSnapshot.limit} sdkQueued=${sdkSnapshot.queued} sessionWait=${requestMeta.sessionQueueWaitMs}ms msgCount=${msgCount}`
+        const requestLogLine = `${requestMeta.requestId} adapter=${adapter.name}${requestSource ? ` source=${requestSource}` : ""}${profile.id !== "default" ? ` profile=${profile.id}${routingMode === "sticky" ? "(sticky)" : options.forcedProfileId ? "(priority)" : ""}` : ""} model=${model} stream=${stream} tools=${toolCount} lineage=${lineageType} session=${resumeSessionId?.slice(0, 8) || "new"}${isUndo && undoRollbackUuid ? ` rollback=${undoRollbackUuid.slice(0, 8)}` : ""}${divergedReason ? ` diverged=${divergedReason}` : ""}${agentMode ? ` agent=${agentMode}` : ""} sdkActive=${sdkSnapshot.active}/${sdkSnapshot.limit} sdkQueued=${sdkSnapshot.queued} sessionWait=${requestMeta.sessionQueueWaitMs}ms msgCount=${msgCount}`
         plog(`[PROXY] ${requestLogLine} msgs=${msgSummary}`)
         diagnosticLog.session(`${requestLogLine}`, requestMeta.requestId)
 
@@ -2921,19 +2989,40 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           plog(`[PROXY] ${requestMeta.requestId} tools_restored: client sent 0 tools but continued branch had ${cached.tools.length} — reusing cached tools to preserve prompt cache`)
         }
       }
+      // #893: the namespace client tools are nested under. `oc` for every
+      // adapter that does not declare its own, which is what they all used
+      // before this existed — so no existing client's prompt moves.
+      const passthroughMcpName = adapter.getPassthroughMcpName?.() ?? PASSTHROUGH_MCP_NAME
+      const clientToolPrefix = passthroughMcpPrefix(passthroughMcpName)
       if (passthrough && requestTools.length > 0) {
         const toolSetKey = computeToolSetKey(requestTools)
         const cachedMcp = profileSessionId ? sessionMcpCache.get(profileSessionId) : undefined
+        const coreNamesForDefer = pipelineCtx.coreToolNames ? [...pipelineCtx.coreToolNames] : undefined
+        // Consulted even when the MCP server is rebuilt: a changed tool set
+        // already costs one cache miss, and re-deciding on top of it would ALSO
+        // flip maxTurns mid-session. The suppressed flip is logged whenever the
+        // live count would decide differently, which is the observability the
+        // issue asked for regardless of which fix landed.
+        const pinnedDefer = profileSessionId ? sessionDeferPin.get(profileSessionId) : undefined
+        const liveDefer = autoDeferDecision(getAutoDeferThreshold(), coreNamesForDefer, requestTools.length)
+        if (pinnedDefer !== undefined && pinnedDefer !== liveDefer) {
+          plog(`[PROXY] ${requestMeta.requestId} defer_flip suppressed: session pinned autoDefer=${pinnedDefer}, live tool count ${requestTools.length} would give ${liveDefer}`)
+          claudeLog("passthrough.defer_flip_suppressed", { pinned: pinnedDefer, live: liveDefer, toolCount: requestTools.length })
+        }
         if (cachedMcp && cachedMcp.key === toolSetKey) {
           passthroughMcp = cachedMcp.mcp
         } else {
-          passthroughMcp = createPassthroughMcpServer(requestTools, pipelineCtx.coreToolNames ? [...pipelineCtx.coreToolNames] : undefined)
+          passthroughMcp = createPassthroughMcpServer(requestTools, coreNamesForDefer, passthroughMcpName, pinnedDefer)
           if (profileSessionId) {
             sessionMcpCache.set(profileSessionId, { key: toolSetKey, mcp: passthroughMcp })
             if (cachedMcp) {
               plog(`[PROXY] ${requestMeta.requestId} tools_changed: MCP server recreated (prompt cache likely invalidates)`)
             }
           }
+        }
+        // First request in the session decides; later ones inherit.
+        if (profileSessionId && !sessionDeferPin.has(profileSessionId)) {
+          sessionDeferPin.set(profileSessionId, passthroughMcp.hasDeferredTools)
         }
       }
       const hasDeferredTools = passthroughMcp?.hasDeferredTools ?? false
@@ -2999,7 +3088,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 }
                 markPriorityAttemptExposure("tool_use")
                 // Track deferred tools that were discovered via ToolSearch
-                const toolName = stripMcpPrefix(input.tool_name)
+                const toolName = resolveClientToolName(input.tool_name, passthroughMcp?.clientNameByAlias, passthroughMcpName)
                 if (hasDeferredTools && coreSet && !coreSet.has(toolName.toLowerCase())) {
                   discoveredTools.add(toolName)
                 }
@@ -3295,7 +3384,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     memory: sdkFeatures.memory, dreaming: sdkFeatures.dreaming, sharedMemory: sdkFeatures.sharedMemory,
                     webFetchPreflight: sdkFeatures.webFetchPreflight,
                     claudeAiConnectors: sdkFeatures.claudeAiConnectors,
-                    maxBudgetUsd: sdkFeatures.maxBudgetUsd, fallbackModel: sdkFeatures.fallbackModel,
+                    maxBudgetUsd: sdkFeatures.maxBudgetUsd, maxOutputTokens: clientMaxOutputTokens, fallbackModel: sdkFeatures.fallbackModel,
                     sdkDebug: sdkFeatures.sdkDebug,
                     additionalDirectories: sdkFeatures.additionalDirectories
                       ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
@@ -3400,7 +3489,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     memory: sdkFeatures.memory, dreaming: sdkFeatures.dreaming, sharedMemory: sdkFeatures.sharedMemory,
                     webFetchPreflight: sdkFeatures.webFetchPreflight,
                     claudeAiConnectors: sdkFeatures.claudeAiConnectors,
-                      maxBudgetUsd: sdkFeatures.maxBudgetUsd, fallbackModel: sdkFeatures.fallbackModel,
+                      maxBudgetUsd: sdkFeatures.maxBudgetUsd, maxOutputTokens: clientMaxOutputTokens, fallbackModel: sdkFeatures.fallbackModel,
                       sdkDebug: sdkFeatures.sdkDebug,
                       additionalDirectories: sdkFeatures.additionalDirectories
                         ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
@@ -3460,7 +3549,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       memory: sdkFeatures.memory, dreaming: sdkFeatures.dreaming, sharedMemory: sdkFeatures.sharedMemory,
                     webFetchPreflight: sdkFeatures.webFetchPreflight,
                     claudeAiConnectors: sdkFeatures.claudeAiConnectors,
-                      maxBudgetUsd: sdkFeatures.maxBudgetUsd, fallbackModel: sdkFeatures.fallbackModel,
+                      maxBudgetUsd: sdkFeatures.maxBudgetUsd, maxOutputTokens: clientMaxOutputTokens, fallbackModel: sdkFeatures.fallbackModel,
                       sdkDebug: sdkFeatures.sdkDebug,
                       additionalDirectories: sdkFeatures.additionalDirectories
                         ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
@@ -3595,7 +3684,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // until the full client-visible ID set is covered; internal and
                 // duplicate calls are filtered by noteAssistantMessage.
                 const expectedBefore = earlyStop.expected.size
-                noteAssistantMessage(earlyStop, message)
+                noteAssistantMessage(earlyStop, message, clientToolPrefix)
                 assistantAddedForwardedCall = earlyStop.expected.size > expectedBefore
               } else if (passthrough && message.type === "user" && !earlyStopFired) {
                 noteUserContent(earlyStop, (message as any).message?.content)
@@ -3652,7 +3741,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   // The predicate the tracker arms `expected` with, so the two
                   // sets are comparable by construction.
                   const block = event.content_block
-                  if (isClientForwardedToolUse(block)) streamedToolUseIds.add(block.id)
+                  if (isClientForwardedToolUse(block, clientToolPrefix)) streamedToolUseIds.add(block.id)
                 }
               }
               if (message.type === "assistant") {
@@ -3732,7 +3821,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     }
                     // In passthrough mode, strip MCP prefix from tool names
                     if (passthrough && b.type === "tool_use" && typeof b.name === "string") {
-                      b.name = stripMcpPrefix(b.name as string)
+                      b.name = resolveClientToolName(b.name as string, passthroughMcp?.clientNameByAlias, passthroughMcpName)
                     }
                     contentBlocks.push(b)
                   }
@@ -3872,6 +3961,21 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               // Do not rethrow — execution continues into the merge block, which
               // backfills contentBlocks from capturedToolUses and builds a clean
               // stop_reason:"tool_use" response.
+            } else if (clientMaxOutputTokens && isOutputTokenCapExceeded(error instanceof Error ? error.message : String(error ?? ""))) {
+              // The client's own `max_tokens` stopped generation (#874). The
+              // API really did cap the turn, so the content that arrived is a
+              // complete truncated response — not a partial one we invented —
+              // and the SDK session holds the same text, so resume stays
+              // consistent. Report the stop reason the wire defines for this
+              // instead of answering a satisfiable request with a 500.
+              lastStopReason = "max_tokens"
+              claudeLog("upstream.output_cap_truncated", {
+                mode: "non_stream",
+                cap: clientMaxOutputTokens,
+                blocks: contentBlocks.length,
+              })
+              plog(`[PROXY] ${requestMeta.requestId} output capped at client max_tokens=${clientMaxOutputTokens} — reporting stop_reason=max_tokens`)
+              if (lastUsage) logUsage(requestMeta.requestId, lastUsage)
             } else if (passthrough && sdkTerm.reason === "max_turns" && hasTruncatableText(contentBlocks)) {
               // The turn hit its budget without producing a forwardable tool
               // call, but it did produce visible text. Throwing here would answer a
@@ -4425,7 +4529,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     memory: sdkFeatures.memory, dreaming: sdkFeatures.dreaming, sharedMemory: sdkFeatures.sharedMemory,
                     webFetchPreflight: sdkFeatures.webFetchPreflight,
                     claudeAiConnectors: sdkFeatures.claudeAiConnectors,
-                      maxBudgetUsd: sdkFeatures.maxBudgetUsd, fallbackModel: sdkFeatures.fallbackModel,
+                      maxBudgetUsd: sdkFeatures.maxBudgetUsd, maxOutputTokens: clientMaxOutputTokens, fallbackModel: sdkFeatures.fallbackModel,
                       sdkDebug: sdkFeatures.sdkDebug,
                       additionalDirectories: sdkFeatures.additionalDirectories
                         ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
@@ -4509,7 +4613,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     memory: sdkFeatures.memory, dreaming: sdkFeatures.dreaming, sharedMemory: sdkFeatures.sharedMemory,
                     webFetchPreflight: sdkFeatures.webFetchPreflight,
                     claudeAiConnectors: sdkFeatures.claudeAiConnectors,
-                        maxBudgetUsd: sdkFeatures.maxBudgetUsd, fallbackModel: sdkFeatures.fallbackModel,
+                        maxBudgetUsd: sdkFeatures.maxBudgetUsd, maxOutputTokens: clientMaxOutputTokens, fallbackModel: sdkFeatures.fallbackModel,
                         sdkDebug: sdkFeatures.sdkDebug,
                         additionalDirectories: sdkFeatures.additionalDirectories
                           ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
@@ -4565,7 +4669,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                         memory: sdkFeatures.memory, dreaming: sdkFeatures.dreaming, sharedMemory: sdkFeatures.sharedMemory,
                         webFetchPreflight: sdkFeatures.webFetchPreflight,
                         claudeAiConnectors: sdkFeatures.claudeAiConnectors,
-                        maxBudgetUsd: sdkFeatures.maxBudgetUsd, fallbackModel: sdkFeatures.fallbackModel,
+                        maxBudgetUsd: sdkFeatures.maxBudgetUsd, maxOutputTokens: clientMaxOutputTokens, fallbackModel: sdkFeatures.fallbackModel,
                         sdkDebug: sdkFeatures.sdkDebug,
                         additionalDirectories: sdkFeatures.additionalDirectories
                           ? sdkFeatures.additionalDirectories.split(",").map(d => d.trim()).filter(Boolean)
@@ -4736,7 +4840,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   let assistantAddedForwardedCall = false
                   if (earlyStopEnabled && message.type === "assistant" && !earlyStopFired) {
                     const expectedBefore = earlyStop.expected.size
-                    noteAssistantMessage(earlyStop, message)
+                    noteAssistantMessage(earlyStop, message, clientToolPrefix)
                     assistantAddedForwardedCall = earlyStop.expected.size > expectedBefore
                   } else if (earlyStopEnabled && message.type === "user" && !earlyStopFired) {
                     noteUserContent(earlyStop, (message as any).message?.content)
@@ -4923,10 +5027,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                           if (eventIndex !== undefined) skipBlockIndices.add(eventIndex)
                           continue
                         }
-                        if (passthrough && block.name.startsWith(PASSTHROUGH_MCP_PREFIX)) {
+                        if (passthrough && block.name.startsWith(clientToolPrefix)) {
                           // Passthrough mode: SDK sent the name WITH the mcp__oc__ prefix.
-                          // Strip it so OpenCode sees the bare tool name.
-                          block.name = stripMcpPrefix(block.name)
+                          // Resolve it back to the name the client declared — usually just
+                          // the prefix stripped, but not for a client tool whose own name
+                          // carries this namespace (#967).
+                          block.name = resolveClientToolName(block.name, passthroughMcp?.clientNameByAlias, passthroughMcpName)
                           if (block.id) streamedToolUseIds.add(block.id)
                         } else if (block.name.startsWith("mcp__")) {
                           // Internal MCP tool (mcp__opencode__* etc.) — skip, SDK handles it
@@ -4936,7 +5042,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                           // Passthrough mode: SDK already stripped the mcp__oc__ prefix before
                           // emitting the stream_event (observed in practice — the SDK normalises
                           // tool names in stream events). Track the ID so the early-break
-                          // condition fires correctly.
+                          // condition fires correctly. The name here is the registered alias,
+                          // so it still needs resolving back to what the client declared —
+                          // for an ordinary tool that is a no-op.
+                          block.name = resolveClientToolName(block.name, passthroughMcp?.clientNameByAlias, passthroughMcpName)
                           streamedToolUseIds.add(block.id)
                         }
                         if (passthrough && eventIndex !== undefined) {
@@ -5457,7 +5566,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       recoverySessionId = recoveryMessage.session_id
                     }
                     if (recoveryMessage.type === "assistant") {
-                      noteAssistantMessage(recoveryEarlyStop, recoveryMessage)
+                      noteAssistantMessage(recoveryEarlyStop, recoveryMessage, clientToolPrefix)
                     } else if (recoveryMessage.type === "user") {
                       noteUserContent(recoveryEarlyStop, recoveryMessage.message?.content)
                     }
@@ -5474,7 +5583,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     if (recoveryEvent.type === "message_start") turnGenerating = true
                     if (
                       recoveryEvent.type === "content_block_start"
-                      && isClientForwardedToolUse(recoveryEvent.content_block)
+                      && isClientForwardedToolUse(recoveryEvent.content_block, clientToolPrefix)
                     ) {
                       recoveryStreamedToolUseIds.add(
                         (recoveryEvent.content_block as { id: string }).id,
@@ -6306,13 +6415,35 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               // overflow, duplicate abort, early-stop reversion). Ending that
               // with `max_tokens` leaves a call the client is told neither to
               // run nor to discard, so it keeps the error it gets today.
+              // #874: the client's own `max_tokens` stopping generation is the
+              // same shape as a capped turn — a truncated but complete answer
+              // that must close as `max_tokens`, not as an error frame. It is
+              // not passthrough-specific and does not arrive as `max_turns`,
+              // so it joins the condition rather than reusing it.
+              //
+              // The no-tool-calls guard is deliberately kept for the cap case
+              // too. A cap that lands mid-`tool_use` would otherwise deliver a
+              // half-built call, which is the #552 "red reads" failure this
+              // codebase has paid for repeatedly. That shape stays on the error
+              // path until it can be delivered safely.
+              const outputCapTruncated = Boolean(clientMaxOutputTokens) && isOutputTokenCapExceeded(errMsg)
               if (
-                passthrough &&
-                sdkTerm.reason === "max_turns" &&
+                (
+                  (passthrough && sdkTerm.reason === "max_turns") ||
+                  outputCapTruncated
+                ) &&
                 capturedToolUses.length === 0 &&
                 streamedToolUseIds.size === 0 &&
                 messageStartEmitted &&
-                textCharsForwarded > 0
+                // A capped turn need not have produced text. With a small cap
+                // the model's thinking can consume the whole budget before any
+                // text is forwarded, and an EMPTY response with
+                // `stop_reason: max_tokens` is exactly what the wire defines
+                // for that — the client asked for 16 tokens and thinking spent
+                // them. For `max_turns` the same emptiness means something went
+                // wrong and stays on the error path, which is why the text
+                // requirement survives only for that case.
+                (outputCapTruncated || textCharsForwarded > 0)
               ) {
                 flushOpenClientBlocks("capped_turn")
                 diagnosticLog.session(
@@ -7116,6 +7247,20 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         message: "Meridian is shutting down; route new requests to another instance.",
       }, 503)
     }
+    // Boot identity, before auth: without it every session-store write throws
+    // and EVERY request fails with a 500, yet this endpoint used to report
+    // healthy — so Docker's HEALTHCHECK and any orchestrator kept routing
+    // traffic to a process serving nothing (#906). Checked here rather than
+    // only at startup because the answer can change under a running process.
+    const bootIdentity = describeLocalBootIdentity()
+    if (!bootIdentity.available) {
+      return c.json({
+        status: "unhealthy",
+        version: serverVersion,
+        error: "Cannot capture a process incarnation, so no request that touches a session can be served.",
+        bootIdentity,
+      }, 503)
+    }
     try {
       // Use active profile's auth context for health check
       const healthProfile = resolveProfile(finalConfig.profiles, finalConfig.defaultProfile)
@@ -7544,15 +7689,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       "Content-Type": "application/json",
       "x-meridian-agent": "codex",
     }
-    // NOTE: agent-specific (Codex) — prompt_cache_key is Codex's stable
-    // per-conversation id (mirrored as session_id in its client_metadata).
-    // Forward it as the codex adapter's session header so consecutive turns
+    // NOTE: agent-specific (Codex) — the thread this turn belongs to.
+    // Forwarded as the codex adapter's session header so consecutive turns
     // resume the same SDK session: Claude's signed thinking then persists
-    // across turns natively and the prompt cache stays warm (#655).
-    const promptCacheKey = (rawBody as { prompt_cache_key?: unknown }).prompt_cache_key
-    if (typeof promptCacheKey === "string" && promptCacheKey.length > 0) {
-      internalHeaders["x-codex-session"] = promptCacheKey
-    }
+    // across turns natively and the prompt cache stays warm (#655). A turn
+    // from a spawned thread also declares its own concurrent flow, because a
+    // subagent inherits its parent's `prompt_cache_key` — see
+    // resolveCodexThreadIdentity for what each signal answers.
+    const codexThread = resolveCodexThreadIdentity(rawBody, c.req.header("x-codex-turn-metadata"))
+    if (codexThread.sessionKey) internalHeaders["x-codex-session"] = codexThread.sessionKey
+    if (codexThread.requestSource) internalHeaders["x-meridian-source"] = codexThread.requestSource
     const xApiKey = c.req.header("x-api-key")
     if (xApiKey) internalHeaders["x-api-key"] = xApiKey
     const authz = c.req.header("authorization")
@@ -7574,7 +7720,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     const responseId = `resp_${randomUUID().replace(/-/g, "")}`
     const created = Math.floor(Date.now() / 1000)
     const model = (typeof rawBody.model === "string" && rawBody.model) ? rawBody.model : CANONICAL_SONNET_MODEL
-    const ctx = { responseId, model, created, reasoningRequested: reasoningRequested(rawBody) }
+    // Namespaced (MCP) and custom tools reach Claude under aliases; the same
+    // table turns its calls back into Codex's `{namespace, name}` items.
+    const toolAliases = buildResponsesToolAliases(rawBody.tools)
+    const ctx = { responseId, model, created, reasoningRequested: reasoningRequested(rawBody), toolAliases }
 
     if (!anthropicBody.stream) {
       const anthropicRes = await internalRes.json() as Record<string, unknown>
@@ -8065,6 +8214,45 @@ export function installProxyProcessErrorHandlers(): void {
 }
 
 export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promise<ProxyInstance> {
+  // Refuse to bind a port we cannot serve from (#906). Without a boot identity
+  // every session-store write throws, so every request that touches a session
+  // returns a 500 — a total, non-transient failure. Binding anyway is what let
+  // a container missing /etc/machine-id report healthy to Docker for three days
+  // while serving nothing.
+  //
+  // The escape hatch exists so a false negative in the probe cannot brick an
+  // install: with it set the process starts, and /health still reports
+  // unhealthy, which is the honest combination.
+  // Retried before refusing. On Linux the identity is read from files and is
+  // deterministic, but darwin and win32 derive it from a SUBPROCESS that can
+  // transiently time out — the Windows probe has a 10s budget, and a 10265ms
+  // expiry on a contended CI runner is exactly the shape recorded against
+  // #917/#933. Refusing to start on a transient probe timeout would turn a slow
+  // host into a dead one, so give it a few attempts first. `getLocalBootIdentity`
+  // caches only successes, so each attempt genuinely re-probes.
+  let bootIdentity = describeLocalBootIdentity()
+  for (let attempt = 1; !bootIdentity.available && attempt <= 3; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 250 * attempt))
+    bootIdentity = describeLocalBootIdentity()
+    if (bootIdentity.available) {
+      console.error(`[PROXY] Boot identity captured on attempt ${attempt + 1} (the first probe failed).`)
+    }
+  }
+  if (!bootIdentity.available && !envBool("ALLOW_MISSING_BOOT_IDENTITY")) {
+    throw new Error(
+      "[PROXY] Refusing to start: cannot capture a process incarnation on this host, "
+      + "so no request that touches a session could be served.\n"
+      + `  platform: ${bootIdentity.platform}\n`
+      + `  cause: ${bootIdentity.hint}\n`
+      + "  Set MERIDIAN_ALLOW_MISSING_BOOT_IDENTITY=1 to start anyway (requests will still fail).",
+    )
+  }
+  if (!bootIdentity.available) {
+    console.error(
+      "[PROXY] Starting WITHOUT a boot identity because MERIDIAN_ALLOW_MISSING_BOOT_IDENTITY is set. "
+      + `Requests that touch a session will fail with 500. Cause: ${bootIdentity.hint}`,
+    )
+  }
   claudeExecutable = await resolveClaudeExecutableAsync()
   const {
     app,

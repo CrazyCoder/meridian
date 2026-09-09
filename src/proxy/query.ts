@@ -181,6 +181,9 @@ export interface QueryContext {
   claudeAiConnectors?: boolean
   /** Per-request cost cap in USD */
   maxBudgetUsd?: number
+  /** The client's `max_tokens`, honoured through the CLI's own output cap.
+   *  Omitted when absent or non-positive, which leaves today's behaviour. */
+  maxOutputTokens?: number
   /** Fallback model when primary fails */
   fallbackModel?: string
   /** Enable SDK debug logging */
@@ -456,7 +459,7 @@ export function buildQueryOptions(ctx: QueryContext, abortController?: AbortCont
     resumeSessionId, isUndo, resumeSessionAtUuid, forkSession, forkSessionId, sdkHooks, blockedTools, incompatibleTools,
     mcpServerName, allowedMcpTools, onStderr,
     effort, thinking, taskBudget, outputFormat, betas, settingSources, codeSystemPrompt, clientSystemPrompt,
-    memory, dreaming, sharedMemory, maxBudgetUsd, fallbackModel, sdkDebug, additionalDirectories,
+    memory, dreaming, sharedMemory, maxBudgetUsd, maxOutputTokens, fallbackModel, sdkDebug, additionalDirectories,
   } = ctx
   const cwdNote = buildCwdNote(workingDirectory, clientWorkingDirectory, {
     clientEnvironmentMayDifferFromProxy,
@@ -511,7 +514,10 @@ export function buildQueryOptions(ctx: QueryContext, abortController?: AbortCont
             disallowedTools: [...allBlockedTools],
             ...(passthroughMcp ? {
               allowedTools: [...passthroughMcp.toolNames],
-              mcpServers: { [PASSTHROUGH_MCP_NAME]: passthroughMcp.server },
+              // The namespace comes from the server the caller built, not a
+              // module constant — that constant was computed and then
+              // discarded on exactly this path (#893).
+              mcpServers: { [passthroughMcp.serverName]: passthroughMcp.server },
             } : {}),
           }
         : {
@@ -556,6 +562,18 @@ export function buildQueryOptions(ctx: QueryContext, abortController?: AbortCont
         // Keychain auth.
         ...(sharedMemory ? stripConfigDir(cleanEnv) : cleanEnv),
         ENABLE_TOOL_SEARCH: hasDeferredTools ? "true" : "false",
+        // `max_tokens` is required on /v1/messages and is a hard cap on output,
+        // but the SDK's Options expose no output cap — this env var is the only
+        // lever the CLI offers (#874). Set it only when the client gave a
+        // positive value, so an omitted or malformed cap keeps today's
+        // behaviour rather than silently clamping to something invented.
+        //
+        // When it trips the CLI throws rather than returning a truncated turn;
+        // `isOutputTokenCapExceeded` in errors.ts recognises that and the
+        // recovery paths deliver the content with stop_reason "max_tokens".
+        ...(maxOutputTokens && maxOutputTokens > 0
+          ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(Math.floor(maxOutputTokens)) }
+          : {}),
         // claude.ai connectors: MCP servers attached to the account's
         // claude.ai profile (Drive, Gmail, Calendar, …). The subprocess
         // otherwise fetches them from /v1/mcp_servers and connects each one

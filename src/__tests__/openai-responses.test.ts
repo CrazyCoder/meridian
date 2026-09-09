@@ -10,6 +10,7 @@ import {
   translateResponsesToAnthropic,
   translateAnthropicToResponses,
   createResponsesSseTranslator,
+  resolveCodexThreadIdentity,
 } from "../proxy/openaiResponses"
 import type { AnthropicContentBlock } from "../proxy/openai"
 
@@ -38,6 +39,66 @@ describe("translateResponsesToAnthropic", () => {
     expect(r.system).toContain("House rules.")
     expect(r.messages).toHaveLength(1)
     expect(r.messages[0]!.role).toBe("user")
+  })
+
+  // Anthropic caches the prompt as one prefix, tools → system → messages.
+  // A developer message that appears mid-conversation and gets folded into
+  // `system` rewrites the system block on the turn it first shows up and
+  // invalidates the entire cached history behind it. Observed live with
+  // Codex's `<image_resize_notice>`: 240k–584k tokens re-written per image.
+  it("keeps a mid-conversation developer message in the history, not in system", () => {
+    const r = translateResponsesToAnthropic({
+      model: "m",
+      instructions: "You are Codex.",
+      input: [
+        { type: "message", role: "developer", content: [{ type: "input_text", text: "House rules." }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "look at the picture" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "Looking." }] },
+        { type: "message", role: "developer", content: [{ type: "input_text", text: "<image_resize_notice>resized</image_resize_notice>" }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "and now?" }] },
+      ],
+    })!
+    expect(r.system).toBe("You are Codex.\n\nHouse rules.")
+    expect(r.system).not.toContain("image_resize_notice")
+    expect(r.messages).toEqual([
+      { role: "user", content: [{ type: "text", text: "look at the picture" }] },
+      { role: "assistant", content: [{ type: "text", text: "Looking." }] },
+      { role: "user", content: [
+        { type: "text", text: "<image_resize_notice>resized</image_resize_notice>" },
+        { type: "text", text: "and now?" },
+      ] },
+    ])
+  })
+
+  it("files a tool result ahead of a developer note that landed between two outputs", () => {
+    const r = translateResponsesToAnthropic({
+      model: "m",
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "go" }] },
+        { type: "function_call", name: "a", arguments: "{}", call_id: "c1" },
+        { type: "function_call", name: "b", arguments: "{}", call_id: "c2" },
+        { type: "function_call_output", call_id: "c1", output: "one" },
+        { type: "message", role: "developer", content: [{ type: "input_text", text: "<image_resize_notice/>" }] },
+        { type: "function_call_output", call_id: "c2", output: "two" },
+      ],
+    })!
+    const last = r.messages[r.messages.length - 1]!
+    expect(last.role).toBe("user")
+    const blocks = Array.isArray(last.content) ? last.content : []
+    expect(blocks.map((b) => b.type)).toEqual(["tool_result", "tool_result", "text"])
+  })
+
+  it("still folds a system-role item that opens the conversation", () => {
+    const r = translateResponsesToAnthropic({
+      model: "m",
+      input: [
+        { role: "system", content: "Be terse." },
+        { role: "developer", content: "And polite." },
+        { role: "user", content: [{ type: "input_text", text: "hello" }] },
+      ],
+    })!
+    expect(r.system).toBe("Be terse.\n\nAnd polite.")
+    expect(r.messages).toHaveLength(1)
   })
 
   // Bare `{role, content}` items are spec-valid and sent by the Vercel AI SDK.
@@ -539,5 +600,140 @@ describe("createResponsesSseTranslator (stream)", () => {
     for (const e of run(textStream)) {
       expect((e.data as any).type).toBe(e.event)
     }
+  })
+})
+
+describe("resolveCodexThreadIdentity", () => {
+  // Wire shapes below are a real capture: Codex Desktop 0.144.4 sends this
+  // metadata as both a header and a `client_metadata` entry, and a subagent's
+  // rollout records the same split — own `id`, parent's `session_id`.
+  const turnMetadata = (over: Record<string, unknown>) => JSON.stringify({
+    installation_id: "66bcfba4-e581-41e3-9487-57705ef35f60",
+    session_id: "01a07829-00b2-7c23-b950-26b07808dc26",
+    thread_id: "01a07829-00b2-7c23-b950-26b07808dc26",
+    turn_id: "01a07829-00f7-7a71-82d6-6b3a2626ebc8",
+    request_kind: "turn",
+    thread_source: "user",
+    ...over,
+  })
+
+  it("falls back to prompt_cache_key when no metadata is sent", () => {
+    expect(resolveCodexThreadIdentity({ prompt_cache_key: "conv-a" })).toEqual({ sessionKey: "conv-a" })
+  })
+
+  it("carries no identity at all when neither is sent", () => {
+    expect(resolveCodexThreadIdentity({ model: "claude-sonnet-5" })).toEqual({})
+  })
+
+  it("keys a user thread the same way prompt_cache_key did", () => {
+    const key = "01a07829-00b2-7c23-b950-26b07808dc26"
+    const identity = resolveCodexThreadIdentity({ prompt_cache_key: key }, turnMetadata({}))
+    expect(identity).toEqual({ sessionKey: key })
+  })
+
+  it("keys a subagent by its own thread, not the parent's cache key", () => {
+    const identity = resolveCodexThreadIdentity(
+      { prompt_cache_key: "01a077c4-9c1c-73d1-bddb-7887bef18554" },
+      turnMetadata({
+        session_id: "01a077c4-9c1c-73d1-bddb-7887bef18554",
+        thread_id: "01a07806-a29d-79b3-af96-876d8fa1be83",
+        thread_source: "subagent",
+      }),
+    )
+    expect(identity).toEqual({
+      sessionKey: "01a07806-a29d-79b3-af96-876d8fa1be83",
+      requestSource: "fork-codex-subagent",
+    })
+  })
+
+  it("declares a concurrent flow even when the spawned thread reuses the id", () => {
+    const shared = "01a077c4-9c1c-73d1-bddb-7887bef18554"
+    const identity = resolveCodexThreadIdentity(
+      { prompt_cache_key: shared },
+      turnMetadata({ session_id: shared, thread_id: shared, thread_source: "subagent" }),
+    )
+    expect(identity.sessionKey).toBe(shared)
+    expect(identity.requestSource).toBe("fork-codex-subagent")
+  })
+
+  it("reads the metadata from client_metadata when the header is absent", () => {
+    const identity = resolveCodexThreadIdentity({
+      prompt_cache_key: "parent",
+      client_metadata: {
+        "x-codex-turn-metadata": turnMetadata({ thread_id: "child", thread_source: "subagent" }),
+      },
+    })
+    expect(identity).toEqual({ sessionKey: "child", requestSource: "fork-codex-subagent" })
+  })
+
+  it("prefers the header over client_metadata", () => {
+    const identity = resolveCodexThreadIdentity(
+      {
+        prompt_cache_key: "parent",
+        client_metadata: { "x-codex-turn-metadata": turnMetadata({ thread_id: "from-body" }) },
+      },
+      turnMetadata({ thread_id: "from-header" }),
+    )
+    expect(identity.sessionKey).toBe("from-header")
+  })
+
+  it("keeps the cache-key path when the metadata is unparseable", () => {
+    expect(resolveCodexThreadIdentity({ prompt_cache_key: "conv-a" }, "{not json")).toEqual({ sessionKey: "conv-a" })
+  })
+
+  it("sanitizes an unexpected thread_source into a header-safe source", () => {
+    const identity = resolveCodexThreadIdentity(
+      { prompt_cache_key: "parent" },
+      turnMetadata({ thread_id: "child", thread_source: "Cloud Task/2" }),
+    )
+    expect(identity.requestSource).toBe("fork-codex-cloud-task-2")
+  })
+
+  it("declares nothing for a thread_source that survives sanitizing as separators only", () => {
+    const identity = resolveCodexThreadIdentity(
+      { prompt_cache_key: "parent" },
+      turnMetadata({ thread_id: "child", thread_source: "///" }),
+    )
+    expect(identity.requestSource).toBeUndefined()
+  })
+
+  // Codex runs compaction (and title/summary/review/memory) as a side request
+  // under the SAME thread id, with no tools and the whole history. Keyed on the
+  // thread alone it lands on the conversation's session as a rewrite of it.
+  it("keys a compaction beside the thread, not on it, and declares its flow", () => {
+    const thread = "01a077c4-9c1c-73d1-bddb-7887bef18554"
+    const identity = resolveCodexThreadIdentity(
+      { prompt_cache_key: thread },
+      turnMetadata({ thread_id: thread, request_kind: "compact" }),
+    )
+    expect(identity).toEqual({ sessionKey: `${thread}:compact`, requestSource: "fork-codex-compact" })
+  })
+
+  it("leaves a plain turn exactly as before", () => {
+    const thread = "01a077c4-9c1c-73d1-bddb-7887bef18554"
+    expect(resolveCodexThreadIdentity({ prompt_cache_key: thread }, turnMetadata({ thread_id: thread, request_kind: "turn" })))
+      .toEqual({ sessionKey: thread })
+  })
+
+  it("treats a missing request_kind as a turn", () => {
+    const meta = JSON.parse(turnMetadata({ thread_id: "t1" }))
+    delete meta.request_kind
+    expect(resolveCodexThreadIdentity({ prompt_cache_key: "t1" }, JSON.stringify(meta))).toEqual({ sessionKey: "t1" })
+  })
+
+  it("lets the kind name the flow when a spawned thread compacts", () => {
+    const identity = resolveCodexThreadIdentity(
+      { prompt_cache_key: "parent" },
+      turnMetadata({ thread_id: "child", thread_source: "subagent", request_kind: "compact" }),
+    )
+    expect(identity).toEqual({ sessionKey: "child:compact", requestSource: "fork-codex-compact" })
+  })
+
+  it("handles a kind Codex has not sent yet the same way", () => {
+    const identity = resolveCodexThreadIdentity(
+      { prompt_cache_key: "t1" },
+      turnMetadata({ thread_id: "t1", request_kind: "Memory Extract" }),
+    )
+    expect(identity).toEqual({ sessionKey: "t1:memory-extract", requestSource: "fork-codex-memory-extract" })
   })
 })
