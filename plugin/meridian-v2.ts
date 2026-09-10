@@ -16,6 +16,8 @@
  */
 
 import * as Plugin from "@opencode-ai/plugin/promise/plugin"
+import { Model } from "@opencode-ai/schema/model"
+import type { CatalogDraft } from "@opencode-ai/plugin/promise/catalog"
 import {
   PRIORITY_ATTESTATION_HEADER,
   createPriorityAttestation,
@@ -29,8 +31,18 @@ import {
 export const SUPPORTED_OPENCODE_V2_VERSION = "0.0.0-beta-18314"
 
 const MERIDIAN_PROVIDERS = new Set(["anthropic", "meridian"])
+const MERIDIAN_CATALOG_PROVIDER = "meridian"
 const PARENT_SESSION_ONE_SHOTS = new Set(["title", "summary"])
 const ATTACHED_COMPACTION_AGENT = "compaction"
+const MODEL_DISCOVERY_TIMEOUT_MS = 3_000
+const PROVIDER_READY_POLL_MS = 25
+// The plugin tree does not import from src/, so this mirrors VALID_EFFORTS in
+// src/proxy/effort.ts. A test asserts the two stay identical. Filtering in this
+// order also gives every model its variants low -> max regardless of the order
+// the proxy happens to serialise its capability object in.
+const MERIDIAN_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const
+
+export const MERIDIAN_V2_EFFORTS: readonly string[] = MERIDIAN_EFFORTS
 
 const SESSION_AFFINITY_HEADERS = [
   "x-opencode-session",
@@ -131,6 +143,186 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+export interface MeridianModel {
+  id: string
+  name: string
+  contextWindow: number
+  efforts: string[]
+}
+
+export interface MeridianProviderModels {
+  providerID: string
+  models: MeridianModel[]
+}
+
+type MeridianCatalogClient = {
+  provider: {
+    get(input: { providerID: string }): Promise<unknown>
+  }
+  reload(): Promise<void>
+}
+
+type ModelFetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+
+export function meridianModelsURL(baseURL: unknown): string | undefined {
+  if (typeof baseURL !== "string" || baseURL.length === 0) return undefined
+  try {
+    const url = new URL(baseURL)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined
+    url.search = ""
+    url.hash = ""
+    if (!url.pathname.endsWith("/")) url.pathname += "/"
+    // OpenCode's Anthropic provider carries the API version in the base URL
+    // (`http://127.0.0.1:3456/v1`), which is also the shape the V2 package gate
+    // configures. Appending `v1/models` there requests `/v1/v1/models`, a 404
+    // that silently disables discovery, so resolve `models` against an existing
+    // version segment instead.
+    const endpoint = /(?:^|\/)v1\/$/.test(url.pathname) ? "models" : "v1/models"
+    return new URL(endpoint, url).toString()
+  } catch {
+    return undefined
+  }
+}
+
+export function parseMeridianModels(value: unknown): MeridianModel[] | undefined {
+  if (!isRecord(value) || !Array.isArray(value.data)) return undefined
+
+  const models: MeridianModel[] = []
+  const ids = new Set<string>()
+  for (const item of value.data) {
+    if (!isRecord(item)) return undefined
+    const id = item.id
+    const name = item.display_name
+    const contextWindow = item.context_window
+    if (
+      typeof id !== "string"
+      || id.length === 0
+      || id.length > 256
+      || /[^\x21-\x7E]/.test(id)
+      || ids.has(id)
+      || typeof name !== "string"
+      || name.trim().length === 0
+      || name.length > 256
+      || typeof contextWindow !== "number"
+      || !Number.isSafeInteger(contextWindow)
+      || contextWindow <= 0
+    ) {
+      return undefined
+    }
+    const capabilities = isRecord(item.capabilities) ? item.capabilities : undefined
+    const effort = capabilities && isRecord(capabilities.effort) ? capabilities.effort : undefined
+    const efforts = MERIDIAN_EFFORTS.filter((level) => isRecord(effort?.[level]) && effort[level].supported === true)
+    ids.add(id)
+    models.push({ id, name, contextWindow, efforts })
+  }
+  return models
+}
+
+export async function fetchMeridianModels(
+  baseURL: unknown,
+  signal: AbortSignal,
+  fetcher: ModelFetcher = globalThis.fetch,
+): Promise<MeridianModel[] | undefined> {
+  const url = meridianModelsURL(baseURL)
+  if (!url || signal.aborted) return undefined
+
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  const timeout = setTimeout(abort, MODEL_DISCOVERY_TIMEOUT_MS)
+  timeout.unref?.()
+  signal.addEventListener("abort", abort, { once: true })
+  try {
+    const response = await fetcher(url, { signal: controller.signal })
+    if (!response.ok) return undefined
+    return parseMeridianModels(await response.json())
+  } catch {
+    return undefined
+  } finally {
+    clearTimeout(timeout)
+    signal.removeEventListener("abort", abort)
+  }
+}
+
+function meridianProviderBaseURL(value: unknown): unknown {
+  if (!isRecord(value)) return undefined
+  const provider = isRecord(value.data) ? value.data : value
+  if (!isRecord(provider.settings)) return undefined
+  return provider.settings.baseURL
+}
+
+function isLegacyMeridianBaseURL(baseURL: unknown): boolean {
+  if (typeof baseURL !== "string") return false
+  try {
+    const { hostname } = new URL(baseURL)
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]"
+  } catch {
+    return false
+  }
+}
+
+export async function loadMeridianModels(
+  catalog: MeridianCatalogClient,
+  signal: AbortSignal,
+  fetcher: ModelFetcher = globalThis.fetch,
+): Promise<MeridianProviderModels[]> {
+  const deadline = Date.now() + MODEL_DISCOVERY_TIMEOUT_MS
+  while (!signal.aborted) {
+    const providers = await Promise.all([...MERIDIAN_PROVIDERS].map(async (providerID) => {
+      try {
+        const baseURL = meridianProviderBaseURL(await catalog.provider.get({ providerID }))
+        if (providerID === MERIDIAN_CATALOG_PROVIDER && meridianModelsURL(baseURL) === undefined) return undefined
+        if (providerID !== MERIDIAN_CATALOG_PROVIDER && !isLegacyMeridianBaseURL(baseURL)) return undefined
+        return { providerID, baseURL }
+      } catch {
+        return undefined
+      }
+    }))
+    const configured = providers.flatMap(provider => provider ? [provider] : [])
+    if (configured.length > 0) {
+      const discovered = await Promise.all(configured.map(async ({ providerID, baseURL }) => {
+        const models = await fetchMeridianModels(baseURL, signal, fetcher)
+        return models ? { providerID, models } : undefined
+      }))
+      return discovered.flatMap(result => result ? [result] : [])
+    }
+    if (Date.now() >= deadline) return []
+    await new Promise<void>((resolve) => setTimeout(resolve, PROVIDER_READY_POLL_MS))
+  }
+  return []
+}
+
+/**
+ * Write Meridian's advertised models over the assembled V2 catalog.
+ *
+ * Meridian is authoritative for what it will actually serve: the context window
+ * follows the signed-in subscription (Sonnet stays 200k so a 1M turn is not
+ * billed as Extra Usage), and the effort levels are the ones the proxy accepts.
+ * OpenCode's built-in models.dev entries disagree — beta-18866 advertises a 1M
+ * Sonnet — so an entry that already exists must be corrected, not skipped.
+ *
+ * This does not overwrite user configuration. V2 layers `providers.<id>.models`
+ * on top of plugin transforms, verified live on beta-18866: a configured
+ * `claude-opus-5` override survived a transform that wrote a different name and
+ * context to the same model.
+ */
+export function applyMeridianModels(
+  catalog: CatalogDraft,
+  providerID: string,
+  models: readonly MeridianModel[],
+): void {
+  for (const model of models) {
+    catalog.model.update(providerID, model.id, (entry) => {
+      entry.name = model.name
+      entry.limit.context = model.contextWindow
+      entry.variants = model.efforts.map((effort) => ({
+        id: Model.VariantID.make(effort),
+        headers: {},
+        body: { effort },
+      }))
+    })
+  }
+}
+
 async function withTimeout<T>(pending: Promise<T>, timeoutMs: number): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timedOut = new Promise<undefined>((resolve) => {
@@ -196,6 +388,33 @@ const MeridianV2Plugin = Plugin.define({
       pending: Promise<ResolvedAgentMetadata>
     }>()
     const registered: Array<{ dispose: () => Promise<void> }> = []
+    const modelDiscoveryController = new AbortController()
+    let discoveredModels: MeridianProviderModels[] = []
+    let discoveryStarted = false
+
+    registered.push(await context.catalog.transform((catalog) => {
+      for (const discovered of discoveredModels) {
+        applyMeridianModels(catalog, discovered.providerID, discovered.models)
+      }
+    }))
+
+    const discoverModels = async () => {
+      if (discoveryStarted || modelDiscoveryController.signal.aborted) return false
+      const models = await loadMeridianModels(context.catalog, modelDiscoveryController.signal).catch(() => [])
+      if (models.length === 0 || modelDiscoveryController.signal.aborted) return false
+      discoveryStarted = true
+      discoveredModels = models
+      await context.catalog.reload()
+      return true
+    }
+
+    const catalogEvents = context.event.subscribe({ signal: modelDiscoveryController.signal })
+    void (async () => {
+      for await (const event of catalogEvents) {
+        if (event.type !== "catalog.updated") continue
+        if (await discoverModels()) return
+      }
+    })().catch(() => {})
 
     const resolveAgentTraits = (agent: string, refresh = false): Promise<ResolvedAgentMetadata> => {
       const cached = traitsByAgent.get(agent)
@@ -320,11 +539,15 @@ const MeridianV2Plugin = Plugin.define({
         }, { providerID }))
       }
     } catch (error) {
+      // Setup never returns its cleanup on this path, so the discovery
+      // subscription and its poll loop would otherwise outlive the failure.
+      modelDiscoveryController.abort()
       await Promise.allSettled(registered.map(({ dispose }) => dispose()))
       throw error
     }
 
     return async () => {
+      modelDiscoveryController.abort()
       const results = await Promise.allSettled(registered.map(({ dispose }) => dispose()))
       const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : [])
       if (failures.length > 0) throw new AggregateError(failures, "Failed to dispose Meridian V2 hooks")
