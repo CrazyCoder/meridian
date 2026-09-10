@@ -189,6 +189,18 @@ therefore appends the agent name for non-primary agents (`ses_x#title`), leaving
 the primary agent's key byte-identical to the header. An adapter whose client
 multiplexes agents over one session id needs the same treatment.
 
+**A session header is identity, never authentication.** Polytoken's native
+`X-Polytoken-Session` header is the cleanest example: the trimmed header value
+IS the conversation identity — no agent-mode scoping, no lineage
+canonicalization, no attestation. A blank/missing native header means "no
+identity" rather than an invented fallback key: a headerless tool-result
+continuation runs independent (never resumed, nothing stored) via the
+existing client-driven-loop guard, and plain text turns keep the generic
+fingerprint fallback shared by every headerless client. The polytoken adapter
+forces client-owned passthrough unconditionally: instance
+`passthrough: false` and global `MERIDIAN_PASSTHROUGH=0` are ineffective for
+that base, because the protocol's tool loop lives entirely in the client.
+
 Both are LRU with coordinated eviction — evicting from one removes the corresponding entry in the other.
 
 ### Lineage Verification

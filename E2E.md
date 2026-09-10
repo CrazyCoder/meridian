@@ -4628,3 +4628,104 @@ Build first, then run `bun scripts/e2e-client-cwd.mjs` on macOS or Linux with Cl
 Both response modes must preserve OpenCode-shaped Windows client paths, execute client read/result loops, and execute proxy-managed reads in the proxy directory. Pi cases use actual POSIX directories with a literal trailing backslash and a symlink followed by `..`; the latter must have a different inode from the proxy directory. Client receipts differ from the proxy decoy. The fixture explicitly specifies literal path joining: this validates context delivery and tool execution under that instruction, not arbitrary model interpretation of unusual filenames. `--pi-only` and `--parent-only` isolate the two path regressions; `E2E_MERIDIAN_ROOT` selects a separately built before/after checkout.
 
 Also run the E42 actual OpenCode gate with `--live --extended --separate-proxy-cwd` and the pinned `E2E_OPENCODE_BIN`. The harness isolates the client HOME/PWD as well as XDG state, while the proxy retains its normal Claude authentication. It asserts the client directory from actual request bodies and stable client system prompts before comparing cache reuse. The manually invoked hidden-summary probe runs in a disposable client fork: this checks stripped headers without switching the primary client agent or injecting its tool-catalog update into primary history. A marker assertion rejects any leak into primary requests. This keeps the client project and configured SDK workdir distinct through tool use, restart, undo, fork, compaction and concurrent children. Run all four E41 modes after CWD/session-identity changes.
+
+## Polytoken native client loop
+
+**What it proves:** a real Polytoken binary is detected as `polytoken`, keeps its
+own tool loop, and resumes by its native session header.
+
+Two gates. The first costs no tokens and belongs in the detection sweep; the
+second is the live loop.
+
+### Detection drift
+
+`scripts/e2e-client-detection.mjs` drives an installed Polytoken against a local
+stub and diffs its real headers against
+`src/__tests__/fixtures/client-headers.json`. Polytoken ships as a single static
+binary that is usually outside `PATH`, so point the harness at it:
+
+```bash
+E2E_POLYTOKEN_BIN=/path/to/polytoken bun scripts/e2e-client-detection.mjs
+```
+
+`client-detection-fixtures.test.ts` pins the recorded set to the `polytoken`
+adapter, so a change to detection ORDERING fails in CI; the script catches a
+change on the CLIENT side. Re-run with `--update` after a Polytoken upgrade and
+commit the diff. The session header is redacted at capture time, so a re-capture
+that only changes the session id produces no diff.
+
+Captured from 0.8.6: `user-agent: Polytoken v0.8.6`, `x-polytoken-session`,
+`accept: text/event-stream`.
+
+### Live client-owned tool loop
+
+Costs tokens. Uses a disposable Meridian on an isolated port and a temporary
+Polytoken config directory — never the operator's own config.
+
+```bash
+BASE=/tmp/e2e-polytoken; rm -rf $BASE; mkdir -p $BASE/cfg $BASE/proj
+printf 'alpha\nbeta\ngamma\ndelta\n' > $BASE/proj/notes.txt
+cat > $BASE/cfg/config.yaml <<'YAML'
+version: 1
+providers:
+  meridian:
+    kind:
+      type: custom_anthropic_compatible
+    url: http://127.0.0.1:3468
+    protocol: anthropic_messages
+    auth:
+      type: static_key
+      key: local-fixture-key
+      format: anthropic_x_api_key
+models:
+  claude-haiku-4-5:
+    provider: meridian
+    provider_name: claude-haiku-4-5
+    class: full
+    context_window: 200000
+YAML
+
+MERIDIAN_PORT=3468 MERIDIAN_SESSION_STORE_DIR=$BASE/store bun bin/cli.ts > $BASE/proxy.log 2>&1 &
+
+polytoken --config-dir $BASE/cfg config validate            # exit 0
+polytoken --config-dir $BASE/cfg models                     # lists claude-haiku-4-5
+cd $BASE/proj && polytoken --config-dir $BASE/cfg --working-dir $BASE/proj \
+  exec --model claude-haiku-4-5 \
+  'Read the file notes.txt in the current directory using your read tool, then reply with exactly: LINES=<number of lines>'
+```
+
+**Pass criteria:**
+
+- The answer is `LINES=4`. The read executed on the Polytoken side; Meridian's
+  own working directory does not contain the fixture, so a proxy-executed read
+  could not produce it.
+- Every proxy line shows `adapter=polytoken`, with client tools forwarded
+  (`tools=N`, N>0).
+- `lineage=new` on the first turn and `lineage=continuation` on each later turn
+  of the same `x-polytoken-session`. The SDK session id differs per turn: the
+  per-turn managed fork is the durable publication design, and lineage
+  continuation is the resume proof.
+- More than one client request reaches the proxy for a single `exec`. One
+  request would mean Meridian ran the loop itself.
+
+**Mandatory-passthrough control.** Restart the proxy with `MERIDIAN_PASSTHROUGH=0`
+and repeat. The result must be identical: Polytoken owns tool execution, so
+neither the global setting nor a configured instance may hand the loop to the
+SDK.
+
+**Detection controls**, cheap and worth running with the loop:
+
+```bash
+# rejected -> adapter=opencode
+curl -s -XPOST localhost:3468/v1/messages -H 'content-type: application/json' \
+  -H 'user-agent: PolytokenImpostor/1.0' -d '{...}'
+# blank header is not a match -> adapter=opencode
+curl ... -H 'x-polytoken-session:   '
+# valid header, or the Polytoken UA alone -> adapter=polytoken
+```
+
+**Verified:** 2026-09-10 against Polytoken 0.8.6 (macos-arm64, sha256
+`71353a6d…0793e7`) and real Claude Max on `claude-haiku-4-5`. The tool loop
+returned `LINES=4` in four client round-trips with `adapter=polytoken` and
+`lineage=continuation` from turn 2, unchanged with `MERIDIAN_PASSTHROUGH=0`. All
+four detection controls behaved as recorded above.
