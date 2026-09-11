@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.71.0](https://github.com/rynfar/meridian/compare/meridian-v1.70.0...meridian-v1.71.0) (2026-09-11)
+
+
+### Features
+
+* **proxy:** classify abort causes in sdk_termination diagnostics ([#1022](https://github.com/rynfar/meridian/issues/1022)) ([0fd5940](https://github.com/rynfar/meridian/commit/0fd59403cc5de30a3336a77f3ebcdb3d5a34dacc))
+* **proxy:** recover capped passthrough turns with streamed-uncaptured tools ([#1025](https://github.com/rynfar/meridian/issues/1025)) ([d8516be](https://github.com/rynfar/meridian/commit/d8516bea3f4f3b8ac8f9227c49239a83bdf2689e))
+
+
+### Bug Fixes
+
+* **opencode:** seed the V2 model catalog so a cold start accepts a variant ([#1018](https://github.com/rynfar/meridian/issues/1018)) ([52b581b](https://github.com/rynfar/meridian/commit/52b581b6562111b4b1bc8e05d51c961b34c378f8))
+
 ## [1.70.0](https://github.com/rynfar/meridian/compare/meridian-v1.69.0...meridian-v1.70.0) (2026-09-10)
 
 
