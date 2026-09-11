@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.71.0](https://github.com/rynfar/meridian/compare/meridian-v1.70.0...meridian-v1.71.0) (2026-09-11)
+
+
+### Features
+
+* **proxy:** classify abort causes in sdk_termination diagnostics ([#1022](https://github.com/rynfar/meridian/issues/1022)) ([0fd5940](https://github.com/rynfar/meridian/commit/0fd59403cc5de30a3336a77f3ebcdb3d5a34dacc))
+* **proxy:** recover capped passthrough turns with streamed-uncaptured tools ([#1025](https://github.com/rynfar/meridian/issues/1025)) ([d8516be](https://github.com/rynfar/meridian/commit/d8516bea3f4f3b8ac8f9227c49239a83bdf2689e))
+
+
+### Bug Fixes
+
+* **opencode:** seed the V2 model catalog so a cold start accepts a variant ([#1018](https://github.com/rynfar/meridian/issues/1018)) ([52b581b](https://github.com/rynfar/meridian/commit/52b581b6562111b4b1bc8e05d51c961b34c378f8))
+
+## [1.70.0](https://github.com/rynfar/meridian/compare/meridian-v1.69.0...meridian-v1.70.0) (2026-09-10)
+
+
+### Features
+
+* add Polytoken harness adapter ([#1010](https://github.com/rynfar/meridian/issues/1010)) ([3db622f](https://github.com/rynfar/meridian/commit/3db622fa90fb261fe431916fbbd624a4fc55d1d5))
+* discover Meridian models in OpenCode V2 ([#1004](https://github.com/rynfar/meridian/issues/1004)) ([7028c69](https://github.com/rynfar/meridian/commit/7028c6979dca77e3d65c46c8b66cb1b421b942b8))
+
+
+### Bug Fixes
+
+* **errors:** classify a disabled subscription entitlement as billing ([#1012](https://github.com/rynfar/meridian/issues/1012)) ([c3dc227](https://github.com/rynfar/meridian/commit/c3dc22791d71baffa3e1f91d93a1b3e4d9d62c91))
+
 ## [1.69.0](https://github.com/rynfar/meridian/compare/meridian-v1.68.0...meridian-v1.69.0) (2026-09-09)
 
 

@@ -3,6 +3,8 @@
  * Maps raw error messages to structured HTTP error responses.
  */
 
+import type { AbortCauseSnapshot } from "./requestAbort"
+
 export interface ClassifiedError {
   status: number
   type: string
@@ -75,6 +77,35 @@ const BILLING_SIGNALS: readonly RegExp[] = [
   // echoing the sentence mid-line must not trigger it.
   /^\s*(?:(?:error|api error|claude code returned an error result|subprocess stderr):\s*)*your (?:group|organization|org)(?:'|’)s usage limit is set to \$\d/m,
 ]
+
+/** The org-admin entitlement switch: "Your organization has disabled Claude
+ *  subscription access for Claude Code · Use an Anthropic API key instead, or
+ *  ask your admin to enable access". Observed live on a Max profile that
+ *  returned 500 on every request while a Pro profile in the same priority pool
+ *  served the identical request from the same container.
+ *
+ *  It names no limit and no payment method, so nothing above matched it: the
+ *  refusal fell through to a generic api_error, isAccountFailoverError said no,
+ *  and priority routing kept handing requests to an account that could not
+ *  serve any of them. In the stderr shape it was worse than a missed failover —
+ *  a bare code-1 exit reads as an auth failure, so the operator was told to run
+ *  `claude login` for an entitlement an admin has to restore.
+ *
+ *  Line-anchored after the known SDK wrappers, like the banners above and for
+ *  the same reason: this classification can pull a profile out of a pool, so a
+ *  runbook or an MCP server quoting the sentence mid-line must not trigger it.
+ *  An optional three-digit status covers the API-key/gateway shape, where the
+ *  SDK prefixes the upstream status ("API Error: 403 Your organization ...").
+ *
+ *  On that gateway path the CLI also interposes a bare "Failed to authenticate."
+ *  between its own wrapper and the upstream status, so the real string is
+ *  "Claude Code returned an error result: Failed to authenticate. API Error: 403
+ *  Your organization has disabled ...". That clause ends in a period rather than
+ *  a colon, so it is alternated into the wrapper group instead of being a
+ *  wrapper itself. Without it the API-key shape still fell through to api_error
+ *  and did not fail over — caught by driving a real refusal through the
+ *  error-telemetry failover harness, not by the string in the bug report. */
+const SUBSCRIPTION_ACCESS_DISABLED = /^\s*(?:(?:error|api error|claude code returned an error result|subprocess stderr):\s*|failed to authenticate\.\s*)*(?:\d{3} )?your (?:organization|org) has disabled claude subscription access/m
 
 /** "hit your limit", "hit your session limit", "hit your weekly limit", and any
  *  future single-word qualifier the CLI adopts. Anchored on both sides so it
@@ -279,6 +310,21 @@ export function classifyError(errMsg: string, model?: string): ClassifiedError {
       status: 401,
       type: "authentication_error",
       message: "Claude OAuth token has expired and could not be refreshed automatically. Run 'claude login' in your terminal to re-authenticate."
+    }
+  }
+
+  // Org-level entitlement, checked before the auth branches below: the stderr
+  // shape of this refusal ends in a code-1 exit, which those branches read as
+  // an expired login. billing_error rather than rate_limit_error — an access
+  // switch an admin has to flip is not a spent window, so isQuotaRefusal must
+  // not send the cooldown looking up a five-hour reset that never arrives —
+  // and failover-eligible, because another profile in the pool may well be on
+  // an organization that still allows it.
+  if (SUBSCRIPTION_ACCESS_DISABLED.test(lower)) {
+    return {
+      status: 402,
+      type: "billing_error",
+      message: "This account's organization has disabled Claude subscription access for Claude Code. Ask the organization admin to re-enable it, or serve this request from an API-key profile — an identical retry on this account fails the same way."
     }
   }
 
@@ -672,6 +718,91 @@ export function canRecoverCapturedToolUses(input: {
   }
 }
 
+/**
+ * Per-block completeness record for a tool_use the client received on the
+ * wire (uncaptured-recovery tracker). Populated only by real forwarding;
+ * `naturalStop` is set exclusively when the block's own content_block_stop
+ * was enqueued — a synthetic flush closure never counts, because a dangling
+ * block's arguments may be incomplete.
+ */
+export interface StreamedToolBlockRecord {
+  id: string
+  name: string
+  /** Accumulated input_json_delta partials (plus any inline start input). */
+  json: string
+  /** True when the block carried an inline input object at start (no deltas). */
+  startedInputObject: boolean
+  forwardedStart: boolean
+  naturalStop: boolean
+}
+
+/**
+ * Is a streamed-but-uncaptured tool call complete and executable?
+ * Pure function — no I/O.
+ */
+export function isStreamedToolBlockComplete(
+  record: StreamedToolBlockRecord,
+): boolean {
+  if (!record.forwardedStart) return false
+  if (!record.naturalStop) return false
+  if (record.startedInputObject) return true
+  // Zero-argument calls stream as `{}` deltas; anything must parse as an
+  // object. A truncated JSON string is not executable.
+  if (!record.json.trim()) return false
+  try {
+    const parsed = JSON.parse(record.json)
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Can a failed passthrough turn whose tool_use blocks fully streamed but
+ * were NEVER captured by the PreToolUse hook still be delivered as a
+ * tool-use response?
+ *
+ * This is the 2026-09-10 0a95wd-tusk incident shape: an abort landing
+ * between stream completion and tool dispatch makes the CLI yield
+ * `max_turns_reached` WITHOUT running the hook, so captures are empty even
+ * though every streamed block is complete and names a declared client tool.
+ * This is a materially different trust basis from
+ * `canRecoverCapturedToolUses` (which requires the hook to have seen the
+ * calls) and is therefore a separate predicate, not a relaxed count.
+ *
+ * Callers must further verify: the attempted maxTurns was 1, the kill switch
+ * is enabled, no cancellation of any kind fired, no forced-single/duplicate/
+ * early-stop state exists, and the envelope is still open. Every streamed
+ * block must pass `isStreamedToolBlockComplete`.
+ */
+export function canRecoverUncapturedToolUses(input: {
+  reason: SdkTermination["reason"]
+  passthrough: boolean
+  capturedToolUses: number
+  streamedToolUses: number
+  droppedToolUseIds: number
+  sawDuplicateToolUse: boolean
+  forceSingleToolUse: boolean
+  earlyStopFired: boolean
+  uncapturedRecoveryEnabled: boolean
+  attemptedMaxTurns: number | undefined
+}): boolean {
+  if (!input.uncapturedRecoveryEnabled) return false
+  if (!input.passthrough) return false
+  if (input.reason !== "max_turns") return false
+  // Only a turn this proxy capped at 1 qualifies; an uncapped budget that
+  // ran out is a different failure, and a cap-lifted reissue is already a
+  // second attempt at recovery.
+  if (input.attemptedMaxTurns !== 1) return false
+  if (input.capturedToolUses > 0) return false
+  if (input.streamedToolUses <= 0) return false
+  if (input.droppedToolUseIds > 0) return false
+  if (input.sawDuplicateToolUse) return false
+  if (input.forceSingleToolUse) return false
+  if (input.earlyStopFired) return false
+  return true
+}
+
 export function extractSdkTermination(errMsg: string): SdkTermination {
   const stderrTail = extractStderrTail(errMsg)
 
@@ -755,6 +886,8 @@ export function formatSdkTermination(
     isResume?: boolean
     hasDeferredTools?: boolean
     sdkSessionId?: string
+    /** Abort-cause snapshot: which Meridian-linked producer fired, if any. */
+    abort?: AbortCauseSnapshot
   },
 ): string {
   const parts: string[] = [`reason=${t.reason}`]
@@ -765,6 +898,12 @@ export function formatSdkTermination(
   if (ctx.isResume !== undefined) parts.push(`resume=${ctx.isResume}`)
   if (ctx.hasDeferredTools !== undefined) parts.push(`deferred=${ctx.hasDeferredTools}`)
   if (ctx.sdkSessionId) parts.push(`session=${ctx.sdkSessionId.slice(0, 8)}`)
+  if (ctx.abort) {
+    // `none` means no Meridian-linked abort fired — the marker that
+    // discriminates the uncaptured-tool-turn incident from a genuine client
+    // or watchdog cancellation. It is NOT proof the CLI never aborted.
+    parts.push(`abort=${ctx.abort.cause}`)
+  }
   if (t.rawTail) parts.push(`raw=${JSON.stringify(t.rawTail)}`)
   if (t.stderrTail) parts.push(`stderr=${JSON.stringify(t.stderrTail)}`)
   return `sdk_termination ${parts.join(" ")}`

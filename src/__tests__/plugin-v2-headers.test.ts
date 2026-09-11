@@ -234,6 +234,7 @@ async function installHooks(options: {
   contextMessages?: unknown[]
   failHttpRegistration?: boolean
   disposed?: string[]
+  subscribeSignals?: Array<AbortSignal | undefined>
 } = {}) {
   let modelHook: HookCallback | undefined
   let httpHook: HookCallback | undefined
@@ -242,8 +243,22 @@ async function installHooks(options: {
   const sessionLookups: string[] = []
   const contextLookups: string[] = []
   const registrations: Array<{ name: string; providerID: string | undefined }> = []
+  const subscribeSignals = options.subscribeSignals ?? []
 
   const context = {
+    catalog: {
+      transform: async () => ({ dispose: async () => { disposed.push("catalog:transform") } }),
+      provider: {
+        get: async () => ({ settings: {} }),
+      },
+      reload: async () => {},
+    },
+    event: {
+      subscribe: (subscribeOptions?: { signal?: AbortSignal }) => {
+        subscribeSignals.push(subscribeOptions?.signal)
+        return (async function* () {})()
+      },
+    },
     agent: {
       get: async ({ agentID }: { agentID: string }) => {
         lookups.push(agentID)
@@ -334,6 +349,7 @@ describe("plugin/meridian-v2.ts V2 hook registration", () => {
     expect(hooks.disposed.sort()).toEqual([
       "anthropic:http.request",
       "anthropic:model.request",
+      "catalog:transform",
       "meridian:http.request",
       "meridian:model.request",
     ])
@@ -400,7 +416,17 @@ describe("plugin/meridian-v2.ts V2 hook registration", () => {
     const disposed: string[] = []
     const installed = installHooks({ failHttpRegistration: true, disposed })
     await expect(installed).rejects.toThrow("http hook unavailable")
-    expect(disposed).toEqual(["anthropic:model.request"])
+    expect(disposed).toEqual(["catalog:transform", "anthropic:model.request"])
+  })
+
+  // Setup never returns its cleanup when registration throws, so the discovery
+  // subscription has to be cancelled on that path or it outlives the plugin.
+  test("cancels model discovery when registration fails", async () => {
+    const signals: Array<AbortSignal | undefined> = []
+    await expect(installHooks({ failHttpRegistration: true, subscribeSignals: signals }))
+      .rejects.toThrow("http hook unavailable")
+    expect(signals).toHaveLength(1)
+    expect(signals[0]?.aborted).toBe(true)
   })
 })
 

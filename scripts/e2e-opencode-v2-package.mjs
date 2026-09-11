@@ -2,7 +2,7 @@
 // Actual pinned OpenCode host against a local API, with isolated client state.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -13,6 +13,8 @@ const live = process.argv.includes('--live')
 const source = process.argv.includes('--source')
 const v1 = process.argv.includes('--v1')
 const extended = process.argv.includes('--extended')
+// The negative control: serve no catalog and require discovery to fail closed.
+const discovery = !process.argv.includes('--no-discovery')
 assert(!extended || (live && !v1), '--extended requires --live and a V2 host')
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'meridian-v2-package-')))
 const proxyWorkdir = process.argv.includes('--separate-proxy-cwd') ? join(root, 'proxy-workdir') : root
@@ -64,15 +66,60 @@ if (live) {
   await startMeridian()
 }
 const requests = []
+const discoveryRequests = []
 let primaryRequests = 0
 let deliveredResultSeen = false
+// Mirrors Meridian's own /v1/models shape for the non-live mode, including the
+// two values OpenCode's models.dev entry disagrees with: Haiku's full effort set
+// and a 200k window.
+const fixtureCatalog = { data: [{
+  id: 'claude-haiku-4-5', object: 'model', owned_by: 'anthropic',
+  display_name: 'Claude Haiku 4.5', context_window: 200_000,
+  capabilities: { effort: { low: { supported: true }, medium: { supported: true }, high: { supported: true },
+    xhigh: { supported: true }, max: { supported: true }, supported: true } },
+}] }
 const endpoint = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+  // #1004's model discovery issues a body-less `GET /v1/models`. Parsing a body
+  // unconditionally threw here, which both failed discovery closed and set this
+  // process's exit code, so the gate reported PASS and exited 1 (#1014).
+  if (request.method !== 'POST') {
+    const url = new URL(request.url)
+    const row = { method: request.method, path: url.pathname, startedAt: Date.now() }
+    discoveryRequests.push(row)
+    if (!discovery) {
+      row.status = 404
+      return new Response('discovery disabled', { status: 404 })
+    }
+    if (live) {
+      // A one-shot client process can exit while its discovery request is still
+      // in flight, which aborts this forward. Record that instead of throwing:
+      // an unhandled rejection here is what made the gate exit 1 (#1014).
+      try {
+        const upstream = await fetch(`${proxyUrl}${url.pathname}${url.search}`,
+          { method: request.method, headers: request.headers, signal: request.signal })
+        const text = await upstream.text()
+        row.status = upstream.status
+        row.body = text
+        return new Response(text, { status: upstream.status,
+          headers: { 'content-type': upstream.headers.get('content-type') ?? 'application/json' } })
+      } catch (error) {
+        row.status = 0
+        row.aborted = request.signal.aborted
+        row.error = String(error)
+        return new Response('discovery forward failed', { status: 502 })
+      }
+    }
+    const text = JSON.stringify(fixtureCatalog)
+    row.status = 200
+    row.body = text
+    return new Response(text, { status: 200, headers: { 'content-type': 'application/json' } })
+  }
   const body = await request.json()
   const headers = Object.fromEntries([...request.headers].filter(([key]) => (key.startsWith('x-') && key !== 'x-api-key') || key === 'user-agent'))
   const systemText = typeof body.system === 'string' ? body.system : (body.system ?? []).map(block => block.text ?? '').join('\n')
   const clientCwd = systemText.match(/Working directory:\s*([^\n]+)/i)?.[1]?.trim()
   const clientSystemHash = createHash('sha256').update(JSON.stringify(body.system ?? null)).digest('hex')
-  const row = { clientSystemHash, clientCwd, requestId: crypto.randomUUID(), path: new URL(request.url).pathname, model: body.model, headers, hasForkMarker: JSON.stringify(body.messages).includes(forkMarker),
+  const row = { clientSystemHash, clientCwd, requestId: crypto.randomUUID(), path: new URL(request.url).pathname, model: body.model, effort: body.effort, headers, hasForkMarker: JSON.stringify(body.messages).includes(forkMarker),
     hasUndoMarker: JSON.stringify(body.messages).includes(undoMarker), hasSummaryMarker: JSON.stringify(body.messages).includes(summaryMarker), startedAt: Date.now() }
   requests.push(row)
   if (live) {
@@ -101,13 +148,13 @@ const endpoint = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request
   ]
   return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } })
 } })
-async function run(args) {
+async function run(args, { allowFailure = false } = {}) {
   const child = Bun.spawn(args, { cwd: root, env, stdout: 'pipe', stderr: 'pipe' })
   const timer = setTimeout(() => child.kill(), 180_000)
   try {
     const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     console.log(JSON.stringify({ root, args, exitCode, stdout, stderr }))
-    assert.equal(exitCode, 0)
+    if (!allowFailure) assert.equal(exitCode, 0)
     return stdout
   } finally { clearTimeout(timer) }
 }
@@ -196,6 +243,58 @@ try {
     assert(restarted.some(event => event.type === 'text' && event.part?.text.includes(receipt)), 'Restart lost the receipt')
     verifyResume(priorTelemetry, await latestPrimaryTelemetry(session), 'process restart')
   }
+  // #1004's user-visible payoff: an effort variant that only Meridian advertises
+  // must become selectable, and the effort must reach the proxy. Verified live on
+  // beta-18866: `#xhigh` is `provider.no-route` without discovery, so a pass here
+  // can only come from the applied catalog. This needs the warm server `extended`
+  // starts — a one-shot client process outruns the catalog reload (#1008).
+  let variantProbe
+  if (extended && discovery && !v1) {
+    const variantModel = 'anthropic/claude-haiku-4-5#xhigh'
+    const modelIndex = base.lastIndexOf('--model')
+    const variantArgs = [...base.slice(0, modelIndex), '--model', variantModel,
+      'Reply with exactly VARIANT_OK and nothing else. Do not call tools.']
+    const before = requests.length
+    const output = await run(variantArgs, { allowFailure: true })
+    const events = parse(output)
+    const errors = events.filter(event => event.type === 'error').map(event => event.error?.type ?? 'unknown')
+    const served = requests.slice(before)
+    variantProbe = {
+      model: variantModel,
+      selected: errors.length === 0,
+      errors,
+      efforts: served.map(row => row.effort ?? null),
+      completed: served.filter(row => row.effort === 'xhigh').every(row => typeof row.completedAt === 'number'),
+      // Recorded, not asserted: the wording the model chooses varies between runs.
+      answered: events.some(event => event.type === 'text' && event.part?.text.includes('VARIANT_OK')),
+    }
+    console.log(JSON.stringify({ variantProbe }))
+    assert(variantProbe.selected, `Meridian-only variant was rejected: ${JSON.stringify(variantProbe.errors)}`)
+    assert(variantProbe.efforts.includes('xhigh'), `Variant did not send its effort: ${JSON.stringify(variantProbe.efforts)}`)
+    assert(variantProbe.completed, 'Variant request never completed upstream')
+  }
+
+  // #1008: a cold client process must accept a Meridian-only variant on its
+  // FIRST request. That only works if the plugin seeded the catalog from its
+  // cache before the first transform ran, so this deliberately spawns a fresh
+  // `--standalone` process rather than reusing the warm server.
+  let coldStartProbe
+  if (!v1 && discovery) {
+    const coldArgs = [client, 'run', '--standalone', '--format', 'json',
+      '--model', 'anthropic/claude-haiku-4-5#xhigh',
+      'Reply with exactly COLD_OK and nothing else. Do not call tools.']
+    const before = requests.length
+    const output = await run(coldArgs, { allowFailure: true })
+    const events = parse(output)
+    const errors = events.filter(event => event.type === 'error').map(event => event.error?.type ?? 'unknown')
+    const served = requests.slice(before)
+    coldStartProbe = { errors, efforts: served.map(row => row.effort ?? null) }
+    console.log(JSON.stringify({ coldStartProbe }))
+    assert(errors.length === 0, `Cold start rejected the Meridian-only variant: ${JSON.stringify(errors)}`)
+    assert(coldStartProbe.efforts.includes('xhigh'),
+      `Cold start did not send the effort: ${JSON.stringify(coldStartProbe.efforts)}`)
+  }
+
   // Hidden-agent header probing must not switch the primary client's active agent.
   if (!v1) {
     const summary = parse(await run([...base, '--session', session, '--fork', '--agent', 'summary', `Summarize the fixture receipt in one sentence. Probe token: ${summaryMarker}`]))
@@ -266,9 +365,66 @@ try {
   assert(primaryRows.every(row => !row.hasSummaryMarker), 'Hidden-agent probe entered primary client history')
   assert(primaryRows.every(row => row.clientCwd === root), JSON.stringify(primaryRows.map(row => row.clientCwd)))
   if (process.argv.includes('--separate-proxy-cwd')) assert.notEqual(proxyWorkdir, root)
-  console.log(JSON.stringify({ result: 'PASS', version, source, live, extended, root, session, requests, resumeEvidence }))
+
+  // #1004 model discovery. The original contributor version requested
+  // `/v1/v1/models` because the Anthropic provider carries the version in its
+  // base URL, so discovery 404'd and silently applied nothing. Assert the exact
+  // path, not merely that some request arrived.
+  if (!v1) {
+    const catalogHits = discoveryRequests.filter(row => row.method === 'GET' && row.path.endsWith('/models'))
+    assert(catalogHits.length > 0, 'Model discovery never requested the catalog')
+    assert(catalogHits.every(row => row.path === '/v1/models'),
+      `Discovery requested the wrong path: ${JSON.stringify(catalogHits.map(row => row.path))}`)
+    if (discovery) {
+      // Attempts the client abandoned on process exit are expected; at least one
+      // must have completed, and nothing may fail for another reason.
+      assert(catalogHits.every(row => row.status === 200 || row.aborted === true),
+        `Discovery failed for an unexpected reason: ${JSON.stringify(catalogHits.map(row => ({ status: row.status, error: row.error })))}`)
+      const served = catalogHits.filter(row => row.status === 200)
+      assert(served.length > 0, 'No discovery request ever completed')
+      const payload = JSON.parse(served[0].body)
+      assert(Array.isArray(payload.data) && payload.data.length > 0, 'Discovery response carried no catalog')
+      const haiku = payload.data.find(model => model.id === 'claude-haiku-4-5')
+      assert(haiku, `Catalog omitted claude-haiku-4-5: ${JSON.stringify(payload.data.map(model => model.id))}`)
+      // The two values OpenCode's own entry gets wrong, and the reason applying
+      // the catalog has to overwrite rather than skip an existing model.
+      assert.equal(haiku.context_window, 200_000, 'Catalog advertised an unexpected Haiku context window')
+      assert.equal(haiku.capabilities?.effort?.xhigh?.supported, true, 'Catalog did not advertise the xhigh effort')
+    } else {
+      assert(catalogHits.every(row => row.status === 404), 'Negative control served a catalog')
+    }
+  }
+
+  // #1008 invalidation. The seed is applied optimistically, because a draft
+  // Provider.Info carries no URL to check it against, so the guarantee is
+  // self-healing rather than prevention: once a cold process sees no
+  // Meridian-shaped provider it drops the cache, and the next one is back to
+  // OpenCode's own catalog. Only those two facts are asserted. The first
+  // repointed run is recorded but not asserted — whether it still offers the
+  // variant depends on how far model resolution gets before discovery lands.
+  // Asserted here, at the end, because it rewrites the client config.
+  let invalidationProbe
+  if (!v1 && discovery && !live) {
+    const cachePath = join(root, 'meridian', 'opencode-v2-catalog.json')
+    assert(existsSync(cachePath), 'Discovery never wrote a catalog cache to seed')
+    const repointed = JSON.parse(readFileSync(path, 'utf8'))
+    repointed.providers = { anthropic: { settings: { apiKey: 'local-fixture-key', baseURL: 'https://meridian-repointed.invalid/v1' } } }
+    writeFileSync(path, JSON.stringify(repointed, null, 2))
+    const variantArgs = ['run', '--standalone', '--format', 'json',
+      '--model', 'anthropic/claude-haiku-4-5#xhigh', 'Reply with exactly REPOINTED and nothing else.']
+    const firstOutput = await run([client, ...variantArgs], { allowFailure: true })
+    const cacheDropped = !existsSync(cachePath)
+    const secondOutput = await run([client, ...variantArgs], { allowFailure: true })
+    const errorsOf = output => parse(output).filter(event => event.type === 'error').map(event => event.error?.type ?? 'unknown')
+    invalidationProbe = { cacheDropped, first: errorsOf(firstOutput), second: errorsOf(secondOutput) }
+    console.log(JSON.stringify({ invalidationProbe }))
+    assert(cacheDropped, 'Repointing the provider away from Meridian left the seed in place')
+    assert(invalidationProbe.second.includes('provider.no-route'),
+      `A repointed provider still offered a Meridian-only variant: ${JSON.stringify(invalidationProbe.second)}`)
+  }
+  console.log(JSON.stringify({ result: 'PASS', version, source, live, extended, discovery, root, session, requests, resumeEvidence, discoveryRequests, variantProbe, coldStartProbe, invalidationProbe }))
 } finally {
-  console.log(JSON.stringify({ requestTrace: requests }))
+  console.log(JSON.stringify({ requestTrace: requests, discoveryTrace: discoveryRequests }))
   if (server) { server.kill(); await server.exited; console.log(JSON.stringify({ serverOutput: await serverOutput })) }
   await endpoint.stop(true)
   await proxy?.close()

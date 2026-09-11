@@ -265,7 +265,7 @@ UI. Both fixtures isolate Meridian state and work only in temporary directories.
 | E39 | [OpenCode internal-agent session key (#845)](#e39-opencode-internal-agent-session-key-845) | **Manual**, real OpenCode: its `title` agent runs under the USER'S session id, so the user's first turn used to queue behind it and then get HTTP 400 `session_turn_conflict`. Asserts the first turn succeeds, waits ~0ms on the session lease, and every later request is `lineage=continuation`. **Run after any OpenCode upgrade and before releases touching session keys or the turn coordinator** | 2026-08-19 |
 | E40 | [Passthrough digest-turn cap](#e40-passthrough-digest-turn-cap) | **Automated**: `bun scripts/e2e-digest-turn-cap.mjs` — real SDK. Asserts the capped tool turn generates no digest text, costs materially less than uncapped on an identical prompt, still RESUMES at its captured checkpoint, leaves text-only turns returning `success`, and does not truncate parallel tool calls. **Run before any release touching the passthrough tool loop, `maxTurns`, or the early-stop checkpoint** | 2026-08-20 |
 | E41 | [Passthrough multi-turn: one call, one answer](#e41-passthrough-multi-turn-one-call-one-answer) | **Automated**: `bun scripts/e2e-passthrough-turns.mjs [--stream]` — real proxy + SDK + Claude Max. Chain and `PROBE_PARALLEL=1` modes assert exact tool-call batching, a distinct durable fork per result round, one real answer per delivered call in the active transcript, and full prompt-cache continuity. **Run all four chain/parallel × stream/non-stream combinations before releases touching passthrough resume or the deny hook** | 2026-08-26 |
-| E42 | [OpenCode V2 beta compatibility](#e42-opencode-v2-beta-compatibility) | **Automated**, exact betas `18314` and `18866`: run `e2e-opencode-v2-package.mjs --live --extended` with each pinned binary. Covers hidden title/summary isolation, process restart, passthrough tools, undo/fork/compaction and overlapping general children. Also test source and packed npm artifacts. **Run after any V2 plugin/API change; another beta is not a pass** | 2026-08-27 |
+| E42 | [OpenCode V2 beta compatibility](#e42-opencode-v2-beta-compatibility) | **Automated**, exact betas `18314` and `18866`: run `e2e-opencode-v2-package.mjs --live --extended` with each pinned binary. Covers hidden title/summary isolation, process restart, passthrough tools, undo/fork/compaction, overlapping general children and the model-discovery round trip with its Meridian-only effort variant. Also test source and packed npm artifacts. **Run after any V2 plugin/API change; another beta is not a pass** | 2026-08-27 |
 | E43 | [Passthrough tools in a namespaced client](#e43-passthrough-tools-in-a-namespaced-client) | **Automated**: `bun scripts/e2e-passthrough-namespaced-tools.mjs [--stream]` — real proxy + SDK. A client tool declared `mcp__oc__read` collides with the namespace Meridian nests client tools under; asserts the call is still dispatched and captured, delivered under the name the client declared, and answered from the client's real result, with an ordinary and a foreign-namespace control alongside. **Run before any release touching passthrough tool registration, the deny hook, or tool-name delivery** | 2026-09-08 |
 | E44 | [Tier refusal failover](#e44-tier-refusal-failover) | **Automated**: `bun scripts/e2e-tier-refusal-failover.mjs [--stream]` — local refusal fixture, **real Claude Max fallback**. Asserts the credits-era per-tier banner is recorded 429 on the refusing profile and that a healthy profile actually answers. Catches what unit tests cannot: the shape that arrives carries the upstream status. **Run before releases touching error classification or priority failover** | 2026-09-08 |
 | E45 | [Codex auto-defer](#e45-codex-auto-defer) | **Automated**: `bun scripts/e2e-codex-auto-defer.mjs` — real proxy + SDK, 40 Codex-shaped tools. Asserts a Codex request reports no deferral and that `exec_command` is loaded rather than found via ToolSearch. The codex transform inherited OpenCode's core tool names, which match nothing Codex sends, so every tool was deferred. **Run before releases touching the codex transform, auto-defer, or `computePassthroughMaxTurns`** | 2026-09-08 |
@@ -3798,6 +3798,60 @@ Without `--live`, this uses the actual client against a scripted local API. It
 requires successful file reading and the exact tool result reaching the API,
 continuation, detached title/summary requests, and independent fork/original
 histories. `--source` runs setup from TypeScript and loads the source package.
+
+### Model discovery (#1004)
+
+The gate asserts the discovery round trip, not merely that some request arrived.
+It requires a `GET` to exactly `/v1/models` — the first version of this feature
+asked for `/v1/v1/models`, because the Anthropic provider carries the API version
+in its base URL, and a silent 404 disabled discovery with nothing failing. It then
+requires the response to carry `claude-haiku-4-5` with a 200k window and a
+supported `xhigh` effort: the two values OpenCode's own models.dev entry gets
+wrong, and the reason the catalog must be overwritten rather than skipped.
+
+Discovery attempts the client abandons when a one-shot process exits are
+recorded and allowed; at least one must complete, and no attempt may fail for
+any other reason.
+
+In `--live --extended` the gate additionally selects
+`anthropic/claude-haiku-4-5#xhigh` and requires the run to succeed with
+`effort: "xhigh"` reaching the proxy. That variant is
+`provider.no-route — Variant unavailable` without discovery, so a pass can only
+come from the applied catalog. It needs the warm server that `--extended`
+starts: a one-shot client process outruns the catalog reload (#1008).
+
+`--no-discovery` is the negative control. The fixture answers the catalog request
+with 404 and the whole gate must still pass, proving discovery fails closed
+rather than breaking the session. With no cache present the catalog is left
+exactly as OpenCode built it.
+
+### Cold start and cache invalidation (#1008)
+
+After the main flow has discovered once, the gate spawns a **fresh
+`--standalone` process** — deliberately not the warm server — and requires
+`anthropic/claude-haiku-4-5#xhigh` to be accepted on its first request with the
+effort reaching the proxy. That only passes if the plugin seeded the catalog
+from `opencode-v2-catalog.json` before the first transform ran. On a pre-fix
+tree it reports `{"errors":["provider.no-route"],"efforts":[]}`.
+
+In non-live mode the gate then repoints the provider at a non-Meridian URL and
+runs cold twice. It requires the cache file to be deleted and the second run to
+reject the variant, which is the self-healing half of invalidation: the seed
+cannot be validated against the provider's URL inside a transform, because a
+draft `Provider.Info` exposes only `id`, `name`, `activation`, `package`,
+`integrationID` and `headers` — no URL at all, verified on beta-18866. The first
+repointed run is recorded but not asserted; whether it still offers the variant
+depends on how far model resolution gets before discovery lands.
+
+```bash
+E2E_OPENCODE_BIN=/tmp/opencode-18866/node_modules/.bin/opencode2 \
+  bun scripts/e2e-opencode-v2-package.mjs --no-discovery
+```
+
+The fixture answers non-`POST` requests without parsing a body, and forwards them
+upstream with their original method. Parsing unconditionally used to throw on the
+body-less catalog `GET`, which failed discovery closed **and** set the process
+exit code — the gate printed `PASS` and exited 1 (#1014).
 Set `E2E_MERIDIAN_ROOT` to an independently installed `npm pack` consumer to test
 the shipped package without development dependencies. Run both betas in source
 and consumer modes. `--v1` with the pinned V1 `opencode@1.18.11` executable is the
@@ -4628,3 +4682,104 @@ Build first, then run `bun scripts/e2e-client-cwd.mjs` on macOS or Linux with Cl
 Both response modes must preserve OpenCode-shaped Windows client paths, execute client read/result loops, and execute proxy-managed reads in the proxy directory. Pi cases use actual POSIX directories with a literal trailing backslash and a symlink followed by `..`; the latter must have a different inode from the proxy directory. Client receipts differ from the proxy decoy. The fixture explicitly specifies literal path joining: this validates context delivery and tool execution under that instruction, not arbitrary model interpretation of unusual filenames. `--pi-only` and `--parent-only` isolate the two path regressions; `E2E_MERIDIAN_ROOT` selects a separately built before/after checkout.
 
 Also run the E42 actual OpenCode gate with `--live --extended --separate-proxy-cwd` and the pinned `E2E_OPENCODE_BIN`. The harness isolates the client HOME/PWD as well as XDG state, while the proxy retains its normal Claude authentication. It asserts the client directory from actual request bodies and stable client system prompts before comparing cache reuse. The manually invoked hidden-summary probe runs in a disposable client fork: this checks stripped headers without switching the primary client agent or injecting its tool-catalog update into primary history. A marker assertion rejects any leak into primary requests. This keeps the client project and configured SDK workdir distinct through tool use, restart, undo, fork, compaction and concurrent children. Run all four E41 modes after CWD/session-identity changes.
+
+## Polytoken native client loop
+
+**What it proves:** a real Polytoken binary is detected as `polytoken`, keeps its
+own tool loop, and resumes by its native session header.
+
+Two gates. The first costs no tokens and belongs in the detection sweep; the
+second is the live loop.
+
+### Detection drift
+
+`scripts/e2e-client-detection.mjs` drives an installed Polytoken against a local
+stub and diffs its real headers against
+`src/__tests__/fixtures/client-headers.json`. Polytoken ships as a single static
+binary that is usually outside `PATH`, so point the harness at it:
+
+```bash
+E2E_POLYTOKEN_BIN=/path/to/polytoken bun scripts/e2e-client-detection.mjs
+```
+
+`client-detection-fixtures.test.ts` pins the recorded set to the `polytoken`
+adapter, so a change to detection ORDERING fails in CI; the script catches a
+change on the CLIENT side. Re-run with `--update` after a Polytoken upgrade and
+commit the diff. The session header is redacted at capture time, so a re-capture
+that only changes the session id produces no diff.
+
+Captured from 0.8.6: `user-agent: Polytoken v0.8.6`, `x-polytoken-session`,
+`accept: text/event-stream`.
+
+### Live client-owned tool loop
+
+Costs tokens. Uses a disposable Meridian on an isolated port and a temporary
+Polytoken config directory — never the operator's own config.
+
+```bash
+BASE=/tmp/e2e-polytoken; rm -rf $BASE; mkdir -p $BASE/cfg $BASE/proj
+printf 'alpha\nbeta\ngamma\ndelta\n' > $BASE/proj/notes.txt
+cat > $BASE/cfg/config.yaml <<'YAML'
+version: 1
+providers:
+  meridian:
+    kind:
+      type: custom_anthropic_compatible
+    url: http://127.0.0.1:3468
+    protocol: anthropic_messages
+    auth:
+      type: static_key
+      key: local-fixture-key
+      format: anthropic_x_api_key
+models:
+  claude-haiku-4-5:
+    provider: meridian
+    provider_name: claude-haiku-4-5
+    class: full
+    context_window: 200000
+YAML
+
+MERIDIAN_PORT=3468 MERIDIAN_SESSION_STORE_DIR=$BASE/store bun bin/cli.ts > $BASE/proxy.log 2>&1 &
+
+polytoken --config-dir $BASE/cfg config validate            # exit 0
+polytoken --config-dir $BASE/cfg models                     # lists claude-haiku-4-5
+cd $BASE/proj && polytoken --config-dir $BASE/cfg --working-dir $BASE/proj \
+  exec --model claude-haiku-4-5 \
+  'Read the file notes.txt in the current directory using your read tool, then reply with exactly: LINES=<number of lines>'
+```
+
+**Pass criteria:**
+
+- The answer is `LINES=4`. The read executed on the Polytoken side; Meridian's
+  own working directory does not contain the fixture, so a proxy-executed read
+  could not produce it.
+- Every proxy line shows `adapter=polytoken`, with client tools forwarded
+  (`tools=N`, N>0).
+- `lineage=new` on the first turn and `lineage=continuation` on each later turn
+  of the same `x-polytoken-session`. The SDK session id differs per turn: the
+  per-turn managed fork is the durable publication design, and lineage
+  continuation is the resume proof.
+- More than one client request reaches the proxy for a single `exec`. One
+  request would mean Meridian ran the loop itself.
+
+**Mandatory-passthrough control.** Restart the proxy with `MERIDIAN_PASSTHROUGH=0`
+and repeat. The result must be identical: Polytoken owns tool execution, so
+neither the global setting nor a configured instance may hand the loop to the
+SDK.
+
+**Detection controls**, cheap and worth running with the loop:
+
+```bash
+# rejected -> adapter=opencode
+curl -s -XPOST localhost:3468/v1/messages -H 'content-type: application/json' \
+  -H 'user-agent: PolytokenImpostor/1.0' -d '{...}'
+# blank header is not a match -> adapter=opencode
+curl ... -H 'x-polytoken-session:   '
+# valid header, or the Polytoken UA alone -> adapter=polytoken
+```
+
+**Verified:** 2026-09-10 against Polytoken 0.8.6 (macos-arm64, sha256
+`71353a6d…0793e7`) and real Claude Max on `claude-haiku-4-5`. The tool loop
+returned `LINES=4` in four client round-trips with `adapter=polytoken` and
+`lineage=continuation` from turn 2, unchanged with `MERIDIAN_PASSTHROUGH=0`. All
+four detection controls behaved as recorded above.

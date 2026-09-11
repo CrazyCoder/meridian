@@ -9,7 +9,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk"
 import { rateLimitStore } from "./rateLimitStore"
 import { guardUpstreamIdle, UpstreamIdleError } from "./streamIdleGuard"
 import { IdleStallCeilingError, IdleStallTracker, idleStallRequestKey } from "./idleStallCeiling"
-import { linkRequestAbort } from "./requestAbort"
+import { linkRequestAbort, type RequestAbortLink } from "./requestAbort"
 import { processSessionTree, truncateSessionKey, type SessionTreeRegistration } from "./sessionTree"
 import { AbortableSemaphore, getProcessSdkSemaphore, type SemaphoreLease } from "./concurrency"
 import { closeServerWithGracePeriod, trackServerConnections } from "./shutdown"
@@ -56,7 +56,7 @@ import { LRUMap } from "../utils/lruMap"
 
 import { telemetryStore, diagnosticLog, createTelemetryRoutes, landingHtml, renderPrometheusMetrics } from "../telemetry"
 import type { RequestMetric } from "../telemetry"
-import { canRecoverCapturedToolUses, classifyError, extractSdkTermination, formatSdkTermination, classifyResumeRefusal, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError, isAccountFailoverError, isQuotaRefusal, isOutputTokenCapExceeded } from "./errors"
+import { canRecoverCapturedToolUses, canRecoverUncapturedToolUses, isStreamedToolBlockComplete, type StreamedToolBlockRecord, classifyError, extractSdkTermination, formatSdkTermination, classifyResumeRefusal, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError, isAccountFailoverError, isQuotaRefusal, isOutputTokenCapExceeded } from "./errors"
 import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, getAuthRenewalStatus, resolveRenewalWarnDays, type CredentialStore } from "./tokenRefresh"
 import {
   createFileDesignTokenStore,
@@ -295,6 +295,14 @@ interface HandleMessagesOptions {
   body: any
   forcedProfileId?: string
   turnWatchdogSignal?: AbortSignal
+  /**
+   * The request-wide abort link created by the outer handler. Adopted (not
+   * recreated) here so the single cause registry spans queue retries and
+   * profile-failover re-entries of this handler, and so outer producers —
+   * client disconnect, body cancel, watchdog, subtree cancel, process
+   * shutdown — label the same registry the SDK query sees.
+   */
+  requestAbortLink?: RequestAbortLink
   forceFreshPriorityReplay?: boolean
   priorityPublication?: PrioritySessionPublication
   priorityAttemptExposure?: PriorityAttemptExposure
@@ -559,6 +567,7 @@ type PriorityDispatchOptions = {
   readonly wantsStream: boolean
   readonly currentProfileId: string | undefined
   readonly turnWatchdogSignal?: AbortSignal
+  readonly requestAbortLink?: RequestAbortLink
   readonly publicationTurn?: {
     readonly turnId: string
     readonly issuedAt: number
@@ -755,6 +764,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   let durableWritesRevoked = false
   let inFlightRequests = 0
   const activeRequestAborts = new Set<AbortController>()
+  /** Cause-aware shutdown aborts: each entry labels its request's registry
+   * before the controller fires, because the shutdown producer aborts the
+   * turnWatchdog controller directly (not through the request's own link)
+   * and would otherwise surface as unknown_abort. */
+  const activeShutdownLabels = new Map<AbortController, () => void>()
 
   // Admission belongs at the PUBLIC entrypoint. /v1/chat/completions and
   // /v1/responses translate their body before re-entering /v1/messages, so
@@ -1211,6 +1225,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         body: options.body,
         forcedProfileId: candidate,
         turnWatchdogSignal: options.turnWatchdogSignal,
+        requestAbortLink: options.requestAbortLink,
         forceFreshPriorityReplay: priorityPublication !== undefined
           && (options.durableRoute?.forceFreshReplay === true
             || (options.currentProfileId !== undefined && candidate !== options.currentProfileId)),
@@ -1315,7 +1330,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     const requestSignal = options.turnWatchdogSignal
       ? AbortSignal.any([c.req.raw.signal, options.turnWatchdogSignal])
       : c.req.raw.signal
-    const requestAbort = linkRequestAbort(requestSignal)
+    // Adopt the outer handler's link when provided so one cause registry
+    // spans queue retries and profile-failover re-entries; create one only
+    // when no outer link exists (direct in-process callers).
+    const requestAbort = options.requestAbortLink ?? linkRequestAbort(requestSignal)
     let streamOwnsAbortLink = false
 
     return withClaudeLogContext({ requestId: requestMeta.requestId, endpoint: requestMeta.endpoint }, async () => {
@@ -1784,6 +1802,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 wantsStream: body.stream === true,
                 currentProfileId: assignedProfile,
                 turnWatchdogSignal: options.turnWatchdogSignal,
+                requestAbortLink: options.requestAbortLink,
                 publicationTurn,
                 claimTurn: trustedTurn,
                 durableRoute,
@@ -1815,8 +1834,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // NOTE: OpenCode-specific legacy fallback. Older integrations sent
         // this header even when another adapter was selected; preserve that
         // behavior while adapters migrate to the normalized extension point.
+        // Polytoken never consumes it: the client owns agent orchestration,
+        // and an unrelated OpenCode header must not flip native traffic into
+        // subagent handling (cache isolation, fingerprint skips).
         const declaredAgentMode =
-          adapter.getAgentMode?.(c, body) ?? c.req.header("x-opencode-agent-mode") ?? null
+          adapter.getAgentMode?.(c, body)
+          ?? (adapter.baseName === "polytoken" || adapter.name === "polytoken"
+            ? undefined
+            : c.req.header("x-opencode-agent-mode"))
+          ?? null
         // A generic subagent source and an adapter-specific mode declaration
         // describe the same semantic fact. Treat either as authoritative so a
         // client cannot accidentally get cache isolation without the base model
@@ -1948,9 +1974,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // Extract effort, thinking, taskBudget, and native structured output
         // from standard Anthropic API fields.
         // Header overrides take precedence over body values.
-        const effortHeader = c.req.header("x-opencode-effort")
-        const thinkingHeader = c.req.header("x-opencode-thinking")
-        const taskBudgetHeader = c.req.header("x-opencode-task-budget")
+        // NOTE: Polytoken-specific. x-opencode-* headers are OpenCode's legacy
+        // control channel; a Polytoken request carrying unrelated OpenCode
+        // headers (a shared gateway, a recording proxy) must not have its
+        // effort/thinking/task-budget silently overridden by them. Standard
+        // Anthropic body fields still apply.
+        const isPolytokenBase = adapterBase === "polytoken"
+        const effortHeader = isPolytokenBase ? undefined : c.req.header("x-opencode-effort")
+        const thinkingHeader = isPolytokenBase ? undefined : c.req.header("x-opencode-thinking")
+        const taskBudgetHeader = isPolytokenBase ? undefined : c.req.header("x-opencode-task-budget")
         // NOTE: anthropic-beta header filtering is delegated to `filterBetasForProfile`.
         // Default policy (`allow-safe`) strips only betas known to trigger Extra-Usage
         // billing (see BILLABLE_BETA_PREFIXES_ON_MAX in betas.ts). Free betas like
@@ -2306,11 +2338,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // Adapter can override the global passthrough env var per-agent.
         // Instance passthrough override (#476) beats the adapter transform's
         // default, which beats the global env var.
-        const passthrough = adapter.instancePassthrough !== undefined
-          ? adapter.instancePassthrough
-          : pipelineCtx.passthrough !== undefined
-            ? pipelineCtx.passthrough
-            : envBool("PASSTHROUGH")
+        // NOTE: Polytoken-specific. Passthrough is MANDATORY for this protocol:
+        // the client owns the tool loop, so an instance passthrough:false or a
+        // global MERIDIAN_PASSTHROUGH=0 would strand every tool call on the
+        // proxy host. The setting is ineffective for polytoken (documented);
+        // every other adapter's precedence is unchanged.
+        const passthrough = adapterBase === "polytoken"
+          ? true
+          : adapter.instancePassthrough !== undefined
+            ? adapter.instancePassthrough
+            : pipelineCtx.passthrough !== undefined
+              ? pipelineCtx.passthrough
+              : envBool("PASSTHROUGH")
         if (
           advancesDurableCheckpoint &&
           lineageResult.type !== "continuation" &&
@@ -3101,7 +3140,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // (e.g., "general-purpose") that OpenCode rejects. We send the
                 // canonical lowercase agent name that OpenCode's config declares.
                 let toolInput = normalizeToolInput(input.tool_input, clientTool?.input_schema)
-                if (toolName.toLowerCase() === "task" && toolInput?.subagent_type && typeof toolInput.subagent_type === "string") {
+                // NOTE: agent-specific — preserve Task alias normalization.
+                // Polytoken is exempt: its client owns agent orchestration and
+                // validates subagent_type itself, so a payload that arrives as
+                // "Explore" (or any other value Claude chose) must reach the
+                // client unchanged instead of being rewritten to a
+                // lowercase agent name OpenCode-style config would declare.
+                if (
+                  adapterBase !== "polytoken"
+                  && toolName.toLowerCase() === "task"
+                  && toolInput?.subagent_type
+                  && typeof toolInput.subagent_type === "string"
+                ) {
                   toolInput = { ...toolInput, subagent_type: resolveAgentAlias(toolInput.subagent_type, validAgentNames) }
                 }
                 // Decide whether to forward this captured tool_use, or drop it
@@ -3166,6 +3216,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   // real SDK). Aborting the query's controller SIGTERMs the
                   // subprocess; the abort-shaped termination is converted into a
                   // clean stop_reason:"tool_use" response by the recovery paths.
+                  requestAbort.setCause("passthrough_single_step")
                   requestAbort.abort("passthrough single-step complete")
                 } else {
                   capturedSignatures.add(signature)
@@ -3943,6 +3994,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               diagnosticLog.session(
                 `${requestMeta.requestId} sdk_termination_recovered ${formatSdkTermination(sdkTerm, {
                   model, requestSource, isResume, hasDeferredTools, sdkSessionId: currentSessionId || resumeSessionId,
+                  abort: requestAbort.abortSnapshot(),
                 })} captured=${capturedToolUses.length}`,
                 requestMeta.requestId,
               )
@@ -4365,6 +4417,20 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             let nextPassthroughToolCallAssistantUuid: string | undefined
             let nextPassthroughToolCallIds: string[] | undefined
             let sawCanonicalResult = false
+            // Uncaptured-tool recovery (the 0a95wd-tusk incident shape): a
+            // capped turn whose tool_use blocks fully streamed but were never
+            // captured or dispatched because an abort landed between stream
+            // completion and hook dispatch. Opt-IN while the authorization
+            // boundary is validated (MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY=1).
+            // The tracker below is likewise flag-gated: with the recovery off,
+            // no per-block records are kept and diagnostics continue to show
+            // tools=0/N on the error path as before.
+            const uncapturedToolRecoveryEnabled =
+              env("PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY") === "1"
+            // Per-client-index completeness record for every forwarded tool_use
+            // block. Populated only on real wire forwarding — synthetic
+            // flushOpenClientBlocks closures never mark naturalStop.
+            const streamedToolBlockRecords = new Map<number, StreamedToolBlockRecord>()
             // Silent-turn recovery state (see turnOutcome.ts). Kill switch:
             // MERIDIAN_SILENT_TURN_RECOVERY=0 leaves the detection and the
             // telemetry in place and skips only the extra model turn — so an
@@ -4388,6 +4454,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             // terminal delta leaves the proxy, and it leaves last, once the
             // turn's real stop_reason is known.
             let pendingTerminalDelta: Uint8Array | null = null
+            // The turn budget the LAST SDK attempt asked for. attemptMaxTurns
+            // is attempt-local; the outer catch (recovery predicates) needs
+            // the final value.
+            let lastAttemptMaxTurns: number | undefined
             let pendingStructuredFrames: Array<{ payload: Uint8Array; source: string }> = []
             let pendingStructuredTextLength = 0
             let terminalDeltaSent = false
@@ -4424,7 +4494,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 const clientTool = requestTools.find((tool: { name: string; input_schema?: Parameters<typeof normalizeToolInput>[1] }) => tool.name === buffered.name)
                 const parsed = normalizeToolInput(JSON.parse(buffered.json), clientTool?.input_schema)
                 // NOTE: agent-specific — preserve Task alias normalization.
-                if (buffered.name.toLowerCase() === "task" && typeof parsed?.subagent_type === "string") {
+                // Polytoken is exempt (client-owned orchestration, exact
+                // payload preservation — see the capture-hook note above).
+                if (
+                  adapterBase !== "polytoken"
+                  && buffered.name.toLowerCase() === "task"
+                  && typeof parsed?.subagent_type === "string"
+                ) {
                   parsed.subagent_type = resolveAgentAlias(parsed.subagent_type, validAgentNames)
                 }
                 fixed = JSON.stringify(parsed)
@@ -4537,6 +4613,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       advisorModel,
                     }, requestAbort.controller)
                     attemptMaxTurns = attemptQuery.options.maxTurns
+                    lastAttemptMaxTurns = attemptMaxTurns
                     for await (const event of runSdkQueryAttempt(attemptQuery, requestAbort.controller.signal, requestMeta, "stream", managedSdkAttemptLocators())) {
                       // Same SDK rate-limit capture as the non-stream path.
                       if ((event as any).type === "rate_limit_event") {
@@ -5108,6 +5185,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       if (eventType === "content_block_stop") {
                         flushToolArguments(clientIdx)
                         passthroughToolBlockNames.delete(eventIndex)
+                        // Buffered repair path: the block really stopped.
+                        const record = streamedToolBlockRecords.get(clientIdx)
+                        if (record) record.naturalStop = true
                       }
                     }
 
@@ -5154,6 +5234,40 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     } else if (eventType === "content_block_stop") {
                       const idx = (event as any).index
                       if (typeof idx === "number") openClientBlocks.delete(idx)
+                    }
+
+                    // Uncaptured-recovery completeness tracker: record what the
+                    // client actually received for each forwarded tool_use block,
+                    // AFTER the SDK→client index remap. A block counts as
+                    // complete only when its content_block_stop was really
+                    // enqueued (synthetic flushOpenClientBlocks closures never
+                    // count) and its accumulated JSON parses as an object.
+                    if (passthrough && uncapturedToolRecoveryEnabled) {
+                      const clientIdx = eventIndex !== undefined ? sdkToClientIndex.get(eventIndex) ?? eventIndex : undefined
+                      if (clientIdx !== undefined) {
+                        if (eventType === "content_block_start") {
+                          const block = (event as any).content_block
+                          if (block?.type === "tool_use" && typeof block?.id === "string" && block.id) {
+                            streamedToolBlockRecords.set(clientIdx, {
+                              id: block.id,
+                              name: block.name,
+                              json: "",
+                              startedInputObject: block.input !== undefined && block.input !== null,
+                              forwardedStart: true,
+                              naturalStop: false,
+                            })
+                          }
+                        } else if (eventType === "content_block_delta") {
+                          const delta = (event as any).delta
+                          const record = streamedToolBlockRecords.get(clientIdx)
+                          if (record && delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
+                            record.json += delta.partial_json
+                          }
+                        } else if (eventType === "content_block_stop") {
+                          const record = streamedToolBlockRecords.get(clientIdx)
+                          if (record) record.naturalStop = true
+                        }
+                      }
                     }
 
                     // NOTE: agent-specific (passthrough mode) — close the client stream
@@ -6125,27 +6239,66 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 abortIsOurs: sawDuplicateToolUse,
               }) && messageStartEmitted
 
+              // Uncaptured-streamed recovery (opt-in): the abort-window shape
+              // where every tool_use block fully streamed but the hook never
+              // ran. All the caller-side gates live here: attempted cap, no
+              // drop/duplicate/forced-single/early-stop state, no cancellation
+              // of any kind, open envelope, and every streamed block complete
+              // with a declared client tool name. An aborted request must
+              // never be salvaged into a success — `abort=none` is required.
+              const uncapturedEligible = (() => {
+                if (!canRecoverUncapturedToolUses({
+                  reason: sdkTerm.reason,
+                  passthrough,
+                  capturedToolUses: capturedToolUses.length,
+                  streamedToolUses: streamedToolUseIds.size,
+                  droppedToolUseIds: droppedToolUseIds.size,
+                  sawDuplicateToolUse,
+                  forceSingleToolUse,
+                  earlyStopFired,
+                  uncapturedRecoveryEnabled: uncapturedToolRecoveryEnabled,
+                  attemptedMaxTurns: lastAttemptMaxTurns,
+                })) return false
+                if (!messageStartEmitted || streamClosed || pendingTerminalDelta) return false
+                if (durableWritesRevoked) return false
+                if (requestAbort.abortSnapshot().aborted) return false
+                // Every streamed block must be complete AND name a declared
+                // client tool (after alias resolution — records store the
+                // resolved name already).
+                for (const record of streamedToolBlockRecords.values()) {
+                  if (!isStreamedToolBlockComplete(record)) return false
+                  const declared = requestTools.some((t: { name: string }) => t.name === record.name)
+                  if (!declared) return false
+                }
+                // The tracker must cover every streamed id; a divergence
+                // (e.g. a block the buffered path skipped tracking) is a veto.
+                if (streamedToolBlockRecords.size !== streamedToolUseIds.size) return false
+                return true
+              })()
+              const uncapturedRecoveryActive = uncapturedEligible
+
               // A turn-cap stop is the one drain failure whose checkpoint is
-              // safe to keep, and the reason is specific: the SDK can only
-              // report `max_turns` from a `result` message it has already
-              // enqueued, and it awaits its transcript flush on `result`
-              // (Query.readMessages in the bundled agent SDK builds the error
-              // text from lastErrorResultText, which only a delivered result
-              // populates). So the transcript is committed by the time we see
-              // this — categorically unlike the abort-shaped failure that
-              // motivated the eviction, where a SIGTERM'd subprocess emits no
-              // result at all. That is the invariant passthroughEarlyStop.ts
-              // requires before a resumeSessionAt UUID may be published.
+              // safe to keep — but only for the CAPTURED path, and the reason
+              // is specific: the SDK can only report `max_turns` from a
+              // `result` message it has already enqueued, and it awaits its
+              // transcript flush on `result` (Query.readMessages in the
+              // bundled agent SDK builds the error text from
+              // lastErrorResultText, which only a delivered result
+              // populates). So in the captured case the transcript is
+              // committed by the time we see this.
               //
-              // Which also means `sawCanonicalResult` is already true here, so
-              // the eviction below would not have fired on this path anyway;
-              // naming the case in the guard is belt-and-braces, and the
-              // load-bearing half is the storeSession further down.
+              // That inference does NOT extend to the uncaptured shape:
+              // the CLI's abort path yields the same `max_turns_reached`
+              // attachment without running the hook or committing a
+              // transcript (verified 2026-09-10, sessions 46466398/ee5c8ac9
+              // never wrote one). Uncaptured recovery therefore always
+              // evicts; it never publishes a resumeSessionAt checkpoint.
               //
-              // Keeping it lets the next request rewind to the tool-use
-              // boundary and append the client's real tool_result, instead of
-              // replaying the conversation against a cold cache. Other drain
-              // failures remain unsafe and are evicted.
+              // Keeping the captured checkpoint lets the next request rewind
+              // to the tool-use boundary and append the client's real
+              // tool_result, instead of replaying the conversation against a
+              // cold cache. Other drain failures remain unsafe and are
+              // evicted.
               const recoverableCheckpoint =
                 canRecoverAsToolUse &&
                 sdkTerm.reason === "max_turns" &&
@@ -6157,7 +6310,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 !sawDuplicateToolUse
 
               const mustEvictBeforeRecoveredTerminal =
-                !isIndependentSession && canRecoverAsToolUse && !recoverableCheckpoint
+                (!isIndependentSession && canRecoverAsToolUse && !recoverableCheckpoint) ||
+                // Uncaptured recovery never has a tool-boundary UUID to pin
+                // (the hook never ran), so the checkpoint is always false and
+                // the durable mapping must be invalidated before the terminal
+                // authorizes tool execution.
+                (!isIndependentSession && uncapturedRecoveryActive && !recoverableCheckpoint)
               if (
                 mustEvictBeforeRecoveredTerminal ||
                 (
@@ -6182,7 +6340,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 claudeLog("passthrough.noncanonical_session_evicted", { mode: "stream", reason: "drain_error" })
               }
 
-              if (canRecoverAsToolUse) {
+              if (canRecoverAsToolUse || uncapturedRecoveryActive) {
                 // A recovered stall delivered the client its tool calls, so the
                 // session is making progress and its streak starts over. Without
                 // this the counter climbs through stalls that were absorbed, and
@@ -6192,13 +6350,14 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // Log the recovery at session level (not error) — it's a
                 // notable flow control event but not a failure for the client.
                 diagnosticLog.session(
-                  `${requestMeta.requestId} sdk_termination_recovered ${formatSdkTermination(sdkTerm, {
+                  `${requestMeta.requestId} sdk_termination_recovered${uncapturedRecoveryActive ? "_uncaptured" : ""} ${formatSdkTermination(sdkTerm, {
                     model,
                     requestSource,
                     isResume,
                     hasDeferredTools,
                     sdkSessionId: currentSessionId || resumeSessionId,
-                  })} captured=${capturedToolUses.length}`,
+                    abort: requestAbort.abortSnapshot(),
+                  })} captured=${capturedToolUses.length}${uncapturedRecoveryActive ? ` completed=${streamedToolBlockRecords.size}` : ""}`,
                   requestMeta.requestId,
                 )
 
@@ -6453,6 +6612,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     isResume,
                     hasDeferredTools,
                     sdkSessionId: currentSessionId || resumeSessionId,
+                    abort: requestAbort.abortSnapshot(),
                   })} blocks=${nextClientBlockIndex}`,
                   requestMeta.requestId,
                 )
@@ -6534,6 +6694,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   isResume,
                   hasDeferredTools,
                   sdkSessionId: currentSessionId || resumeSessionId,
+                  abort: requestAbort.abortSnapshot(),
                 })} envelope=${messageStartEmitted ? "open" : "unopened"} blocks=${contentBlocksForwarded} ` +
                 `text=${textEventsForwarded} tools=${capturedToolUses.length}/${streamedToolUseIds.size}`,
                 requestMeta.requestId,
@@ -6647,15 +6808,23 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             } finally {
               await abandonManagedFork("stream_complete_without_commit")
               if (priorityRollbackRetirement) await priorityRollbackRetirement
-              requestAbort.detach()
+              // Detach only when this handler owns the link. An ADOPTED
+              // request-wide link must stay attached: a later profile-failover
+              // attempt re-enters this handler with the same link, and a
+              // per-attempt detach would deafen it to watchdog, subtree,
+              // client, and shutdown aborts for the rest of the request.
+              if (!streamOwnsAbortLink) requestAbort.detach()
             }
             })().finally(() => {
               resolveStreamCompletion()
             })
           },
           cancel(reason) {
+            requestAbort.setCause("stream_cancel")
             requestAbort.abort(reason)
-            requestAbort.detach()
+            // Only the owner detaches the link; an adopted request-wide link
+            // stays attached for the outer handler's lifetime.
+            if (!streamOwnsAbortLink) requestAbort.detach()
             // A cancelled response body is the other way a client says "stop",
             // and the only one an in-process caller can reach. Children are
             // cancelled here as well, latched so a real socket teardown —
@@ -6726,6 +6895,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         diagnosticLog.error(
           `${requestMeta.requestId} ${formatSdkTermination(sdkTerm, {
             requestSource: c.req.header("x-meridian-source")?.slice(0, 64) || undefined,
+            abort: requestAbort.abortSnapshot(),
           })}`,
           requestMeta.requestId,
         )
@@ -6866,6 +7036,23 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     }
     const turnWatchdogAbort = new AbortController()
     activeRequestAborts.add(turnWatchdogAbort)
+    // One request-wide cause registry, created here where every external
+    // producer (client disconnect, body cancel, watchdog, subtree cancel,
+    // process shutdown) lives, and adopted by handleMessages across queue
+    // retries and profile-failover re-entries. It listens on the COMBINED
+    // signal — client + watchdog — so a watchdog or subtree abort reaches the
+    // SDK query exactly as the per-request link it replaces did.
+    // A raw request-signal abort with no other cause labeled is a client
+    // disconnect; label it before the link forwards so the diagnostic reads
+    // client_abort instead of unknown_abort. Watchdog/subtree/shutdown label
+    // first, and first-cause-wins keeps their more specific classification.
+    const requestSignalForLink = AbortSignal.any([c.req.raw.signal, turnWatchdogAbort.signal])
+    const labelClientAbort = () => {
+      if (!turnWatchdogAbort.signal.aborted) requestAbortLink?.setCause("client_abort")
+    }
+    c.req.raw.signal.addEventListener("abort", labelClientAbort, { once: true })
+    const requestAbortLink = linkRequestAbort(requestSignalForLink)
+    activeShutdownLabels.set(turnWatchdogAbort, () => requestAbortLink.setCause("process_shutdown"))
     let finished = false
     let leaseReleased = false
     let retainSessionTurnFence = false
@@ -6894,6 +7081,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     const finishRequest = () => {
       if (finished) return
       finished = true
+      // Terminal request cleanup for the request-wide abort link: detach its
+      // combined-signal listener and drop the raw client-abort label
+      // listener. handleMessages never detaches an adopted link (a later
+      // failover attempt must keep receiving aborts), so ownership of the
+      // terminal detach belongs here, which runs exactly once.
+      requestAbortLink.detach()
+      c.req.raw.signal.removeEventListener("abort", labelClientAbort)
       if (retainSessionTurnFence && (sessionTurnLease || crossProcessTurnLease)) {
         leaseReleased = true
         if (leaseWatchdog) clearTimeout(leaseWatchdog)
@@ -6909,6 +7103,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       sessionTreeRegistration?.release()
       sessionTreeRegistration = undefined
       activeRequestAborts.delete(turnWatchdogAbort)
+      activeShutdownLabels.delete(turnWatchdogAbort)
       inFlightRequests--
     }
 
@@ -6960,7 +7155,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             requestId,
             sessionKey: agentSessionId,
             parentKey: adapter.getParentSessionId?.(c, body),
-            abort: (reason) => turnWatchdogAbort.abort(reason),
+            abort: (reason) => {
+              // A parent cancellation reaches this request through the
+              // session tree; classify it distinctly from the watchdog,
+              // which shares the same controller.
+              requestAbortLink.setCause("subtree_cancel")
+              turnWatchdogAbort.abort(reason)
+            },
           })
           subtreeSessionKey = agentSessionId
           const clientSignal = c.req.raw.signal
@@ -6988,6 +7189,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             leaseWatchdog = setTimeout(() => {
               claudeLog("session.turn_watchdog_abort", { requestId, heldMs: SESSION_TURN_MAX_HOLD_MS })
               plog(`[PROXY] ${requestId} session turn exceeded ${SESSION_TURN_MAX_HOLD_MS}ms — aborting without releasing its fencing lease`)
+              requestAbortLink.setCause("session_watchdog")
               turnWatchdogAbort.abort(new Error("Session turn exceeded its maximum hold time"))
             }, SESSION_TURN_MAX_HOLD_MS)
             leaseWatchdog.unref?.()
@@ -7073,6 +7275,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       const response = await handleMessages(c, requestMeta, {
         body,
         turnWatchdogSignal: turnWatchdogAbort.signal,
+        requestAbortLink,
       })
       const completion = responseCompletions.get(response)
       if (completion) {
@@ -8180,6 +8383,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     beginDrain: () => { draining = true },
     forceAbortInFlight: () => {
       durableWritesRevoked = true
+      // Label every request's cause registry BEFORE aborting: shutdown is
+      // the producer, and the diagnostic must not read unknown_abort.
+      for (const label of activeShutdownLabels.values()) label()
       for (const controller of activeRequestAborts) {
         controller.abort(new Error("Proxy shutdown grace period elapsed"))
       }

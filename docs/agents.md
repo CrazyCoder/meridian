@@ -40,15 +40,15 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:3456
 
 ### OpenCode V2 beta
 
-Meridian currently supports the exact public beta used by its V2 plugin:
-`@opencode-ai/cli@0.0.0-beta-18314`. V2 plugin APIs are still changing, so setup
-fails closed for another V2 version instead of installing a plugin with an
-unknown contract.
+Meridian supports the exact public betas its V2 plugin is validated against:
+`@opencode-ai/cli@0.0.0-beta-18314` and `0.0.0-beta-18866`. V2 plugin APIs are
+still changing, so setup fails closed for another V2 version instead of
+installing a plugin with an unknown contract.
 
-Install the pinned beta and select its executable:
+Install a supported beta and select its executable:
 
 ```bash
-npm install -g --prefix ~/.local @opencode-ai/cli@0.0.0-beta-18314
+npm install -g --prefix ~/.local @opencode-ai/cli@0.0.0-beta-18866
 meridian setup --v2 --opencode-bin ~/.local/bin/opencode2
 ```
 
@@ -67,11 +67,11 @@ Configure V2's Anthropic provider to use Meridian. Keep the existing settings in
 {
   "model": "anthropic/claude-opus-4-6",
   "small_model": "anthropic/claude-haiku-4-5",
-  "provider": {
+  "providers": {
     "anthropic": {
-      "options": {
+      "settings": {
         "apiKey": "x",
-        "baseURL": "http://127.0.0.1:3456"
+        "baseURL": "http://127.0.0.1:3456/v1"
       },
       "models": {
         "claude-opus-4-6": { "name": "Claude Opus 4.6" },
@@ -81,6 +81,12 @@ Configure V2's Anthropic provider to use Meridian. Keep the existing settings in
   }
 }
 ```
+
+V2 renamed these keys: it reads `providers` and `settings`, where V1 read
+`provider` and `options`. A V1-shaped block is silently ignored, so the client
+would talk to the real Anthropic API instead of Meridian. Anything you put under
+`models` is your own override and wins over both the built-in catalog and
+Meridian's advertised models.
 
 Then start the pinned client:
 
@@ -92,6 +98,34 @@ The V2 plugin uses the native `model.request` and `http.request` hooks. It keeps
 primary and compaction requests attached to the correct OpenCode session,
 detaches concurrent hidden title/summary requests, and gives each visible
 subagent its own trusted identity. Request bodies and model input are unchanged.
+
+The V2 plugin also reads `GET /v1/models` from the configured Meridian base URL
+and writes what it finds into V2's model catalog: the context window your
+subscription actually gets, and one model variant per effort level the proxy
+accepts. This corrects OpenCode's built-in models.dev entries, which advertise a
+1M Sonnet that Meridian deliberately serves at 200k. Select an effort with
+`provider/model#variant`, for example `anthropic/claude-opus-5#high`. Discovery
+never blocks startup: if Meridian is unreachable or answers with anything
+unexpected, and nothing has been discovered before, the catalog is left exactly
+as OpenCode built it.
+
+Discovery cannot run until OpenCode has finished assembling the catalog, so the
+first request against a freshly started server used to see only the built-in
+entries and reject a Meridian-only variant with `provider.no-route`. The plugin
+now caches each successful discovery in
+`~/.config/meridian/opencode-v2-catalog.json` and seeds the catalog from it
+before the first request, so a cold `anthropic/claude-haiku-4-5#xhigh` works.
+The cache is refreshed by every successful discovery and is ignored after seven
+days.
+
+**What this means if you change the provider.** While a cache is present, a
+freshly started server uses the last catalog Meridian served rather than
+OpenCode's built-in entries — including when Meridian is down. If you repoint
+the provider at something that is not Meridian, discovery notices that no
+Meridian base URL is configured, deletes the cache and rebuilds the catalog
+without it; the run after that is back to OpenCode's own entries. To clear it by
+hand, delete that file. The very first run after a brand-new install has no
+cache yet, so a Meridian-only variant still needs one prior request.
 
 For either generation, the plugin enables:
 
@@ -614,6 +648,64 @@ curl -X POST http://127.0.0.1:3456/design-login \
 The design token is stored at `~/.config/meridian/design-token.json` (mode `0600`, global across profiles) and refreshed automatically when it expires.
 
 > Contributed by [@sittitep](https://github.com/sittitep) (#543).
+
+### Polytoken
+
+[Polytoken](https://polytoken.dev/) talks native Anthropic Messages and executes its own tools, so Meridian always runs it in passthrough mode. tool_use blocks come back to Polytoken, which executes them client-side and posts `tool_result` continuations.
+
+```yaml
+# Polytoken provider config (config.yaml)
+providers:
+  meridian:
+    kind:
+      type: catalog
+      name: anthropic
+    url: http://127.0.0.1:3456
+    auth:
+      type: static_key
+      key: <the proxy's MERIDIAN_API_KEY, if set>
+    headers:
+      x-meridian-profile: work   # optional profile pin
+```
+
+Detection (first match wins):
+
+1. A valid `X-Polytoken-Session` header — Polytoken is selected and that header **is the session identity**.
+2. A `Polytoken <version>` or `Polytoken/<version>` User-Agent (token-boundary match; `PolytokenImpostor` does not match). UA-only selection never manufactures identity: without a valid native header there is no session key, so tool-result continuations run independent and are never resumed (plain text turns still fall back to the generic first-message fingerprint, as for any other headerless client).
+3. `x-meridian-agent: polytoken` / `MERIDIAN_DEFAULT_AGENT=polytoken` for explicit selection.
+
+An explicit `x-meridian-agent` override (built-in adapter or instance name)
+beats everything above it: it is checked before the native header. The full
+order is explicit selection → native header → automatic instance match
+rules → the User-Agent chain. Unrelated OpenCode headers (`x-opencode-*`,
+`x-session-affinity`) have no effect on Polytoken traffic.
+
+Contract notes:
+
+- **The session header is identity, not authentication.** Same trust model as
+  every other adapter's headers — protect the proxy with `MERIDIAN_API_KEY`
+  if it is network-exposed.
+- **Client-owned tools are mandatory.** Passthrough cannot be disabled for
+  this protocol: an instance `passthrough: false` or a global
+  `MERIDIAN_PASSTHROUGH=0` is ineffective for `polytoken` (all other
+  adapters keep their normal precedence). Tool names, descriptions, schemas,
+  and `Task`/`task` `subagent_type` values are preserved: no alias
+  rewriting, no SDK subagent routing. The proxy still repairs common
+  input slips (camelCase keys, string-typed numbers) the same way it does
+  for every adapter, before the call reaches the client.
+- **Native prompt defaults.** No Claude Code preset is layered on
+  (`codeSystemPrompt: false`); the client's system prompt is the prompt.
+  Memory/dreaming/CLAUDE.md injection stay off. Explicit overrides via
+  `/settings` or an instance's `features` still apply.
+- **Thinking.** Thinking blocks from the model are preserved through
+  streaming and non-streaming responses, signatures included (redacted
+  thinking rides the same path; automated coverage exercises the signed
+  form on the non-streaming route). The thinking-generation and
+  `thinkingPassthrough` settings keep their existing semantics.
+- **Profile scoping.** With non-default profiles, the native key is scoped
+  per profile (`<profile>:<key>`) for resume state, exactly like other
+  keyed adapters. Blank/missing keys never resume (by design — no invented
+  fallback identity).
 
 ### Any Anthropic-compatible tool
 

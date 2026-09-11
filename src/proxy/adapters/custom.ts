@@ -79,3 +79,16 @@ export const customAdapter: AgentAdapter = {
     return deriveSystemPromptSessionKey(body)
   },
 }
+
+/**
+ * The last detection rule in detect.ts, ahead of only the default adapter:
+ * a headerless client that describes its conversation in the system prompt.
+ * Every explicit signal keeps priority, and it applies only when the body is
+ * available — callers that detect before parsing get the header-only result.
+ *
+ * Kept here, not in detect.ts, so the fork's footprint in that upstream file
+ * stays at a few isolated lines.
+ */
+export function detectCustomAdapter(body: unknown): AgentAdapter | undefined {
+  return body !== undefined && deriveSystemPromptSessionKey(body) ? customAdapter : undefined
+}

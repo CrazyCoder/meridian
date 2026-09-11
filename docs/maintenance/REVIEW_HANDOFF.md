@@ -1,6 +1,10 @@
 # Upstream review handoff
 
-Checkpoint: 2026-09-09, after issue #820 and a race-harness deflake. Refresh
+Checkpoint: 2026-09-11, after publishing Meridian 1.70.0 and then 1.71.0,
+repairing the E42 gate (#1014), closing the V2 cold-start gap (#1008), landing
+two of the three #980 splits (#1011, #1009), and triaging #1024 to
+configuration.
+Refresh
 GitHub and origin/main before continuing; this is a dated checkpoint, not a
 live queue.
 The owner requested portable skills and agent instructions so either Claude,
@@ -9,15 +13,31 @@ Codex, or another repository agent can resume this work.
 ## Read first
 
 Follow [meridian-upstream-review](../../.agents/skills/meridian-upstream-review/SKILL.md)
-and [AGENTS.md](../../AGENTS.md). The last delivered items were issue #820
+and [AGENTS.md](../../AGENTS.md). The last delivered item is contributor PR
+#1005, incorporated as #1012 and merged as `c3dc2279`. Before that: #980 as
+#1010 (`3db622fa`), #1003 as #1004 (`7028c697`), issue #820
 (PRs #994 and #995), the OpenCode V1 plugin packaging fix (#988) and a
 race-harness deflake (#997), plus #996 — a regression in our own #983, found
 while validating #820 and fixed in #998.
 
-**One thing is open and deliberately unmerged.**
-[PR #970](https://github.com/rynfar/meridian/pull/970) is the Release Please
-PR for 1.69.0 and is held: a release needs explicit authorization and a backlog
-review does not grant it. Nothing else is in progress.
+The last delivered items are the **#980 splits**: abort-cause diagnostics
+(#1022, `0fd59403`) and uncaptured-tool recovery (#1025, `d8516bea`, off by
+default). Before them: #1008 (#1018, `52b581b6`), #1014 (#1016, `1519f8d8`) and
+the probe-discipline rules in #1019 (`619bbe70`).
+
+**Nothing is in progress.** Held by explicit owner decision: the third #980
+split, `fix: recover visible empty capped streams` — see #1011. Still open for a
+canary and a live gate: #1009.
+
+**1.71.0 is published**, authorized explicitly by the owner; verified below.
+Nothing on `main` is unreleased. A future release needs its own authorization.
+
+**1.70.0 is published.** The owner authorized it explicitly; PR #1006 was merged
+as `0acf3b19` and the publication is verified below — npm, provenance by
+content, Docker and a registry-install run of the real client flow. Nothing is
+in progress and nothing is held. A future release still needs its own explicit
+authorization — this one does not carry forward. 1.69.0's section has been
+demoted to "Previous checkpoint"; do not republish either.
 
 An earlier version of this block said PR #977 was "green on everything and
 held for owner review". That was already stale when it was written: #977 merged
@@ -36,6 +56,550 @@ worktree/branch, before/after proof, tests and E2E versions, CI URLs, merge and
 closure status, limitations, and the exact next action. Put portable evidence in
 the PR or linked review record; optional private local logs are not prerequisites
 for discovering the workflow. Never invent test evidence if those logs are absent.
+
+## Standing instruction, 2026-09-10: file a ticket
+
+The owner asked that anything flagged as a real problem needing a fix becomes a
+GitHub issue, not a line in a PR body or a doc: "i cant keep up with all of
+this." Applied retroactively to the V2 cold-start race as #1008. Observations
+that need no fix stay observations; a "known limitation" note is not a ticket.
+
+Tickets opened under this instruction so far: #1008 (V2 cold-start race),
+#1009 (deferred uncaptured-tool recovery), #1011 (the held passthrough
+commits on `codex/polytoken-extras`), #1014 (the E42 gate's exit code and its
+missing discovery coverage), #1027 (supported V2 betas have drifted, and #1023's
+version does not exist) and #1028 (E42 can exit 1 after PASS when a straggler
+hits the fixture during teardown). All six came out of validation runs, not
+from reading code.
+
+## Completed checkpoint: Meridian 1.71.0
+
+[Meridian 1.71.0](https://github.com/rynfar/meridian/releases/tag/meridian-v1.71.0)
+shipped through [release PR #1020](https://github.com/rynfar/meridian/pull/1020),
+authorized explicitly by the owner. **Published and installed-package
+validated.** Do not republish it.
+
+| | |
+|---|---|
+| Candidate tree | `a6ae7050` (parent `d8516bea`), all four checks green after approval |
+| Release/tag commit | `60722ad95983e0518d60378b5e0fdcce89b1e765` |
+| npm | `1.71.0`, `latest` → `1.71.0` |
+| Tarball integrity | `sha512-ugp+7bC9e0owstbxr7rnda3/8vlSc1iWRrGbXNDeS8u3B+FjtzC1juLpnyTTxnYPDOapQ8WlU25c3j4iYLBH6A==` |
+| SLSA provenance | `gitCommit: 60722ad9…` equals the tag commit; workflow `release-please.yml` |
+| Docker | `1.71.0` and `latest`, `linux/amd64` + `linux/arm64` |
+| Post-release on `60722ad9` | CI, Release Please, Docker — success |
+
+Changelog: `feat` abort-cause diagnostics (#1022) and uncaptured-tool recovery
+(#1025); `fix` V2 catalog cold-start seed (#1018).
+
+**Gates before the merge.** `npm test` 3922 pass / 1 skip / 0 fail on bun
+1.3.14, typecheck, build. Live: E42 `--live --extended --separate-proxy-cwd`
+against **both** pinned betas using the packed 1.71.0 consumer, plus the
+`--no-discovery` and `--v1` controls; all 14 capped-turn controls with the
+uncaptured-recovery flag off and four more with it on; all four E41 modes; both
+`e2e-opencode-package-integrity.mjs` variants. Installed-package validation ran
+twice — packed tarball and then the registry download — with
+`toolRounds=3 resumed=3` on `pi`, `passthrough`, `opencode` and `polytoken`.
+
+The candidate's CI again arrived `action_required` and had to be approved run by
+run, as the 1.70.0 section warns. One approval returned
+`403 This workflow run is not waiting for approval` because it had already
+started — that is success, not a failure.
+
+**A flaky gate found during this release, ticketed as #1028.** The first E42 run
+against `0.0.0-beta-18314` printed `{"result":"PASS"}` with every probe green and
+then exited **1**. Cause is in the log, not a guess: a straggler client request
+reached the fixture during teardown, after `proxy.close()`, and the fixture's
+**live POST forward is unguarded**, so the rejection set the exit code —
+`ConnectionRefused`/`ECONNRESET` at `scripts/e2e-opencode-v2-package.mjs:128`.
+#1016 hardened the non-POST branch for exactly this and the POST branch was
+never given the same treatment. A second run exited 0 with identical
+assertions. The release was not held: the artifact under test passed everything,
+and the defect is in the harness. **This was not written off as "a rerun
+passed"** — it is root-caused to a named code path and tracked.
+
+## Investigated: #1024 is configuration, not a Meridian defect
+
+Reported by @calebdw against Meridian 1.68.0 through the third-party
+`opencode-with-claude@1.10.1`: the first message of every new session fails with
+`This session advanced while the request was waiting`. OpenCode fires a Haiku
+`agent=title` stream and the Opus primary turn concurrently on one OpenCode
+session id.
+
+Reproduced on the 1.71.0 candidate with the reporter's models, firing the title
+one second after the primary:
+
+| setup | primary | title |
+|---|---|---|
+| no Meridian agent headers (reporter's shape) | 200 | **400** `This session advanced while the request was waiting` |
+| Meridian's plugin headers present | 200 | 200 |
+
+In the passing control the log shows `source=subagent-title agent=subagent`
+running concurrently with `agent=primary` (`sdkActive=1/10`) — the title is
+detached exactly as designed. In the failing variant the proxy prints its own
+warning, which describes this failure precisely: "OpenCode request without the
+Meridian plugin's agent headers … the first turn of each session can fail with a
+400 … Fix: meridian setup".
+
+So the reporter is missing Meridian's own plugin; the third-party one does not
+stamp those headers. Their observation that 1.62.1 worked is consistent: the
+stricter session-advance check landed later, so the same collision was
+previously silent — replaying against a cold cache instead of failing.
+
+Note one difference from the report: in our reproduction the **title** took the
+400 and the primary completed, where theirs lost the Opus stream. Which side
+loses is timing-dependent; the mechanism is identical.
+
+**A reply is drafted but NOT posted** — sending needs owner authorization. The
+open product question, which is the owner's: should Meridian absorb header-less
+concurrency by serialising or forking per mapped session instead of returning
+400, which is what a drop-in Anthropic API would do? Today it fails the turn.
+
+## Open: supported V2 betas have drifted, #1027
+
+Surfaced triaging #1023 (@Ardumine), which adds `0.0.0-beta-19425` to
+`SUPPORTED_OPENCODE_V2_VERSIONS`. **That version does not exist on npm** — 404;
+the 5-digit beta series ends at `0.0.0-beta-19271`. A supported beta must pass
+E42 against that exact binary, so #1023 cannot be accepted as written whatever
+its merits. Upstream has also moved to date-based versioning
+(`0.0.0-beta-202608110357`, 1107 betas total), leaving our newest supported host
+`18866` roughly 400 revisions behind. #1027 asks for a policy — how many hosts,
+a set or a floor — before any bump is worth validating.
+
+## Delivered: two of three #980 splits (#1011 partly, #1009 landed off by default)
+
+Both cherry-picked from preserved contributor commits by @jakewimmer, authorship
+and AuthorDate intact, each with maintainer corrections in separate commits.
+
+| split | original | incorporated | delivery | disposition |
+|---|---|---|---|---|
+| abort-cause diagnostics | `016eb53c` → `77667583` | `8f362e18` | `0fd59403` (#1022) | landed |
+| uncaptured-tool recovery | `f185e76e` | `929d351f` | `d8516bea` (#1025) | landed, flag off |
+| visible empty capped streams | `c5804275` | — | — | **deferred by owner** |
+
+Both squashes carry `Co-authored-by: Jake Wimmer`. `c5804275` remains on
+`codex/polytoken-extras`; do not retype it.
+
+**Deferred by owner decision: `fix: recover visible empty capped streams`.** It
+changes a documented, gate-defended guarantee and introduces a stream/non-stream
+asymmetry. `E2E.md` says "empty output, thinking alone and unhandled calls must
+fail" (#926); with the commit applied, live:
+
+| case | non-stream | stream |
+|---|---|---|
+| `empty` capped turn | 1 cap query — fails, as documented | **2** — lifts the cap and retries |
+| `thinking`-only capped turn | 1 — fails | **2** — retries |
+
+`--case=empty --stream` and `--case=thinking --stream` both fail on
+`assert.equal(capQueries.length, retry ? 2 : 1)`. Everything else was green,
+including all four E41 modes and the #925 `--drop-stop` control — the
+contributor's own validation was the unit suite, which never runs these gates.
+The owner chose to defer rather than rewrite the contract; the full evidence and
+the two ways to pick it up are in #1011's body.
+
+**Two maintainer corrections worth remembering.**
+
+`1cf83e46` (in #1022): the contributor's message said all five
+`formatSdkTermination` call sites pass the abort snapshot. Four did. The missing
+one was `sdk_termination_recovered` on the captured-tool recovery path — the
+diagnostic closest to the incident the field exists for. Nothing failed, because
+an omitted context field simply does not render. Fixed, with a source invariant
+that fails without it, because the capped-turn fixtures never reach that site.
+Observed live afterwards: `sdk_termination reason=max_turns turns=1 abort=none`.
+
+`012103f0` (in #1025): the uncaptured-recovery feature's **central test had
+never executed**. It called `parseSSE` without importing it — `tsc` reports
+`TS2304`, bun throws `ReferenceError`. So the behaviour the commit exists for
+had no running coverage. `bun test` does not typecheck; this is the second time
+that trap appeared today, the first being my own new test file caught by CI in
+#1018. With the import fixed (and four forbidden `as any` casts replaced) the
+test passes.
+
+**Why #1025 was safe to land while #1011's sibling was not.** #1025 is
+`MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY`, off by default, every new path
+flag-gated. All 14 capped-turn controls and all four E41 modes pass with it off;
+with it **on**, `unhandled`, `empty`, `partial` and `retry` (stream) still behave
+exactly as documented, so the refusal boundary holds live. The deferred commit
+changed default behaviour and broke two of those same controls.
+
+**What #1009 still needs** (it is deliberately still open): a live gate for the
+positive abort-window shape — the fixture streams a complete `tool_use` block
+but for an *undeclared* tool, so it exercises refusal, not recovery; reproducing
+the real shape needs an abort injected between a declared tool's
+`content_block_stop` and hook dispatch, which the fixture cannot do and which is
+racy to time. Plus the non-streaming parity decision, documented as a
+flag-scoped limitation rather than decided. Plus the canary itself.
+
+**A hazard that nearly fired.** #1025's PR body originally read "why this does
+not close #1009". GitHub's linked-issue parser ignores the negation, so merging
+would have shut the ticket that tracks the remaining work — the same failure as
+#997/#917 and #969/#967. The pre-creation grep caught it; `closingIssuesReferences`
+was verified empty before merging. **Grep the PR body for keyword-then-number
+before creating it, and check `closingIssuesReferences` before merging.**
+
+## Delivered: OpenCode V2 cold-start catalog, #1008 as #1018
+
+Maintainer-originated, filed by us while validating #1004. Base `00b41a6f`,
+branch `codex/v2-catalog-cold-start`, worktree `/tmp/meridian-1008`, delivery
+commit `eabd78dd`, merged as `52b581b6`. #1008 closed by the PR body.
+
+**Before / after**, same new gate assertion, same host:
+
+| tree | coldStartProbe | exit |
+|---|---|---|
+| pre-fix (`00b41a6f` + gate only) | `{"errors":["provider.no-route"],"efforts":[]}` | 1 |
+| fixed | `{"errors":[],"efforts":[null,"xhigh"]}` | 0 |
+
+**The fix.** Each successful discovery is cached in
+`~/.config/meridian/opencode-v2-catalog.json`; the plugin reads it
+*synchronously* in `setup`, before the first transform can run. The seed cannot
+be a catalog read — awaiting the catalog in `setup` deadlocks the server, which
+is why discovery is driven off `catalog.updated` at all.
+
+**The finding that changed the design.** The plan was to validate a cached entry
+against the provider's configured base URL so a repointed provider could never
+apply another Meridian's models. That is impossible inside a transform: a draft
+`Provider.Info` exposes only
+`["id","name","activation","package","integrationID","headers"]`, and the whole
+record contains **no URL anywhere** — observed by instrumenting the real host on
+beta-18866, after the types suggested otherwise. So the guarantee is self-healing
+rather than preventive:
+
+- the seed is applied optimistically to any Meridian provider still in the catalog;
+- when discovery finds no Meridian-shaped base URL the provider has been
+  repointed, so the cache is deleted and the catalog rebuilt without it;
+- a provider that is configured but unreachable keeps its seed, because the last
+  catalog Meridian served beats models.dev's 1M Sonnet.
+
+**Behaviour narrowed, deliberately.** "Meridian unreachable leaves the catalog
+exactly as OpenCode built it" now holds only when no cache is present. Recorded
+in `docs/agents.md` with how to clear the file. The `--no-discovery` control
+still passes because it runs with an isolated config directory. A brand-new
+install's very first request still has no cache; no plugin API allows better —
+`@opencode-ai/plugin@0.0.0-beta-19271` still has a synchronous `Transform` and no
+config domain.
+
+**New gate coverage** in `e2e-opencode-v2-package.mjs`: a cold-start probe that
+spawns a fresh `--standalone` process rather than reusing the warm server, and a
+non-live invalidation probe that repoints the provider, requires the cache file
+to be deleted and the next cold run to reject the variant. The first repointed
+run is recorded but not asserted — whether it still offers the variant depends on
+how far model resolution gets before discovery lands.
+
+**Validation.** `npm test` 3890 pass / 1 skip / 0 fail on bun 1.3.14 (10 new),
+typecheck, build. Exit 0 for: live `--extended --separate-proxy-cwd` on
+beta-18866 and beta-18314; the same against an independently `npm pack`-installed
+consumer; non-live; `--no-discovery`; and the `--v1` control on pinned
+`opencode@1.18.11` with `discoveryTrace: []`. Exit 1 with one new assertion
+deliberately broken. `e2e-opencode-package-integrity.mjs` passes both variants.
+The merged tree was confirmed file-by-file identical to the validated tree.
+
+**Two process notes from this ticket.**
+
+`npm test` does **not** typecheck, and CI runs `npm run typecheck` inside the
+`test` job. A new test file typechecked fine locally only because typecheck was
+last run before it existed; CI caught four `TS2345` errors from a hand-rolled
+`CatalogDraft` stand-in. Run `npm run typecheck` *after* adding or editing test
+files, not before. The fix was to narrow the function's parameter to the
+`CatalogProviderProbe` interface it actually needs, which is better typing than
+the stub it replaced.
+
+A `--v1` control failed with `ENOENT` on the pinned binary, which looked like a
+regression and was not: the previous ticket's cleanup had deleted
+`/tmp/opencode-v1-11`. Reinstall `opencode-ai@1.18.11` before reading anything
+into a V1 failure.
+
+## Delivered: the E42 gate's exit code and its missing discovery coverage, #1014 as #1016
+
+Maintainer-originated, filed by us during 1.70.0 release validation under the
+owner's standing ticket instruction. Base `3145fc49`, branch
+`codex/e42-discovery-gate`, worktree `/tmp/meridian-1014`, delivery commit
+`36362440`, merged as `1519f8d8`. #1014 closed by the PR body. No external
+contributor is involved, so no author mapping applies. Test infrastructure only:
+no source, plugin or configuration change.
+
+**The defect.** `scripts/e2e-opencode-v2-package.mjs` recorded traffic through a
+`Bun.serve` fixture that called `request.json()` on every request. The
+`GET /v1/models` that #1004's model discovery issues has no body, so it threw.
+Discovery failed closed, and the unhandled rejection set the process exit code —
+the gate printed `{"result":"PASS"}` and exited **1**. So the mandatory V2 gate
+had a meaningless exit code *and* the feature released in 1.70.0 had no
+automated coverage. Causality established by A/B before changing anything:
+
+| fixture | `result` | `GET - /v1/models failed` | exit |
+|---|---|---|---|
+| as shipped | `PASS` | 5 | **1** |
+| patched to answer non-POST | `PASS` | 0 | **0** |
+
+A second instance of the same class surfaced only once the first fix let the run
+get far enough: the live forward hardcoded `method: 'POST'`, and an abort
+mid-forward threw out of the handler. A one-shot client process exiting with
+discovery in flight does exactly that; it appeared as `status: null`. Both are
+now caught and recorded rather than thrown.
+
+**What the gate now asserts.** A `GET` to *exactly* `/v1/models` — the original
+contributor version requested `/v1/v1/models`, because the Anthropic provider
+carries the API version in its base URL, and that 404 disabled discovery
+silently. Then the response must carry `claude-haiku-4-5` with a 200k window and
+a supported `xhigh` effort, the two values OpenCode's own models.dev entry gets
+wrong. In `--live --extended` it selects `anthropic/claude-haiku-4-5#xhigh` and
+requires the effort to reach the proxy; that variant is
+`provider.no-route — Variant unavailable` without discovery, so a pass can only
+come from the applied catalog. `--no-discovery` is the new negative control.
+
+**A flaky assertion caught before it shipped.** The variant probe first asserted
+the model emitted a literal sentinel. That was true on one run and false on the
+next — same code, same host. It is now recorded but not asserted; the
+deterministic facts are asserted instead (no error events, the effort observed
+at the proxy, the request completing upstream). Both live hosts show
+`answered` disagreeing between runs, which is exactly why.
+
+**Validation.** `npm test` 3880 pass / 1 skip / 0 fail on bun 1.3.14, typecheck,
+build. Exit codes, which are the point of this ticket:
+
+| run | exit |
+|---|---|
+| `--live --extended --separate-proxy-cwd`, `0.0.0-beta-18866` | 0 |
+| `--live --extended --separate-proxy-cwd`, `0.0.0-beta-18314` | 0 |
+| non-live, beta-18866 | 0 |
+| `--no-discovery` negative control | 0 |
+| `--v1` control, pinned `opencode@1.18.11` | 0, `discoveryTrace: []` |
+| one assertion deliberately broken | 1, no `PASS` printed |
+
+Both live runs: variant selected, `effort: "xhigh"` observed at the proxy, 100%
+cache reuse on ordinary continuation and process restart.
+`e2e-opencode-package-integrity.mjs` passes with and without `--manifest`.
+The merged tree was confirmed byte-identical to the validated tree.
+
+**An hour lost to a bad probe, worth not repeating.** Before using the real
+gate, an ad-hoc harness was built to answer "does the applied catalog actually
+expose the variant?" It reported `provider.no-route` even with discovery
+returning 200 and a valid catalog, which looked like a product defect in #1004.
+It was not — the probe's own client/server wiring was wrong. The real gate,
+which already has correct port reservation, `OPENCODE_SERVER_PASSWORD` auth and
+a warm server, showed the variant working on the first try. **Reach for the
+existing gate before building a probe**; if a probe contradicts a hand-verified
+live result, suspect the probe.
+
+`opencode2 models` lists model ids without variants, and `/api/provider/{id}`
+and `/api/model` return empty unless the provider is fully active, so neither is
+a usable catalog assertion. The tap-observed traffic is.
+
+## Delivered: disabled subscription entitlement, contributor PR #1005 as #1012
+
+**Item.** [PR #1005](https://github.com/rynfar/meridian/pull/1005) by
+StanChmielewski — an org admin can switch Claude Code subscription access off;
+the refusal named no limit and no payment method, so `classifyError` fell
+through to `api_error`, `isAccountFailoverError` said no, and priority routing
+kept selecting an account that could serve nothing.
+
+**Disposition.** Accepted with one maintainer correction. Merged 2026-09-10 as
+`c3dc2279` with `Co-authored-by: Stan Chmielewski <s.chmielewski@it-tower.pl>`.
+Author mapping `06a44e2a` → `2b6681e5`, AuthorDate preserved; maintainer commit
+`0560d4a7`. Base `3db622fa`, worktree
+`/Users/rynfar/repos/meridian-wt/org-entitlement`. #1005 head rechecked as
+`06a44e2a` immediately before merge, then auto-closed.
+
+**Reproduced on main before changing anything**: `sdk result` → 500 `api_error`,
+`stderr exit1` → **401 `authentication_error`**, `api 403` → 500 `api_error`,
+all with `failover=false`. The 401 is the sharp edge — a bare code-1 exit reads
+as an expired login, so the operator is told to run `claude login` for an
+entitlement only an admin can restore.
+
+**The maintainer correction, and the lesson.** The PR claimed to cover the
+API-key/gateway shape with `API Error: 403 Your organization has disabled ...`.
+That string is not what reaches `classifyError`. The CLI actually emits:
+
+```
+Claude Code returned an error result: Failed to authenticate. API Error: 403
+Your organization has disabled Claude subscription access for Claude Code · ...
+```
+
+A bare `Failed to authenticate.` sits between the CLI's wrapper and the upstream
+status. It ends in a period, so it is not one of the recognised colon-wrappers,
+and the anchored pattern never reached the entitlement string — that path was
+still `api_error` and still did not fail over. **A hand-written example of a
+wire string is not the wire string.** It was found by driving a real refusal
+through the failover harness, not by reading the report.
+
+**Evidence.** Ten adversarial classification cases pass, including the negatives
+`has not disabled`, a mid-line quote, `disabled MCP servers`, the authenticate
+notice alone, and the notice before a different capability. Live E2E through the
+#836/#829 error-telemetry harness with only the refusal fixture swapped to the
+org-disabled message at HTTP 403: pinned 402 `billing_error` (streaming and not),
+failover 200 from real Claude Max with the receipt, `PASS`. That harness FAILED
+at the pinned assertion before the maintainer fix. Gates: `npm test` 3880 pass /
+0 fail / 1 pre-existing skip, typecheck, build; CI green on all four checks.
+
+**Limitation.** An actual org-disabled account could not be reproduced here; the
+contributor's own run against one is the primary evidence for the real-world
+shape, and the harness drives the refusal instead.
+
+## Delivered: Polytoken harness adapter, contributor PR #980 as #1010
+
+**Item.** [PR #980](https://github.com/rynfar/meridian/pull/980) by jakewimmer —
+a native adapter for [Polytoken](https://polytoken.dev), an Anthropic-Messages
+coding agent that owns its tool loop.
+
+**Disposition.** Accepted in part. Merged 2026-09-10 as `3db622fa` with
+`Co-authored-by: Jake Wimmer`. Base `fb06c924`, worktree
+`/Users/rynfar/repos/meridian-wt/polytoken`. #980 head rechecked as `f185e76e`
+before merge, then auto-closed. Author mapping, all AuthorDates preserved:
+`68a0092e`→`6878e515`, `1bbf7a4b`→`64fc6e68`, `f22856f4`→`639af5e2`,
+`9b7b21d4`→`dd84557e`, `0edf2c63`→`58518d61`, `76f30fa9`→`58e307a8`,
+`acc0c661`→`2a878eea`. Maintainer commit `1dff13fd`.
+
+**Three commits were split out**, all preserved with authorship on the pushed
+branch `codex/polytoken-extras` — do not retype them:
+
+- `f185e76e` uncaptured-tool recovery. The only commit that does not apply to
+  current main; conflicts with #998's rework of the same early-stop region. The
+  contributor states it is "default OFF until canaried" with non-streaming
+  parity deferred. Tracked in **#1009**.
+- `1b2ba3a9` recover visible empty capped streams, and `016eb53c` classify abort
+  causes in `sdk_termination`. Both clean and green, held so each gets its own
+  changelog line and its own gate; the first lands in the #983 → #996 → #998
+  path. Tracked in **#1011**.
+
+The contributor's reported "1 failed" full suite does not reproduce — that flake
+was fixed by #997, now in the base.
+
+**Maintainer correction: a gate anyone can run.** #980's E2E was a manual Docker
+image swap plus a personal systemd unit and a budget gateway, driven by scripts
+deliberately not committed, and it overshot its own request budget (14 against a
+cap of 12). Replaced with this repository's existing mechanism: Polytoken added
+to `scripts/e2e-client-detection.mjs` (honouring `E2E_POLYTOKEN_BIN`) with its
+real 0.8.6 headers recorded in `client-headers.json`, so
+`client-detection-fixtures` pins the adapter in CI and a client-side change is a
+git diff. This is the #733 class of bug, and a PR whose detection keys on a UA
+plus a native header is exactly what that fixture protects.
+`x-polytoken-session` joined the redacted-value set, or every re-capture would
+churn on a fresh session id.
+
+**Evidence, live against the real client.** Polytoken 0.8.6 macos-arm64
+(sha256 `71353a6d…0793e7`, verified against the published `SHA256SUMS.macos`),
+installed to `/tmp/pt`, real Claude Max on `claude-haiku-4-5`, disposable
+Meridian on port 3468. A `polytoken exec` client-owned read returned `LINES=4`
+in **four** client round-trips, `adapter=polytoken` throughout, `lineage=new`
+then `lineage=continuation` on a stable `x-polytoken-session`. The read ran on
+the Polytoken side — the proxy's own workdir has no such fixture. Repeated with
+`MERIDIAN_PASSTHROUGH=0`: identical, so the global setting cannot hand the loop
+to the SDK. Detection controls: `PolytokenImpostor/1.0` → `opencode`, blank
+header → `opencode`, valid header → `polytoken`, UA alone → `polytoken`.
+Captured wire identity: `user-agent: Polytoken v0.8.6`, `x-polytoken-session`,
+`accept: text/event-stream`. Gates 3871 pass / 0 fail / 1 skip, typecheck,
+build; CI green.
+
+**Behavior change to remember.** A valid `x-polytoken-session` now outranks
+automatic adapter-instance match rules (#476). Explicit `x-meridian-agent` still
+wins over both.
+
+**Polytoken install, for the next run.** `https://get.polytoken.dev` shell
+installer, or `https://dl.polytoken.dev/<version>/<platform>/polytoken.zip` with
+`SHA256SUMS.<os>`. Config is `config.yaml` in `--config-dir`; a Meridian
+provider needs `kind.type: custom_anthropic_compatible`, `protocol:
+anthropic_messages`, `auth.type: static_key`, and a model entry with both
+`provider` (instance name) and `provider_name` (wire id) plus a `class`.
+
+## Delivered: OpenCode V2 model discovery, contributor PR #1003 as #1004
+
+**Item.** [PR #1003](https://github.com/rynfar/meridian/pull/1003) by
+martinmiglio — read Meridian's `/v1/models` from the V2 plugin and write the
+result into OpenCode V2's model catalog.
+
+**Disposition.** Accepted with maintainer corrections. Delivered as
+[PR #1004](https://github.com/rynfar/meridian/pull/1004), squash-merged
+2026-09-10T14:46Z as `7028c697` with
+`Co-authored-by: Martin Miglio <marmig0404@gmail.com>`. #1003 auto-closed at the
+same second; its head was still `a6657962`, rechecked immediately before merge,
+so no later contributor work was discarded.
+
+Base `a1f04df6`. Branch `codex/opencode-v2-model-discovery` (deleted on merge),
+worktree `/Users/rynfar/repos/meridian-wt/v2-model-discovery`. Author mapping:
+`a6657962` → `9a25b773`, Author and AuthorDate (2026-09-02) preserved.
+Maintainer commits `b98de38f`, `50b16f3c`, `a63b27a2`.
+
+**Half the PR was already on main.** #1003 also packaged the V2 plugin as a
+directory package. #988 landed that first, byte-for-byte for
+`plugin/meridian-v2/`, plus a generalized `scripts/package-opencode-plugins.mjs`
+covering V1 too. #1003 branched from `1ea97d01` and predates it, which is why it
+was `CONFLICTING`. That half was dropped as superseded during the cherry-pick.
+
+**The discovery half did not work, in two independent ways.** Both were found
+live against the pinned `opencode2 0.0.0-beta-18866`, not by reading the diff.
+
+- V2's Anthropic provider carries the API version in its base URL, so
+  `http://127.0.0.1:3466/v1` was turned into a request for `/v1/v1/models`. That
+  path answers 404 and `/v1/models` answers 200, so the fetch always failed.
+- The skip guard read `catalog.provider.get(id).models` and treated a hit as
+  user configuration. Inside a transform that map is the assembled models.dev
+  catalog, which already lists all nine models Meridian serves — so every model
+  was skipped even once the URL was fixed.
+
+**What made the second fix safe, and it is worth remembering.** V2 layers
+`providers.<id>.models` on top of plugin transforms. Verified directly: a
+configured `claude-opus-5` override (`name: "USER OVERRIDE"`, context 12345)
+survived a transform that wrote a different name and context to the same model,
+while a model the user had not configured took the transform's value. A plugin
+can therefore write authoritative values without clobbering user overrides — the
+opposite of what #1003 assumed.
+
+That correction matters beyond the variants: beta-18866 advertises a 1M Sonnet,
+while Meridian deliberately serves Sonnet at 200k so a long turn is not billed
+as Extra Usage.
+
+**Evidence.** Same isolated config, Meridian unreachable versus reachable:
+
+```
+unreachable (= the pre-fix result)
+  claude-sonnet-5    ctx=1000000  ['none','low','medium','high','xhigh','max']
+  claude-haiku-4-5   ctx=200000   ['high','max']
+reachable, fix applied
+  claude-sonnet-5    ctx=200000   ['low','medium','high','xhigh','max']
+  claude-haiku-4-5   ctx=200000   ['low','medium','high','xhigh','max']
+  claude-sonnet-4-5  ctx=1000000  ['high','max']   <- not served by Meridian, untouched
+```
+
+Live E2E: `opencode2 0.0.0-beta-18866` (installed to `/tmp/oc2pin`, not the
+user's global `~/.local/bin/opencode2`, which had self-updated to 19242 and is
+outside the supported set), Meridian from source on isolated port 3466 with an
+isolated session store, isolated `OPENCODE_CONFIG_DIR` and all four `XDG_*`
+dirs, real Claude Max (`max`, profile `work`). Through a logging tap in front of
+the proxy, `--model 'anthropic/claude-haiku-4-5#xhigh'` produced
+`POST /v1/messages?beta=true model=claude-haiku-4-5 effort="xhigh" stream=true`
+→ 200, and Meridian logged `agent=primary model=haiku` with
+`source=subagent-title` detached separately. Negative control with the base URL
+on a dead port: catalog untouched, nothing logged as an error.
+
+Gates at head `a63b27a2`: `npm test` 3803 pass / 0 fail / 1 pre-existing skip
+(bun 1.3.14), `npm run typecheck`, `npm run build`. CI green on `test`, `smoke`,
+`windows-smoke`, `build-push`; `changelog-duplication` skipped. Failed-before /
+passed-after retained for both new plugin regressions.
+
+**Known limitation, documented in `docs/agents.md` and accepted by the owner.**
+Discovery cannot read the catalog until OpenCode has assembled it — awaiting
+`context.catalog.provider.get()` inside `setup` deadlocks the server, confirmed
+by a probe plugin that hung the process with no output. So the first request
+against a freshly started server still sees the built-in entries, and naming a
+Meridian-only variant there (`anthropic/claude-haiku-4-5#xhigh`) fails with
+`provider.no-route`; the next request succeeds. Reproducible, not intermittent.
+The TUI picker is unaffected because it renders after discovery lands.
+
+No OpenCode release fixes this. `@opencode-ai/plugin@0.0.0-beta-19271`, the
+newest published beta, still declares `Transform` with a synchronous callback
+(`CatalogDraft` merely renamed to `CatalogEditor`) and still exposes no config
+domain. Closing the race would need a persisted catalog cache seeded during
+setup — a separate design decision, not started.
+
+**Also fixed while validating this.** `docs/agents.md` documented a V1-shaped
+provider block for the V2 section. V2 reads `providers` and `settings`;
+`provider` and `options` are silently ignored, which points the client at the
+real Anthropic API instead of Meridian. The base URL also needs its `/v1`
+suffix. The same section listed only beta-18314 while
+`SUPPORTED_OPENCODE_V2_VERSIONS` accepts 18866 as well.
+
+**Next action.** None outstanding for this item. 1.69.0 is published and a
+release for `7028c697` needs its own explicit authorization.
 
 ## Delivered: OpenCode Desktop cannot load the V1 plugin, PR #988
 
@@ -717,7 +1281,161 @@ did not reproduce locally. Run 34315145910 failed
 `Extra usage required fallback > does not use exponential backoff`, also
 unexplained. **Leave #917 and #933 open; #997 does not settle them.**
 
-## Completed checkpoint
+## Previous checkpoint: Meridian 1.70.0
+
+[Meridian 1.70.0](https://github.com/rynfar/meridian/releases/tag/meridian-v1.70.0)
+shipped through [release PR #1006](https://github.com/rynfar/meridian/pull/1006),
+authorized explicitly by the owner. **Published and installed-package
+validated** — not merely merged. Do not republish it.
+
+| | |
+|---|---|
+| Candidate tree | `c925dbba` (parent `c3dc2279`), all four checks green |
+| Release PR head | `c925dbba`, merged with `--merge --match-head-commit` |
+| Release/tag commit | `0acf3b1906f7b16a9bf507925bf1998b9931cd2f` |
+| npm | `1.70.0`, `latest` → `1.70.0` |
+| Tarball integrity | `sha512-/EqHIcKAv7TvlScooHmGxePSmrOpXehtY8fh433NBBoNh+UKjNtyIfKPxIOo0X+n/zoCf5iGrYUwO3TH5gxQHA==` (shasum `184f4eb5…866f`) |
+| SLSA provenance | `gitCommit: 0acf3b19…`, workflow `.github/workflows/release-please.yml`, subject `pkg:npm/@rynfar/meridian@1.70.0` |
+| Docker | `1.70.0` and `latest`, `linux/amd64` + `linux/arm64` |
+| Post-release workflows on `0acf3b19` | CI, Release Please, Docker, Sync bun.nix — all success |
+
+Provenance was verified by **content, not presence**: the attestation's
+`resolvedDependencies.digest.gitCommit` equals the tag commit.
+
+Changelog, one entry per PR: `feat` Polytoken harness adapter (#1010) and
+OpenCode V2 model discovery (#1004); `fix(errors)` disabled subscription
+entitlement classified as billing (#1012).
+
+**The candidate's own CI had to be approved to run at all.** Release Please
+branches arrive as bot pull requests whose workflows sit at `action_required`.
+For 1.69.0 nobody approved them and all four expired as `failure`; that release
+merged on the strength of CI on `main` instead. This time the four runs on
+`c925dbba` were approved and all four came back green before the merge. **Do
+this every release** — `gh api -X POST repos/rynfar/meridian/actions/runs/<id>/approve`
+for each run on the release head — otherwise the candidate tree is never
+actually built.
+
+**Gates run before the merge, all green.** `npm test` 3880 pass / 1 skip / 0
+fail on bun 1.3.14; typecheck; build; `e2e-client-detection.mjs` with three real
+clients and no fixture drift (opencode 1.18.29, crush 0.87.0, Polytoken 0.8.6);
+`e2e-error-telemetry.mjs` PASS on all four cases with live Claude Max failover;
+`e2e-opencode-package-integrity.mjs` with and without `--manifest`; **E42
+`--live --extended --separate-proxy-cwd` against both pinned betas**
+(`0.0.0-beta-18314` and `0.0.0-beta-18866`), each self-verifying its own version,
+each run against the **packed 1.70.0 consumer** rather than the source tree, both
+reporting 100% cache reuse on ordinary continuation and on process restart.
+
+Note on `npm ci` in this repo: it fails. `bun2nix`'s postinstall runs with its
+own package directory as cwd and cannot find `bun.lock`, so dependencies never
+install and `tsc` is absent. Use `bun install --frozen-lockfile`.
+
+**Installed-package validation** drove the published artifact, not the source
+tree: a clean `npm install @rynfar/meridian@1.70.0`, the installed CLI started
+as a real `node` subprocess, `/health` reporting `1.70.0` with
+`build.source=npm`, and a keyed client-driven tool loop on every adapter that
+keys its own sessions:
+
+```
+  PASS  pi           toolRounds=3 resumed=3
+  PASS  passthrough  toolRounds=3 resumed=3
+  PASS  opencode     toolRounds=3 resumed=3
+  PASS  polytoken    toolRounds=3 resumed=3
+```
+
+`polytoken resumed=3` is the new line this release: #1010's adapter resumes its
+own keyed tool rounds in the shipped artifact, not only in the source gate. The
+same loop was run first against the locally packed tarball and then against the
+registry download, with identical results.
+
+**An environment trap that will cost the next agent an hour.** On this machine
+the `personal` profile's OAuth has expired. A run with an isolated
+`MERIDIAN_CONFIG_DIR` defaults to that profile and every request fails with
+`Failed to authenticate: OAuth session expired and could not be refreshed`,
+which looks exactly like a release regression. It is not: seed the disposable
+config from `~/.config/meridian` and send `x-meridian-profile: work`. For the
+same reason `/health` reports `status: degraded` / `Could not verify auth
+status` — **confirmed pre-existing by installing published 1.69.0 and getting
+the byte-identical response**. Run that control before believing a health
+regression.
+
+**Known limitation, ticketed as
+[#1014](https://github.com/rynfar/meridian/issues/1014).** The E42 gate
+now always exits 1, even on a fully passing run, and it cannot exercise #1004's
+model discovery at all. Its recording fixture calls `request.json()`
+unconditionally, so the body-less `GET /v1/models` that discovery issues throws
+`SyntaxError: Unexpected end of JSON input`; in live mode the same handler also
+forwards with a hardcoded `method: 'POST'`. Causality was established by A/B on
+an otherwise identical tree:
+
+| fixture | `result` | `GET - /v1/models failed` | exit |
+|---|---|---|---|
+| as shipped | `PASS` | 5 | **1** |
+| patched to answer non-POST | `PASS` | 0 | **0** |
+
+This is test infrastructure only — 1.70.0 ships the feature unaffected, and
+discovery against a real Meridian was verified by hand during #1004. But the
+gate's exit code is now meaningless, and the feature has no automated live
+coverage. The probe patch was reverted; the candidate tree was confirmed
+pristine at `c925dbba` before the merge.
+
+## Earlier checkpoint: Meridian 1.69.0
+
+[Meridian 1.69.0](https://github.com/rynfar/meridian/releases/tag/meridian-v1.69.0)
+shipped through [release PR #970](https://github.com/rynfar/meridian/pull/970),
+authorized explicitly by the owner. **Published and installed-package
+validated** — not merely merged. Do not republish it.
+
+| | |
+|---|---|
+| Candidate tree | `04f65101` ([CI success](https://github.com/rynfar/meridian/actions/runs/34394242824)) |
+| Release PR head | `e52f453c`, merged with `--merge --match-head-commit` |
+| Release/tag commit | `3d38f6987632cd798b092c4d1dd83231f8ea3280` |
+| npm | `1.69.0`, `latest` → `1.69.0` |
+| Tarball integrity | `sha512-4ZN4BR9lFMRqFjzWdldT2+Z4weaDJVZWLGov6nW0xJBvVU3yn+jFywGMzPAnsPvljvOhpbCvacja79/Ca82iKg==` |
+| SLSA provenance | `gitCommit: 3d38f698…`, workflow `.github/workflows/release-please.yml`, subject `pkg:npm/@rynfar/meridian@1.69.0` |
+| Docker | `1.69.0` and `latest`, `linux/amd64` + `linux/arm64` |
+| Post-release workflows on `3d38f698` | CI, Release Please, Docker, Sync bun.nix — all success |
+
+Provenance was verified by **content, not presence**: the attestation's
+`resolvedDependencies.digest.gitCommit` equals the tag commit. An attestation
+that merely exists says nothing about what was built.
+
+**Gates run before the merge, all green.** `npm test` 3793 pass / 1 skip / 0
+fail on bun 1.3.11; typecheck; build; E41 all four modes; E54; E55 three runs;
+E56; **E42 live+extended against both pinned betas** (`0.0.0-beta-18314` and
+`0.0.0-beta-18866`, each verifying its own version in-output because the beta
+CLI can self-update); `e2e-opencode-package-integrity.mjs` with and without
+`--manifest`.
+
+E42 was required here for a non-obvious reason worth remembering: this release
+looks V1-only, but #988 generalized `package-meridian-v2-plugin.mjs` into
+`package-opencode-plugins.mjs`, which also emits the **V2** manifest. The
+pinned betas had to be reinstalled because the gate's isolated installs live
+under `/tmp`.
+
+**Installed-package validation** drove the published tarball, not the source
+tree: a clean `npm install @rynfar/meridian@1.69.0`, the installed CLI started
+as a real subprocess, `/health` reporting `1.69.0`, and the keyed tool loop run
+on all three adapters:
+
+```
+  PASS  pi           toolRounds=3 resumed=3
+  PASS  passthrough  toolRounds=3 resumed=3
+  PASS  opencode     toolRounds=3 resumed=3
+```
+
+`passthrough resumed=3` is the load-bearing line: it proves #998's fix is in
+the shipped artifact. #983 introduced that regression during this same cycle,
+so no released version ever carried it — which is why both entries appear in
+one changelog.
+
+**One gate had to be corrected mid-validation.** E55 was asserting pre-#998
+behaviour and failed on correct behaviour; fixed in #1001 before the release
+merge. The process miss: #998 changed the passthrough tool loop and only the
+new gate (E56) was re-run, not the existing gates on the same path. Re-run
+every gate that touches a changed path, not just the one written for it.
+
+## Earlier checkpoint: Meridian 1.68.0
 
 [Meridian 1.68.0](https://github.com/rynfar/meridian/releases/tag/meridian-v1.68.0)
 shipped through [release PR #937](https://github.com/rynfar/meridian/pull/937).
@@ -763,9 +1481,21 @@ released; original #898 was closed as superseded.
 
 ## Next item to triage on resumption
 
-Live at this checkpoint: **9 open issues, 31 open PRs.** Refresh both; do not
-act on these counts. #820 and #996 are both fully addressed and were closed
-once #998 merged, so the live issue list should be shorter than this table.
+Live at this checkpoint: refresh the counts; do not act on any written here.
+#820 and #996 are both fully addressed and were closed once #998 merged, so the
+live issue list should be shorter than this table.
+
+#1014 (#1016), #1008 (#1018), #1011's two landable commits (#1022) and #1009's
+commit (#1025) are all **delivered**; their sections are above. #1011 and #1009
+both stay open with narrowed scope recorded in their own bodies. The contributor
+backlog below is now the whole remaining queue. They are
+ours, fully diagnosed, and each carries a reproduction and acceptance criteria —
+so they are cheaper to pick up than any contributor report below.
+
+| ticket | state at this checkpoint |
+|---|---|
+| #1009 uncaptured-tool recovery | **landed off by default** (#1025). Open for a live abort-window gate, the non-streaming parity decision, and the canary |
+| #1011 the last held passthrough commit | two of three landed (#1022); `c5804275` deferred by owner — it changes a gate-defended contract and adds a stream/non-stream asymmetry. Evidence in the ticket body |
 
 | issue | state at this checkpoint |
 |---|---|
@@ -778,7 +1508,11 @@ once #998 merged, so the live issue list should be shorter than this table.
 | #769 OpenClaw scrub plugin | feature proposal, needs a product decision |
 | #650 plugin-input bumps | infrastructure proposal, needs a product decision |
 
-**#917/#933 is the strongest remaining engineering item**, and it needs a
+Contributor backlog still untouched: #896 (Windows session GC, cannot be
+validated here), #849, and roughly 21 `feat` proposals, mostly from one
+contributor, each needing a product decision before technical review.
+
+**#917/#933 is the strongest remaining contributor-reported item**, and it needs a
 different approach from the one that has been tried. #997 removed one confirmed
 mechanism; the two remaining failures
 (`Session tool cache > updates cached tools when client sends a new set`, and
