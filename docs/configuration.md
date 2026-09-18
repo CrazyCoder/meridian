@@ -701,3 +701,23 @@ Two very different things can carry the word "abort" — one is normal, one is a
 - **A bug (report it):** an **empty tool call in your client UI** — `tool {}` with "Tool execution aborted" — is never expected behavior, on any version. It means a call was cut off in transit.
 
 **The definitive check:** the `/telemetry` dashboard's **Envelope** card. Meridian audits its own output on every response — green "wire contract clean" means every tool call was delivered intact regardless of what internal logs say. If it shows red, the logs contain `ENVELOPE VIOLATION` lines with request IDs — include those in a bug report and it can usually be root-caused directly.
+
+## Headless quick start on Windows
+
+With Node.js 22 or newer and Claude Code authentication available, run:
+
+```powershell
+npm install -g @rynfar/meridian
+claude login
+meridian
+```
+
+In another PowerShell window, set the client environment:
+
+```powershell
+$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:3456"
+$env:ANTHROPIC_API_KEY = "x" # Use your Meridian API key if protection is enabled.
+```
+
+Then follow the [setup instructions for your client](agents.md). The desktop app
+is currently a Mac preview; it is not required for Windows headless use.

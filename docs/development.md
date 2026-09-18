@@ -2,7 +2,7 @@
 
 [← Back to README](../README.md)
 
-Architecture overview, testing, and the programmatic API. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) for the authoritative module map and dependency rules, and [`CLAUDE.md`](../CLAUDE.md) for coding guidelines.
+Architecture overview, testing, and the programmatic API. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) for the authoritative module map and dependency rules, and [`AGENTS.md`](../AGENTS.md) for coding guidelines.
 
 ## Architecture
 ```
@@ -106,3 +106,9 @@ const instance = await startProxyServer({
 // instance.server — underlying http.Server
 await instance.close()
 ```
+
+## Desktop development and releases
+
+The optional Electron app has its own dependencies and build in `apps/desktop`.
+See the [desktop guide](../apps/desktop/README.md) and
+[signed release pipeline](desktop-releases.md). Root npm releases remain headless.

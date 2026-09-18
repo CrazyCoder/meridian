@@ -4784,6 +4784,119 @@ returned `LINES=4` in four client round-trips with `adapter=polytoken` and
 `lineage=continuation` from turn 2, unchanged with `MERIDIAN_PASSTHROUGH=0`. All
 four detection controls behaved as recorded above.
 
+## Desktop interface preview
+
+Build and package using `apps/desktop/README.md`. In the actual Mac app:
+
+1. Connect to an existing headless instance and verify health, quota errors,
+   request history, and cache data without changing its supervisor.
+2. Install two published releases through Versions. Select app management on a
+   separate port, start, restart, switch versions, and roll back.
+3. Close the window and verify the owned listener stays alive in the menu bar.
+   Quit the app and verify only its owned listener drains/stops.
+4. Left-click the menu-bar icon: inspect cache metrics, account limits and errors;
+   verify two accounts and their switch controls fit without scrolling, then
+   switch accounts and verify the active profile changes. Verify Escape and
+   clicking outside dismiss the panel, and right-click opens the fallback menu.
+   Verify managed Start/Restart/Stop and external-service controls separately.
+5. Disable Open dashboard at launch, relaunch and verify menu-bar operation.
+   Exercise category preferences and notification snooze/resume across restart.
+6. Verify a new request failure produces an in-app incident. Separately verify
+   opt-in native notification delivery, profile sign-in completion and feature
+   mutations before release.
+
+For the required real SDK/model continuation gate, start the service through
+that app, then run:
+
+```sh
+E2E_MERIDIAN_URL=http://127.0.0.1:3489 \
+E2E_DESKTOP_FIXTURE=/tmp/meridian-desktop-conversation.json \
+E2E_PROFILE=work node scripts/e2e-desktop-request.mjs --live
+```
+
+Use a new disposable fixture file for each independent run. Repeat with the
+same file after a UI restart/version switch; the model must recall the marker
+and the fixture records the versions used. `E2E_MODEL` chooses the actual model;
+`E2E_MERIDIAN_API_KEY` supplies authentication if the local service requires it.
+The script does not start services or modify account configuration.
+
+2026-09-14: the actual unsigned arm64 Electron app initialized native Liquid
+Glass and connected to Meridian 1.67.0 on localhost:3456. It displayed real
+profiles/history/cache data and explicit unavailable quota results. Through the
+app, a separate copy of 1.71.1 was installed and started on 3489; 1.71.0 was
+installed and activated, followed by rollback to 1.71.1. The original headless
+service stayed on 3456 throughout. Closing the app window retained the owned
+listener; quitting the app stopped 3489 and left 3456 healthy.
+
+The real `claude-haiku-4-5` request reached the installed SDK but returned HTTP
+500: `OAuth session expired and could not be refreshed`. This is **missing live
+success evidence**, not a pass. Successful responses/continuations after
+restart and switching remain gated on reauthentication. Automated launchd
+handoff, completed sign-in, Windows, and Linux runtime behavior are not
+established by these checks. The native notification test returned
+`UNErrorDomain error 1`; the app displayed the delivery failure. Successful
+system notification delivery remains unverified. Do not release or enable
+handoff based on these checks.
+
+2026-09-15 UI refinement: the packaged Mac app displayed the external service's
+500-request history. Searching `openai` returned two matches; opening one showed
+its date, account/client, timing breakdown, token counts and full request/session
+IDs. Account cards showed unavailable usage explicitly. Service, Versions,
+Plugins and Settings displayed the external owner, separately installed releases,
+three active plugins and native Liquid Glass. An unsaved connection-address
+edit survived background polling and was restored without submitting it.
+Diagnostic inspection exposed an older-event slicing bug; the corrected view
+sorts all fetched events newest first, with a direct regression test. These
+read-only UI checks do not resolve the live model, sign-in, notification or
+platform gates above.
+
+
+2026-09-18: signed arm64 app completed the existing profile's Claude sign-in,
+displayed live quota windows, and received Electron's native notification `show`
+event (the earlier unsigned delivery failure did not recur). Real Haiku marker
+requests succeeded before and after a UI restart on Meridian 1.71.1.
+
+The isolated launchd/registry gate is reproducible with:
+
+```sh
+npm run build --prefix apps/desktop
+E2E_DESKTOP_INSTALL="/absolute/path/to/installed/meridian/version" \
+  bun scripts/e2e-desktop-handoff.ts --live
+```
+
+It creates and removes its own LaunchAgent and uses isolated plugin configuration.
+It verifies takeover, installation and live reload of all four published scrub
+plugins, return with all four still active, and recovery after a simulated crash
+between restarting the original supervisor and clearing its journal. The actual
+launchd processes and registry packages are used; no model calls occur in this
+gate. September 18 results passed all stages. Existing services are untouched.
+
+The first multi-turn version-switch probe failed with “The previous message
+does not contain a marker.” Its “previous message” prompt was ambiguous after
+more than two turns. A separate bare-marker prompt
+received a model refusal. Both failures were retained. The fixture prompt now
+explicitly describes the software continuity test and asks for the original
+fixture identifier. A fresh sequence passed on 1.71.0 and then 1.71.1 after a
+UI version switch; the returned identifier was checked exactly on both turns.
+The actual desktop Plugins page also installed OpenClaw 0.1.0 and showed all
+four plugins active.
+
+Final packaged arm64 validation on September 18:
+- Native confirmation transferred a disposable LaunchAgent to app ownership.
+- Plugins installed Hermes 0.1.0 into that service's isolated configuration.
+- Return to headless restored its original supervisor; Hermes remained active.
+- Real Haiku requests returned the same fixture identifier before and after
+  that UI handoff, with the same conversation fixture.
+- OpenCode's installed npm package updated to 0.2.0 through the app. Its plugin
+  metadata still reports 0.1.0; the catalog uses the package manifest for update
+  decisions and installed-version display.
+- Apple accepted notarization submission `4e9453be-9f13-4f96-a779-cb0ccd2746b8`.
+  `codesign --verify --deep --strict`, stapler validation and Gatekeeper execution
+  assessment passed (`source=Notarized Developer ID`).
+
+These results supersede the earlier Mac sign-in, notification and handoff gates.
+Windows/Linux desktop runtime evidence remains absent. No release was published.
+
 ## Windows session garbage collection (#895 / #896)
 
 ```powershell
@@ -4809,3 +4922,40 @@ The unit counterpart is `session-lifecycle-windows-gc.test.ts`. In addition to
 backlog progress and timeout/recovery behavior, it checks that a multiline
 script runs in the exact process identified by the child's PID. A version
 manager's wrapper PID is insufficient for deletion fencing.
+
+
+2026-09-18 macOS cleanup verification: integrating the Windows GC changes exposed
+an existing POSIX timeout cleanup race. Instrumentation showed that the timeout
+successfully killed the owned process group, then its `finally` block signalled
+the same defunct group again and received `EPERM`, masking the intended timeout
+verdict. Cleanup now joins the successful kill instead of sending it twice.
+Both real-child timeout regressions passed after this change. The live SDK gate
+above also passed on macOS with `claude-haiku-4-5`: its pinned transcript stayed
+unchanged, then fenced retirement deleted exactly one transcript with no failures
+or deferred work. This is macOS evidence, not a replacement for Windows evidence.
+
+The desktop catalog refreshes installed package manifests when the service
+changes, including while stopped. A direct manager test checks that switching
+to an external service clears the previous local installation's version state.
+
+### Menu-bar controls and notification policy (2026-09-18)
+
+On macOS, the signed packaged app's native View → Quick controls command opened
+its Liquid Glass panel. Starting Meridian 1.71.1 on port 3489, switching from
+`personal` to the signed-in `work` profile, and restarting all updated the panel
+correctly; the account switch changed degraded health to healthy. The Settings
+page saved dashboard-at-launch and critical-only notification preferences.
+Explicit Send test reported **Delivered to the system**, and Pause changed to
+Resume alerts. No paid model call was needed for these desktop-only changes.
+
+Pure policy checks cover opt-in categories, quota thresholds, request bursts,
+snooze and persisted cooldowns. A real Node child-process test exhausted three
+recovery attempts and delivered exactly one critical notification; a separate
+manager test clears incident history and reopens the manager without resetting
+cooldowns. Native tray-click positioning on multiple displays and Windows/Linux
+runtime behavior still need platform-specific verification.
+
+The refined panel was rechecked in the signed Mac package: active account first,
+colored usage bars, content-sized stopped state, restart, persisted snooze after
+relaunch, Resume alerts and Escape dismissal all worked. Disabling dashboard at
+launch left no visible app window; explicit Finder activation reopened it.

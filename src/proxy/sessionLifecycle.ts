@@ -1053,10 +1053,14 @@ try {
   // win32 recycles a pid the instant the child is reaped, so pid-level kills
   // are only safe while our un-reaped handle still pins it. If the leader is
   // already gone there, so is its taskkill-visible tree.
+  let deletionTreeKilled = false
   const killDeletionTree = (): void => {
-    if (!processGroupId) return
+    if (!processGroupId || deletionTreeKilled) return
     if (process.platform === "win32" && (child.exitCode !== null || child.signalCode !== null)) return
     signalProcessGroup(processGroupId, "SIGKILL")
+    // macOS can reject a second signal to a killed, not-yet-reaped group
+    // with EPERM. Join the original kill instead of masking its timeout.
+    deletionTreeKilled = true
   }
   try {
     if (!processGroupId) throw new Error("session deletion child has no PID")

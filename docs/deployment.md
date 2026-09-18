@@ -4,6 +4,11 @@
 
 This page covers installing and running Meridian beyond `npm install -g`: NixOS/Nix flakes, the Home Manager service, and Docker.
 
+The [optional Mac app](../apps/desktop/README.md) can connect through a local HTTP
+port. Docker and Nix keep ownership of their processes and updates; the app does
+not rewrite their configuration or install packages inside those environments.
+Headless deployments do not install or require Electron.
+
 ## NixOS / Nix Flake
 Meridian provides a Nix flake for declarative installation.
 

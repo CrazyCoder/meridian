@@ -1,0 +1,68 @@
+import { number, object, rows, text } from './core'
+import type { Action, DesktopState } from './contracts'
+const root = document.getElementById('panel')!
+const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
+const pct = (value: unknown) => number(value) === undefined ? '—' : `${Math.round(Number(value) * 100)}%`
+let pending = false
+let error = ''
+let rendered = ''
+let current: DesktopState | undefined
+let focusedKey: string | undefined
+function render(state: DesktopState) {
+  current = state
+  const focus = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.key : undefined
+  if (focus) focusedKey = focus
+  const scroll = root.querySelector('.accounts')?.scrollTop ?? 0
+  document.documentElement.classList.toggle('native-glass', state.glass === 'Native Liquid Glass')
+  const summary = object(state.summary), tokens = object(summary.tokenUsage), health = object(state.health)
+  const active = text(object(state.profiles).activeProfile)
+  const profiles = rows(object(state.profiles).profiles)
+  const quotas = rows(object(state.quota).profiles)
+  const ids = [...new Set([...profiles, ...quotas].map(profile => text(profile.id)))].filter(Boolean).sort((a, b) => a === active ? -1 : b === active ? 1 : a.localeCompare(b))
+  const busy = Boolean(state.busy) || pending
+  const button = (action: Action, label: string, value = '', disabled = false) => `<button data-action="${action}" data-value="${esc(value)}" data-key="${action}:${esc(value)}" ${disabled || busy ? 'disabled' : ''}>${label}</button>`
+  const populated = (number(summary.totalRequests) ?? 0) > 0
+  const latency = number(object(summary.ttfb).p50)
+  const status = state.running ? health.status === 'healthy' ? 'Connected' : 'Needs attention' : state.preferences.mode === 'managed' ? 'Stopped' : 'Disconnected'
+  const stopped = !state.running && state.preferences.mode === 'managed' && !state.busy
+  const issue = state.error || (stopped ? '' : !state.running && state.preferences.mode === 'attached' ? 'Cannot reach the external service.' : state.dataErrors.length ? 'Some live data is unavailable.' : '')
+  const html = `<header><div><strong>Meridian</strong><small><span class="dot ${state.running ? health.status === 'healthy' ? 'good' : 'warn' : ''}"></span>${status} · ${state.owned || state.preferences.mode === 'managed' ? 'App managed' : 'External'}</small></div>${button('open-desktop', 'Open dashboard')}</header>
+    <section class="metrics" aria-label="Telemetry summary"><div class="hero"><small>Cache reuse</small><strong>${populated ? pct(tokens.avgCacheHitRate) : '—'}</strong></div><div><small>Requests</small><strong>${number(summary.totalRequests)?.toLocaleString() ?? '—'}</strong></div><div><small>First token</small><strong>${populated && latency !== undefined ? `${(latency / 1000).toFixed(1)}s` : '—'}</strong></div></section>
+    <small>${number(summary.windowMs) ? `Last ${Math.round(Number(summary.windowMs) / 60000)} minutes` : 'Current telemetry window'} · ${number(summary.errorCount) ?? '—'} errors</small>
+    ${issue ? `<div class="notice">${esc(issue)}</div>` : ''}${error ? `<p class="error" role="alert">${esc(error)}</p>` : ''}
+    <h2>Accounts <span class="limits-caption">Limits used</span></h2><div class="accounts">${ids.map(id => {
+      const quota = quotas.find(profile => profile.id === id) ?? {}
+      const fetched = number(quota.fetchedAt)
+      const unavailable = quota.error || !fetched || Date.now() - fetched > 90_000
+      const windows = rows(quota.windows)
+      const label = (type: unknown) => text(type).replace(/^five_hour$/, '5h').replace(/^seven_day/, '7d').replaceAll('_', ' ')
+      const nextReset = windows.filter(window => (number(window.resetsAt) ?? 0) > Date.now()).sort((a, b) => Number(a.resetsAt) - Number(b.resetsAt))[0]
+      return `<article class="account ${active === id ? 'active' : ''}"><div class="line"><strong class="account-name" title="${esc(id)}">${esc(id)}</strong>${active === id ? '<span class="active-label">Active</span>' : button('switch-profile', 'Use account', id, !state.running)}</div>${unavailable ? '<p>Usage unavailable</p>' : `<div class="account-limits">${windows.map(window => {
+        const utilization = number(window.utilization), reset = number(window.resetsAt)
+        const fresh = reset !== undefined && reset > Date.now()
+        const resetText = fresh ? `Resets ${new Date(reset).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'})}` : 'Awaiting usage update'
+        const description = `${id} · ${label(window.type)} · ${fresh ? pct(utilization) : '—'} used · ${resetText}`
+        return `<div class="quota" title="${esc(description)}"><div class="line"><span>${esc(label(window.type))}</span><strong>${fresh ? pct(utilization) : '—'}</strong></div>${fresh && utilization !== undefined ? `<progress max="1" value="${Math.max(0, Math.min(1, utilization))}" class="${utilization >= .95 ? 'danger' : ''}" aria-label="${esc(description)}"></progress>` : ''}</div>`
+      }).join('') || '<p>No usage windows available</p>'}</div>${active === id && nextReset ? `<small class="next-reset">${esc(label(nextReset.type))} resets ${esc(new Date(Number(nextReset.resetsAt)).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}))}</small>` : ''}`}</article>`
+    }).join('') || (stopped ? '<p>Start Meridian to load accounts and usage.</p>' : '<p>No accounts available. Open the dashboard to connect.</p>')}</div>
+    <div class="controls">${state.owned ? button('restart', 'Restart') + button('stop', 'Stop') : state.preferences.mode === 'managed' ? button('start', 'Start Meridian', '', !state.preferences.selected) : '<small>Service managed externally</small>'}</div>
+    <footer>${button('toggle-snooze', state.preferences.quietUntil > Date.now() ? 'Resume alerts' : 'Pause alerts 1h', '', !state.preferences.notifications)}${button('refresh', 'Refresh')}${button('quit-app', 'Quit')}</footer><small>${state.busy ? esc(state.busy) : state.lastChecked ? `Updated ${esc(new Date(state.lastChecked).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}))}` : stopped ? 'Service stopped' : 'Awaiting connection'}</small>`
+  if (html === rendered) return
+  rendered = html; root.innerHTML = html
+  const list = root.querySelector('.accounts'); if (list) list.scrollTop = scroll
+  if (focusedKey) Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(button => button.dataset.key === focusedKey && !button.disabled)?.focus()
+}
+root.addEventListener('click', async event => {
+  const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('button[data-action]') : null
+  if (!target || target.disabled || pending) return
+  pending = true; error = ''
+  if (current) render(current)
+  try { current = await window.meridian.action(target.dataset.action as Action, target.dataset.value) }
+  catch (caught) { error = String(caught) }
+  finally { pending = false; if (current) render(current) }
+})
+window.meridian.subscribe(render)
+void window.meridian.state().then(render).catch(caught => { root.textContent = `Could not load Meridian: ${String(caught)}` })
+document.addEventListener('keydown', event => { if (event.key === 'Escape') void window.meridian.action('close-panel') })
+
+new ResizeObserver(() => { void window.meridian.action('resize-panel', root.getBoundingClientRect().height).catch(caught => console.error('Panel sizing failed', caught)) }).observe(root)

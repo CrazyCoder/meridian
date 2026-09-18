@@ -205,7 +205,7 @@ console.log(JSON.stringify({ pid: process.pid, bun: process.versions.bun ?? null
       const exact = await prepareFork(locator, options)
       await abandonFork(exact, options)
       const swept = await runGc([], options)
-      expect(swept.failed).toBe(0)
+      expect(swept.failed, JSON.stringify(readSidecar(fixture.storeDir).resources)).toBe(0)
     }
 
     const states = Object.values(readSidecar(fixture.storeDir).resources).map((r) => r.state)

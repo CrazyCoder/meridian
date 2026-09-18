@@ -198,3 +198,32 @@ account card on the home page (or the Profiles page). The header chip only
 - [ ] Nav link added to `profileBarHtml` (and its active-state id)
 - [ ] Blue = interactive/active · violet = code/meta · semantic colors earned
 - [ ] Layout contract covered in `src/__tests__/site-header.test.ts`
+
+## Native desktop preview
+
+The optional `apps/desktop` shell uses native window controls and sidebar
+navigation instead of the web `profileBar` header. Its system light/dark tokens
+live alongside `themeCss` in `desktopThemeCss` in `profileBar.ts`; this explicit
+native-shell exception does not change the shared header contract for web pages.
+The build extracts those tokens into the desktop stylesheet. Native Liquid
+Glass appears in the sidebar and compact menu-bar panel, with nearly opaque content surfaces
+for telemetry legibility. Blue remains interactive and violet remains metadata.
+
+The interface labels itself as a preview. Unsupported lifecycle controls are
+not presented as working actions; external service ownership stays visible.
+
+The menu-bar panel prioritizes cache reuse, connection health and account limits.
+Account switching and owned service controls remain available without opening the
+dashboard. It uses system typography, canonical light/dark tokens, blue active
+accounts and violet cache metrics. Escape or loss of focus dismisses the panel;
+missing or stale quota data never looks like unused capacity.
+
+Menu-bar accounts use compact rows with side-by-side quota bars, so multiple
+accounts and their switch controls remain visible together. The active account
+shows its next reset; each limit retains full reset detail in its tooltip and
+accessible name. Account lists scroll only when they exceed the available space.
+
+The macOS menu-bar icon uses a transparent monochrome Meridian template, tinted
+by the system. The Dock retains the full-color app icon. Committed 18-point
+assets include 1x, 2x and 3x representations; regenerate them with
+`swift scripts/render-tray-icon.swift`.

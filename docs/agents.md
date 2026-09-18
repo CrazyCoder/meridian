@@ -2,7 +2,7 @@
 
 [← Back to README](../README.md)
 
-Per-agent configuration for every tested client. All agents share the same basics — point the tool at `http://127.0.0.1:3456` with any API key value — but several have their own config formats or adapters, documented here.
+Per-agent configuration for every tested client. All agents share the same basics — point the tool at `http://127.0.0.1:3456` with a placeholder API key when Meridian API-key protection is disabled (otherwise use your configured key) — but several have their own config formats or adapters, documented here.
 
 ### OpenCode
 
@@ -274,7 +274,7 @@ Meridian speaks the OpenAI protocol natively — no LiteLLM or translation proxy
 
 **`GET /v1/models`** — returns available Claude models in OpenAI format
 
-Point any OpenAI-compatible tool at `http://127.0.0.1:3456` with any API key value:
+Point any OpenAI-compatible tool at `http://127.0.0.1:3456` with a placeholder API key when Meridian API-key protection is disabled (otherwise use your configured key):
 
 ```bash
 # Open WebUI: set OpenAI API base to http://127.0.0.1:3456, API key to any value
@@ -751,3 +751,61 @@ OpenCode adapter reads — but it is a real switch, not a no-op. If you run
 `MERIDIAN_DEFAULT_AGENT=pi` (or anything else) and rely on that adapter's
 transforms for Hermes, set the adapter explicitly per request rather than
 letting the header decide.
+
+## Compatibility at a glance
+
+| Agent | Status | Notes |
+|-------|--------|-------|
+| [OpenCode](https://github.com/anomalyco/opencode) | ✅ Verified | V1 and pinned V2 beta support; requires the matching `meridian setup` mode ([setup](#opencode)) — tools, durable resume, restart, undo, compaction, parallel subagents |
+| [ForgeCode](https://forgecode.dev) | ✅ Verified | Provider config (see [Agent Setup](#agent-setup)) — passthrough tool execution, session resume, streaming |
+| [Droid (Factory AI)](https://factory.ai/product/ide) | ✅ Verified | BYOK config (see [Agent Setup](#agent-setup)) — full tool support, session resume, streaming |
+| [Crush](https://github.com/charmbracelet/crush) | ✅ Verified | Provider config (see [Agent Setup](#agent-setup)) — full tool support, session resume, headless `crush run` |
+| [Cline](https://github.com/cline/cline) | ✅ Verified | Config (see [Agent Setup](#agent-setup)) — full tool support, file read/write/edit, bash, session resume |
+| [Aider](https://github.com/paul-gauthier/aider) | ✅ Verified | Env vars — file editing, streaming; `--no-stream` broken (litellm bug) |
+| [Open WebUI](https://github.com/open-webui/open-webui) | ✅ Verified | OpenAI-compatible endpoints — set base URL to `http://127.0.0.1:3456` |
+| [Pi](https://github.com/mariozechner/pi-coding-agent) | ✅ Verified | models.json config (see [Agent Setup](#agent-setup)) — full tool support via passthrough; detected via `x-meridian-agent: pi` header |
+| [Prime Agent](https://www.npmjs.com/package/prime-agent) | ⚠️ Single-agent verified | Extension config (see [Agent Setup](#agent-setup)) — reliable with one active agent. Concurrent RLM subagents receive distinct session keys, but are not yet production-safe; see [Prime Agent subagents](#prime-agent-subagents). The extension's `metadata.user_id` stamp is **required**, not optional. |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | ✅ Verified | `ANTHROPIC_BASE_URL` — remote clients share a Max subscription over the network; client CWD preserved in system prompt |
+| [Cherry Studio](https://github.com/CherryHQ/cherry-studio) | ✅ Verified | `cherry` adapter (see [Agent Setup](#agent-setup)) — chat client with Claude's built-in web search via internal mode |
+| [Polytoken](https://polytoken.dev/) | ✅ Verified | Provider config (see [Agent Setup](#Polytoken)) — `X-Polytoken-Session` identity, mandatory client-owned tools (passthrough cannot be disabled), signed-thinking passthrough |
+| Jcode | ✅ Verified | `/v1/chat/completions` + `x-jcode-session` header — dedicated `jcode` adapter keeps append-only history intact, so retained sessions resume on one SDK session (90.9% cache hit on turn 2 of a two-turn Opus session) |
+| [Codex CLI](https://github.com/openai/codex) | ✅ Verified | `/v1/responses` (see [Agent Setup](#agent-setup)) — Responses-API provider, passthrough tool execution; verified on 0.144 (plain + tool-driving turns) |
+| [Continue](https://github.com/continuedev/continue) | 🔲 Untested | OpenAI-compatible endpoints should work — set `apiBase` to `http://127.0.0.1:3456` |
+
+### Prime Agent subagents
+
+Prime Agent is reliable through Meridian with one active agent. RLM children have
+separate session identities and can execute successfully, but concurrent subagent
+orchestration is not yet production-safe. Observed failure modes include overload
+amplification, expensive cache churn after fresh-session replay, loss of child-task
+context during recovery, and undelivered tool envelopes. Use a single active Prime
+Agent for unattended or usage-sensitive work until coordinated fixes land in Prime
+Agent and Meridian.
+
+Parent-to-child cancellation is handled on the Meridian side: when the extension
+stamps `parent_session_id` alongside the child's session id, aborting a parent's
+in-flight request aborts every live request in the subtree below it and evicts
+each one's session mapping. See
+[Subagent cancellation](#prime-agent).
+
+Prime Agent can keep Opus on the root session while selecting Sol for an individual
+child. A child inherits its parent's model unless the `rlm` call supplies an exact
+`provider/model` selector returned by `rlm.find_models()`:
+
+```python
+sol_models = await rlm.find_models("sol")
+print(sol_models)  # choose an available exact selector for your authenticated providers
+
+child = await rlm(
+    "Review this change and report your findings to the parent.",
+    name="sol-reviewer",
+    model="openai-codex/gpt-5.6-sol",
+)
+```
+
+The selector above requires an authenticated OpenAI Codex provider in Prime Agent;
+Prime Inference may expose a different Sol selector. Explicit child model selection
+reduces Claude Max pressure, but does not by itself fix the orchestration and
+cancellation limitations above.
+
+Tested an agent or built a plugin? [Open an issue](https://github.com/rynfar/meridian/issues) and we'll add it.
