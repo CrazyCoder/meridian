@@ -1,5 +1,17 @@
 # Upstream review handoff
 
+## Delivered: Claude Code Headless Concurrent Turns #1043 (2026-09-18)
+
+- Base: `75d0c507` (incorporation of contributor PR #1048 as #1055).
+- Worktree: `/Users/rynfar/repos/meridian/.claude/worktrees/claude-code-headless`, branch `fix/claude-code-headless-concurrency`.
+- Problem: Claude Code CLI in headless mode (`claude -p "..."`) fires a session-start side request (`tools=0`, single user message) and the primary prompt (`tools=24`, message count 2) concurrently under the same session ID in `metadata.user_id: {"session_id": "..."}`. Meridian serialized both turns via the turn lease, but when the second turn acquired the lease after the first committed, `lostRaceWhileWaiting` fired and rejected the turn with HTTP 400 "This session advanced while the request was waiting" because Claude Code has no per-flow plugin headers.
+- Fix: Set `runsConcurrentTurnsPerSessionKey: true` on `claudeCodeAdapter` in `src/proxy/adapters/claudecode.ts`. This activates `declaresConcurrentFlow`, allowing the loser of the race to be safely admitted as a fresh replay while preserving serialized turn execution (`maxActiveQueries: 1`).
+- Verification:
+  - Unit test in `src/__tests__/claude-code-adapter.test.ts`.
+  - Concurrency test in `src/__tests__/proxy-concurrency-coordination.test.ts`.
+  - Real Claude Code 2.1.277 live CLI execution in headless mode (`claude -p "Reply with OK"`) confirming 0 turn conflicts and clean exit code 0.
+  - Full test suite (1243 tests) and typecheck pass cleanly.
+
 ## Current bounded work: Windows GC #896 (2026-09-14)
 
 This entry supersedes the historical "nothing is in progress" statements below

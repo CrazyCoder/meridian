@@ -130,6 +130,32 @@ function piRequest(
   })
 }
 
+/**
+ * Headless Claude Code sends `metadata.user_id = {"session_id": "..."}` with
+ * a `claude-cli/...` User-Agent and no per-flow header.
+ */
+function claudeCodeRequest(
+  messages: Array<{ role: string; content: unknown }>,
+  sessionId: string,
+  extraHeaders: Record<string, string> = {},
+): Request {
+  return new Request("http://localhost/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "user-agent": "claude-cli/2.1.277",
+      ...extraHeaders,
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 128,
+      stream: false,
+      messages,
+      metadata: { user_id: JSON.stringify({ session_id: sessionId }) },
+    }),
+  })
+}
+
 function observeTurnArrival(sessionId: string) {
   let markArrived = () => {}
   const arrived = new Promise<void>(resolve => { markArrived = resolve })
@@ -374,6 +400,37 @@ describe("SDK and Session concurrency coordination", () => {
       .toContain("advanced while the request was waiting")
     expect(queryCalls).toBe(1)
     expect(telemetryStore.getRecent().filter(m => m.error === "session_turn_conflict")).toHaveLength(1)
+  })
+
+  it("answers, instead of refusing, a headless Claude Code client's concurrent turn (#1043)", async () => {
+    // Claude Code in headless mode (`claude -p "..."`) fires a session-start
+    // side request and the primary prompt concurrently under the same session
+    // ID in metadata.user_id. The primary request waits for turn lease, then
+    // gets rejected with HTTP 400 because sessionTurnLease.advancedWhileWaiting
+    // is true and !declaresConcurrentFlow. With
+    // runsConcurrentTurnsPerSessionKey: true, the loser is reclassified as a
+    // fresh replay instead of failing with HTTP 400.
+    const app = createProxyServer({ port: 0, host: "127.0.0.1", silent: true }).app
+    const sessionId = "claude-code-race"
+    const sideRequest = [{ role: "user", content: "session warmup" }]
+    const primaryRequest = [
+      { role: "user", content: "Reply with exactly the word OK" },
+    ]
+
+    const firstP = app.fetch(claudeCodeRequest(sideRequest, sessionId))
+    const firstControl = await waitForControl(0)
+    const secondP = app.fetch(claudeCodeRequest(primaryRequest, sessionId))
+
+    firstControl.release()
+    expect((await firstP).status).toBe(200)
+    const secondControl = await waitForControl(1)
+    secondControl.release()
+    expect((await secondP).status).toBe(200)
+
+    expect(maxActiveQueries).toBe(1)
+    expect(queryCalls).toBe(2)
+    expect(capturedParams[1]?.options?.resume).toBeUndefined()
+    expect(telemetryStore.getRecent().filter(m => m.error === "session_turn_conflict")).toHaveLength(0)
   })
 
   it("replays a declared-flow loser instead of rewinding the turn it lost to (#870)", async () => {
