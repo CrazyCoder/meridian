@@ -55,7 +55,7 @@ const BILLING_SIGNALS: readonly RegExp[] = [
   /(?:expired|inactive|lapsed|invalid|no active|cancell?ed) subscription/,
   /payment (?:method|required|failed|declined|details|info)/,
   /update your payment/,
-  /(?:out of|draw from|draws from) extra usage/,
+  /(?:out of|draw from|draws from)(?: your)? extra usage/,
   /insufficient (?:credit|funds|balance)/,
   // The real CLI shortens an API billing refusal to this exact sentence.
   // Anchor the whole line so incidental tool output does not exhaust a profile.

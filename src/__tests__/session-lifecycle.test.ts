@@ -368,6 +368,8 @@ describe("session transcript lifecycle", () => {
     await commitFork(oldRef, bounded)
     await abandonFork(oldRef, bounded)
     await runGc([], bounded)
+    // Make replacement recency explicit so tombstone eviction does not depend on path key order
+    now += 1
     const other = locator("lifecycle-aba-pruner")
     await prepareFork(other, bounded)
     await abandonFork(other, bounded)

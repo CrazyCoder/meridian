@@ -162,6 +162,12 @@ describe("classifyError", () => {
       expect(r.type).toBe("billing_error")
     })
 
+    it("detects a third-party app extra-usage refusal (#1045)", () => {
+      const r = classifyError("Claude Code returned an error result: API Error: 400 Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.")
+      expect(r.status).toBe(402)
+      expect(r.type).toBe("billing_error")
+    })
+
     // These used to classify as billing because the branch matched bare
     // substrings anywhere in the text, and it runs before the crash/max-turns
     // branches so it won. Harmless as a wrong status code; not harmless once
