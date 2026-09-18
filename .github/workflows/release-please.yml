@@ -70,7 +70,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          registry-url: "https://registry.npmjs.org"
+
+      # Node 22 bundles npm 10; trusted publishing needs npm >=11.5.1.
+      - name: Install npm with trusted-publishing support
+        run: npm install --global npm@11.19.1
 
       - uses: oven-sh/setup-bun@v2
 
@@ -78,8 +81,6 @@ jobs:
       - run: npm test
       - run: bun run build
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # Publish the semver-tagged Docker image on release.
   #
