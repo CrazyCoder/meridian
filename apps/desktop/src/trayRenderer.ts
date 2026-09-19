@@ -1,4 +1,5 @@
 import { number, object, rows, text } from './core'
+import { sortProfilesByConfiguredOrder } from './uiData'
 import type { Action, DesktopState } from './contracts'
 const root = document.getElementById('panel')!
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
@@ -18,7 +19,14 @@ function render(state: DesktopState) {
   const active = text(object(state.profiles).activeProfile)
   const profiles = rows(object(state.profiles).profiles)
   const quotas = rows(object(state.quota).profiles)
-  const ids = [...new Set([...profiles, ...quotas].map(profile => text(profile.id)))].filter(Boolean).sort((a, b) => a === active ? -1 : b === active ? 1 : a.localeCompare(b))
+  const rawIds = [...new Set([...profiles, ...quotas].map(profile => text(profile.id)))].filter(Boolean)
+  const profileOrder = Array.isArray(object(state.profiles).profileOrder)
+    ? (object(state.profiles).profileOrder as string[])
+    : undefined
+  const orderedIds = sortProfilesByConfiguredOrder(rawIds, profileOrder)
+  const ids = profileOrder && profileOrder.length > 0
+    ? orderedIds
+    : orderedIds.sort((a, b) => a === active ? -1 : b === active ? 1 : a.localeCompare(b))
   const busy = Boolean(state.busy) || pending
   const button = (action: Action, label: string, value = '', disabled = false) => `<button data-action="${action}" data-value="${esc(value)}" data-key="${action}:${esc(value)}" ${disabled || busy ? 'disabled' : ''}>${label}</button>`
   const populated = (number(summary.totalRequests) ?? 0) > 0

@@ -149,8 +149,8 @@ describe("landing page layout", () => {
     expect(landingHtml).toContain(`var PROFILE_SORT_MODES=${JSON.stringify(PROFILE_SORT_MODES)}`)
     expect(landingHtml).toContain(`var viewSort=${JSON.stringify(DEFAULT_PROFILE_SORT)}`)
     expect(landingHtml).toContain("sort-tab")
-    // View-only: the durable pool order has one writer, and it is not here.
-    expect(landingHtml).not.toContain("/settings/api/routing")
+    // View tabs re-sort locally in the browser; profileOrder handles drag reordering.
+    expect(landingHtml).toContain("meridianReorder.init(")
   })
 
   test("account cards come from configured profiles, not synthetic cost buckets", () => {

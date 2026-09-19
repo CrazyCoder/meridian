@@ -15,3 +15,26 @@ export function filterRequests(data: unknown, query: string, kind: string) {
     return matchesText && matchesKind
   }).sort((a, b) => Number(b.timestamp) - Number(a.timestamp))
 }
+
+/**
+ * Order profile ids according to an explicit profileOrder sequence.
+ * Ids in `order` come first in that sequence; any remaining ids preserve their
+ * initial relative order at the end.
+ */
+export function sortProfilesByConfiguredOrder(ids: string[], order?: readonly string[]): string[] {
+  if (!order || order.length === 0) return ids.slice()
+  const rank = new Map<string, number>()
+  for (let i = 0; i < order.length; i++) {
+    const item = order[i]
+    if (item && !rank.has(item)) rank.set(item, i)
+  }
+  return ids
+    .map((id, index) => ({ id, index }))
+    .sort((a, b) => {
+      const ra = rank.get(a.id) ?? Number.MAX_SAFE_INTEGER
+      const rb = rank.get(b.id) ?? Number.MAX_SAFE_INTEGER
+      if (ra !== rb) return ra - rb
+      return a.index - b.index
+    })
+    .map(entry => entry.id)
+}

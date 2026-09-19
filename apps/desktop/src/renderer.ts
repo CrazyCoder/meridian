@@ -1,5 +1,5 @@
 import { object, rows, text, number } from './core'
-import { filterLogs, filterRequests } from './uiData'
+import { filterLogs, filterRequests, sortProfilesByConfiguredOrder } from './uiData'
 import type { DesktopState, Action } from './contracts'
 const pages = ['Overview', 'Usage & accounts', 'Requests', 'Logs', 'Service', 'Versions', 'Plugins', 'Settings'] as const
 type Page = typeof pages[number]
@@ -135,6 +135,10 @@ function quotas(limit = 100, manage = false) {
   const accountProfiles = rows(object(state?.profiles).profiles)
   let ids = [...new Set([...accountProfiles, ...quotaProfiles].map(profile => text(profile.id)))].filter(Boolean)
   if (!ids.length) return empty('No accounts available', 'Check the service connection in Settings.')
+  const profileOrder = Array.isArray(object(state?.profiles).profileOrder)
+    ? (object(state?.profiles).profileOrder as string[])
+    : undefined
+  ids = sortProfilesByConfiguredOrder(ids, profileOrder)
   if (manage) {
     ids = sortProfilesForView(ids, accountSort, id => {
       const p = quotaProfiles.find(item => item.id === id) ?? {}

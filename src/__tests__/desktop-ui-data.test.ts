@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { filterLogs, filterRequests } from '../../apps/desktop/src/uiData'
+import { filterLogs, filterRequests, sortProfilesByConfiguredOrder } from '../../apps/desktop/src/uiData'
 
 describe('desktop request exploration', () => {
   const data = [
@@ -27,4 +27,18 @@ test('diagnostic search retains recent matches and orders newest first', () => {
   expect(filterLogs(data, '').length).toBe(500)
   expect(filterLogs(data, ' EVENT 49 ').map(row => row.timestamp)).toEqual([499, 498, 497, 496, 495, 494, 493, 492, 491, 490, 49])
   expect(data[0]?.timestamp).toBe(499)
+})
+
+describe('desktop profile ordering', () => {
+  test('sorts profiles by configured order and preserves unlisted at end', () => {
+    const ids = ['alpha', 'beta', 'gamma', 'delta']
+    const order = ['gamma', 'alpha']
+    expect(sortProfilesByConfiguredOrder(ids, order)).toEqual(['gamma', 'alpha', 'beta', 'delta'])
+  })
+
+  test('returns original copy if order is absent or empty', () => {
+    const ids = ['a', 'b', 'c']
+    expect(sortProfilesByConfiguredOrder(ids)).toEqual(['a', 'b', 'c'])
+    expect(sortProfilesByConfiguredOrder(ids, [])).toEqual(['a', 'b', 'c'])
+  })
 })
