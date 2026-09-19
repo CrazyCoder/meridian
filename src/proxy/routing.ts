@@ -23,6 +23,7 @@
  */
 
 import { createHash } from "node:crypto"
+import type { RouteKind } from "../telemetry/types"
 
 export type RoutingMode = "active" | "sticky" | "priority" | "active+priority"
 
@@ -84,6 +85,37 @@ export function shouldPromotePriorityAssignment(input: PriorityPromotionInput): 
     && input.requestKind === "human"
     && input.requestId !== undefined
     && input.requestId !== input.assignment.requestId
+}
+
+/**
+ * Classify how the serving profile was chosen, from values the caller already
+ * holds. Runs per request, so it may never do I/O or read settings of its own.
+ *
+ * Undefined when the routing mode isn't known (the outer catch records before
+ * routing resolves): the pin and the hop flag still prove
+ * `pinned`/`priority-hop`, but "active" would be a guess, and a guess on an
+ * attribution dashboard is worse than a blank.
+ */
+export function classifyRouteKind(input: {
+  pinnedProfileHeader?: string | undefined
+  /**
+   * One internal hop of a pool dispatch. A flag rather than a header because
+   * the failover re-enters the handler directly, so there is no second HTTP
+   * request for a header to travel on.
+   */
+  priorityHop?: boolean | undefined
+  routingMode?: RoutingMode | undefined
+}): RouteKind | undefined {
+  // Checked before the pin, even though every hop carries one: a hop IS pinned,
+  // so testing the header first would report the mechanism instead of the
+  // reason and make every failover attempt read as a deliberate pin.
+  if (input.priorityHop) return input.routingMode === ACTIVE_PRIORITY ? "active+priority-hop" : "priority-hop"
+  if (input.pinnedProfileHeader) return "pinned"
+  if (input.routingMode === "sticky") return "sticky"
+  if (input.routingMode === "priority") return "priority"
+  if (input.routingMode === ACTIVE_PRIORITY) return ACTIVE_PRIORITY
+  if (input.routingMode === "active") return "active"
+  return undefined
 }
 
 /**

@@ -214,3 +214,9 @@ form .check { display: flex; min-height: 40px; margin: 8px 0; }
 }
 
 .plan-tag { display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; padding: 1px 5px; border-radius: 4px; background: var(--surface); color: var(--accent2); border: 1px solid var(--control-border); margin-left: 6px; vertical-align: middle; }
+
+.route-chain-wrap { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 3px; }
+.route-kind-badge { display: inline-block; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 1px 4px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); margin-top: 2px; }
+.route-kind-badge.route-pinned { background: color-mix(in srgb, #3b82f6 18%, transparent); color: #3b82f6; }
+.route-kind-badge.route-sticky { background: color-mix(in srgb, #a855f7 18%, transparent); color: #a855f7; }
+.route-kind-badge.route-priority, .route-kind-badge.route-active\+priority { background: color-mix(in srgb, #eab308 18%, transparent); color: #eab308; }

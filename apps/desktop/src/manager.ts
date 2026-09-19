@@ -147,7 +147,7 @@ export class Manager {
       this.state.dataErrors = []
       const health = await this.api('/health')
       if (!isMeridianHealth(health)) throw new Error('The endpoint did not return Meridian health data.')
-      const routes = { quota: '/v1/usage/quota/all', requests: '/telemetry/requests?limit=500', summary: '/telemetry/summary', logs: '/telemetry/logs?limit=500', profiles: '/profiles/list', plugins: '/plugins/list', features: '/settings/api/features' } as const
+      const routes = { quota: '/v1/usage/quota/all', requests: '/telemetry/requests?limit=500', summary: '/telemetry/summary', logs: '/telemetry/logs?limit=500', profiles: '/profiles/list', plugins: '/plugins/list', features: '/settings/api/features', routesSummary: '/telemetry/routes', retention: '/telemetry/retention' } as const
       const data = await Promise.all(Object.entries(routes).map(async ([key, route]) => {
         try { return { key: key as keyof typeof routes, value: await this.api(route) } }
         catch (error) { return { key: key as keyof typeof routes, value: null, error: redact(String(error)) } }
@@ -160,7 +160,7 @@ export class Manager {
       await this.inspectOwnership()
     } catch (error) {
       this.state.health = null; this.state.running = undefined; this.state.lastChecked = undefined
-      this.state.quota = null; this.state.requests = []; this.state.summary = null; this.state.logs = []; this.state.profiles = null; this.state.plugins = null; this.state.features = null
+      this.state.quota = null; this.state.requests = []; this.state.summary = null; this.state.logs = []; this.state.profiles = null; this.state.plugins = null; this.state.features = null; this.state.routesSummary = null; this.state.retention = null
       this.state.dataErrors = [redact(`Cannot reach ${this.baseUrl()}: ${String(error)}`)]
     } finally {
       try {

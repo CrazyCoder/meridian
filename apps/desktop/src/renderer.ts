@@ -69,12 +69,18 @@ function stats() {
   const tokens = object(summary.tokenUsage)
   const populated = Number(summary.totalRequests) > 0
   const windowLabel = number(summary.windowMs) ? `Last ${Math.round(Number(summary.windowMs) / 60000)} minutes` : 'In this telemetry window'
-  return `<div class="stats">${[
+  const routesSummary = object(state?.routesSummary)
+  const failedOver = number(routesSummary.failedOver) ?? 0
+  const items: [string, string, string][] = [
     ['Requests', count(summary.totalRequests), windowLabel],
     ['Cache reuse', populated ? pct(tokens.avgCacheHitRate) : '—', 'Mean input cache hit'],
     ['First token', populated ? duration(object(summary.ttfb).p50) : '—', 'Median · SDK to first token'],
     ['Errors', count(summary.errorCount), 'HTTP errors'],
-  ].map(([label, value, note]) => `<div><span class="eyebrow">${label}</span><strong>${value}</strong><small>${note}</small></div>`).join('')}</div>`
+  ]
+  if (failedOver > 0) {
+    items.push(['Failovers', count(failedOver), `${count(routesSummary.requests)} client requests`])
+  }
+  return `<div class="stats">${items.map(([label, value, note]) => `<div><span class="eyebrow">${label}</span><strong>${value}</strong><small>${note}</small></div>`).join('')}</div>`
 }
 const go = (target: Page, label: string) => `<button class="text-button" data-go="${esc(target)}">${esc(label)} <span aria-hidden="true">→</span></button>`
 const definition = (entries: [string, unknown][]) => `<dl>${entries.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value ?? '—')}</dd></div>`).join('')}</dl>`
@@ -114,7 +120,14 @@ function quotas(limit = 100, manage = false) {
     const plan = text(account.subscriptionType)
     const cachedProvenance = text(account.authProvenance) === 'cached'
     const planTag = plan ? `<span class="plan-tag">${esc(plan.toUpperCase())}${cachedProvenance ? ' (cached)' : ''}</span>` : ''
-    return `<article class="account ${active ? 'selected-account' : ''}"><div class="account-head"><div class="avatar">${esc(id.slice(0, 1).toUpperCase())}</div><div><strong>${esc(id)}</strong>${planTag}${account.email ? `<small>${esc(account.email)}</small>` : ''}</div>${active ? (isSpent ? `<span class="status active">Active</span><span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : '<span class="status active">Active</span>') : isSpent ? `<span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : needsLogin ? '<span class="status bad">Needs login</span>' : ''}</div>${effectiveReason ? `<p class="account-warning ${isSpent ? 'account-refusing' : ''}" title="${esc(isSpent && spentDiagnosis ? text(spentDiagnosis.rationale) : profile.error || '')}">${esc(effectiveReason)}</p>` : ''}${rows(profile.windows).map(window => {
+    const routesSummary = object(state?.routesSummary)
+    const profileTally = object(object(routesSummary.byProfile)[id])
+    const servedCount = number(profileTally.served)
+    const refusedCount = number(profileTally.refused)
+    const tallyTag = (servedCount !== undefined && servedCount > 0) || (refusedCount !== undefined && refusedCount > 0)
+      ? `<small class="mono muted" style="margin-left:8px;font-size:10px">${count(servedCount ?? 0)} served${refusedCount ? ` · <span class="status bad" style="font-size:9px;padding:1px 4px">${count(refusedCount)} refused</span>` : ''}</small>`
+      : ''
+    return `<article class="account ${active ? 'selected-account' : ''}"><div class="account-head"><div class="avatar">${esc(id.slice(0, 1).toUpperCase())}</div><div><strong>${esc(id)}</strong>${planTag}${tallyTag}${account.email ? `<small>${esc(account.email)}</small>` : ''}</div>${active ? (isSpent ? `<span class="status active">Active</span><span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : '<span class="status active">Active</span>') : isSpent ? `<span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : needsLogin ? '<span class="status bad">Needs login</span>' : ''}</div>${effectiveReason ? `<p class="account-warning ${isSpent ? 'account-refusing' : ''}" title="${esc(isSpent && spentDiagnosis ? text(spentDiagnosis.rationale) : profile.error || '')}">${esc(effectiveReason)}</p>` : ''}${rows(profile.windows).map(window => {
       const value = number(window.utilization)
       const clamped = Math.max(0, Math.min(1, value ?? 0))
       const reset = number(window.resetsAt)
@@ -124,15 +137,35 @@ function quotas(limit = 100, manage = false) {
   }).join('')}</div>`
 }
 function matchingRequests() { return filterRequests(state?.requests, filter, requestKind) }
+function accountRoutingCell(row: Record<string, unknown>) {
+  const chain = Array.isArray(row.routeChain) ? (row.routeChain as Array<Record<string, unknown>>) : null
+  const kind = text(row.routeKind)
+  const badge = kind ? `<span class="route-kind-badge route-${esc(kind)}">${esc(kind)}</span>` : ''
+  if (chain && chain.length > 1) {
+    const chainHtml = chain.map(hop => {
+      const ok = Boolean(hop.ok)
+      const profile = esc(text(hop.profileId) || 'default')
+      const refused = text(hop.refusedBucket)
+      const title = esc([hop.error ? text(hop.error) : `status ${hop.status}`, refused].filter(Boolean).join(' · '))
+      return `<span class="${ok ? 'status good' : 'status bad'}" style="padding:1px 4px;font-size:9px" title="${title}">${profile}${ok ? ' ✓' : ' ✗'}</span>`
+    }).join('<span class="muted" style="font-size:9px"> → </span>')
+    return `<div class="route-chain-wrap">${chainHtml}</div>${badge ? `<div>${badge}</div>` : ''}`
+  }
+  const refusedBucket = text(row.routeRefusedBucket)
+  const refusedLabel = refusedBucket ? ` <span class="status bad" style="padding:1px 4px;font-size:9px" title="refused allowance">${esc(refusedBucket)}</span>` : ''
+  return `<div><span>${esc(text(row.profileId) || '—')}</span>${refusedLabel}</div>${badge ? `<div>${badge}</div>` : ''}`
+}
 function requestTable(limit: number, filtered = false) {
   const records = (filtered ? matchingRequests() : rows(state?.requests).sort((a, b) => Number(b.timestamp) - Number(a.timestamp))).slice(0, limit)
   if (!records.length) return empty(filtered && (filter || requestKind !== 'all') ? 'No matching requests' : 'No requests recorded', filtered && (filter || requestKind !== 'all') ? 'Clear the filters to see all activity.' : '')
-  return `<div class="table-wrap"><table><thead><tr><th>Time</th><th>Model / client</th><th>Account</th><th>Cache</th><th>First token</th><th>Total</th><th>Status</th></tr></thead><tbody>${records.map(row => `<tr><td class="muted mono" title="${esc(new Date(Number(row.timestamp)).toLocaleString())}">${time(row.timestamp)}<small>${number(row.timestamp) ? esc(new Date(Number(row.timestamp)).toLocaleDateString([], {month: 'short', day: 'numeric'})) : ''}</small></td><td><button class="request-link" data-request="${esc(row.requestId)}">${esc(row.model || 'Unknown model')}</button><small>${esc(row.adapter || row.requestSource || 'Unknown client')}</small></td><td>${esc(row.profileId || '—')}</td><td class="mono">${pct(row.cacheHitRate)}</td><td class="mono">${duration(row.ttfbMs)}</td><td class="mono">${duration(row.totalDurationMs)}</td><td><span class="status ${Number(row.status) >= 400 ? 'bad' : Number(row.status) >= 200 && Number(row.status) < 400 ? 'good' : ''}">${esc(row.status || '—')}</span></td></tr>`).join('')}</tbody></table></div>`
+  return `<div class="table-wrap"><table><thead><tr><th>Time</th><th>Model / client</th><th>Account</th><th>Cache</th><th>First token</th><th>Total</th><th>Status</th></tr></thead><tbody>${records.map(row => `<tr><td class="muted mono" title="${esc(new Date(Number(row.timestamp)).toLocaleString())}">${time(row.timestamp)}<small>${number(row.timestamp) ? esc(new Date(Number(row.timestamp)).toLocaleDateString([], {month: 'short', day: 'numeric'})) : ''}</small></td><td><button class="request-link" data-request="${esc(row.requestId)}">${esc(row.model || 'Unknown model')}</button><small>${esc(row.adapter || row.requestSource || 'Unknown client')}</small></td><td>${accountRoutingCell(row)}</td><td class="mono">${pct(row.cacheHitRate)}</td><td class="mono">${duration(row.ttfbMs)}</td><td class="mono">${duration(row.totalDurationMs)}</td><td><span class="status ${Number(row.status) >= 400 ? 'bad' : Number(row.status) >= 200 && Number(row.status) < 400 ? 'good' : ''}">${esc(row.status || '—')}</span></td></tr>`).join('')}</tbody></table></div>`
 }
 function requestDetail() {
   const row = rows(state?.requests).find(item => item.requestId === selectedRequest)
   if (!row) return ''
-  return `<section class="request-detail" aria-label="Request details"><div class="section-heading"><div><h2>${esc(row.model)} <span class="status ${Number(row.status) >= 400 ? 'bad' : 'good'}">${esc(row.status)}</span></h2><p>${esc(new Date(Number(row.timestamp)).toLocaleString())}</p></div><button id="close-detail">Close details</button></div>${row.error ? `<p class="error-message">${esc(row.error)}</p>` : ''}<div class="detail-grid">${definition([['Account', row.profileId], ['Client', row.adapter], ['Conversation', row.lineageType], ['Mode', row.mode]])}${definition([['Queue wait', duration(row.queueWaitMs)], ['Proxy processing', duration(row.proxyOverheadMs)], ['First token', duration(row.ttfbMs)], ['Total', duration(row.totalDurationMs)]])}${definition([['Uncached input', count(row.inputTokens)], ['Cache read', count(row.cacheReadInputTokens)], ['Cache write', count(row.cacheCreationInputTokens)], ['Output tokens', count(row.outputTokens)]])}</div><div class="request-identifiers"><span>Request</span><code>${esc(row.requestId)}</code>${row.sdkSessionId ? `<span>SDK session</span><code>${esc(row.sdkSessionId)}</code>` : ''}</div>${Array.isArray(row.envelopeViolations) && row.envelopeViolations.length ? `<p class="error-message">Response integrity: ${esc(row.envelopeViolations.join(', '))}</p>` : ''}</section>`
+  const chain = Array.isArray(row.routeChain) ? (row.routeChain as Array<Record<string, unknown>>) : null
+  const chainText = chain && chain.length > 1 ? chain.map(h => `${text(h.profileId) || 'default'} (${h.ok ? '✓' : text(h.refusedBucket) || h.status || '✗'})`).join(' → ') : undefined
+  return `<section class="request-detail" aria-label="Request details"><div class="section-heading"><div><h2>${esc(row.model)} <span class="status ${Number(row.status) >= 400 ? 'bad' : 'good'}">${esc(row.status)}</span></h2><p>${esc(new Date(Number(row.timestamp)).toLocaleString())}</p></div><button id="close-detail">Close details</button></div>${row.error ? `<p class="error-message">${esc(row.error)}</p>` : ''}<div class="detail-grid">${definition([['Account', row.profileId], ['Client', row.adapter], ['Routing', row.routeKind || 'direct'], ...(chainText ? [['Failover chain', chainText] as [string, unknown]] : []), ...(row.routeRefusedBucket ? [['Refused on', row.routeRefusedBucket] as [string, unknown]] : []), ['Conversation', row.lineageType], ['Mode', row.mode]])}${definition([['Queue wait', duration(row.queueWaitMs)], ['Proxy processing', duration(row.proxyOverheadMs)], ['First token', duration(row.ttfbMs)], ['Total', duration(row.totalDurationMs)]])}${definition([['Uncached input', count(row.inputTokens)], ['Cache read', count(row.cacheReadInputTokens)], ['Cache write', count(row.cacheCreationInputTokens)], ['Output tokens', count(row.outputTokens)]])}</div><div class="request-identifiers"><span>Request</span><code>${esc(row.requestId)}</code>${row.sdkSessionId ? `<span>SDK session</span><code>${esc(row.sdkSessionId)}</code>` : ''}</div>${Array.isArray(row.envelopeViolations) && row.envelopeViolations.length ? `<p class="error-message">Response integrity: ${esc(row.envelopeViolations.join(', '))}</p>` : ''}</section>`
 }
 function logContent() {
   const matches = (value: string) => value.toLowerCase().includes(logFilter.toLowerCase())
