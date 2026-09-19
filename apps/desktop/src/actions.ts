@@ -3,7 +3,7 @@ import { object, text } from './core'
 import type { Manager } from './manager'
 export async function dispatch(manager: Manager, action: unknown, value: unknown): Promise<void> {
   if (action === 'login-code') { manager.loginCode(value); return }
-  const labels: Record<string, string> = { 'take-ownership': 'Taking ownership', 'return-headless': 'Restoring headless service', refresh: 'Refreshing', 'check-plugins': 'Checking plugins', 'install-plugin': 'Installing plugin', 'check-updates': 'Checking releases', install: 'Installing Meridian', activate: 'Switching versions', start: 'Starting Meridian', stop: 'Draining Meridian', restart: 'Restarting Meridian', 'save-preferences': 'Saving settings', 'switch-profile': 'Switching account', 'reload-plugins': 'Reloading plugins', 'set-features': 'Saving features', 'add-profile': 'Adding profile', 'login-profile': 'Signing in', acknowledge: 'Clearing alerts' }
+  const labels: Record<string, string> = { 'take-ownership': 'Taking ownership', 'return-headless': 'Restoring headless service', refresh: 'Refreshing', 'check-plugins': 'Checking plugins', 'install-plugin': 'Installing plugin', 'check-updates': 'Checking releases', install: 'Installing Meridian', activate: 'Switching versions', start: 'Starting Meridian', stop: 'Draining Meridian', restart: 'Restarting Meridian', 'save-preferences': 'Saving settings', 'switch-profile': 'Switching account', 'rename-profile': 'Renaming account', 'reload-plugins': 'Reloading plugins', 'set-features': 'Saving features', 'add-profile': 'Adding profile', 'login-profile': 'Signing in', acknowledge: 'Clearing alerts' }
   const name = text(action)
   if (!Object.hasOwn(labels, name)) throw new Error('Unknown desktop action.')
   await manager.mutate(labels[name] ?? 'Working', async () => {
@@ -27,6 +27,13 @@ export async function dispatch(manager: Manager, action: unknown, value: unknown
         const profile = text(value)
         if (!/^[\w-]{1,64}$/.test(profile)) throw new Error('Invalid profile name.')
         await manager.api('/profiles/active', 'POST', { profile }); await manager.refresh(); break
+      }
+      case 'rename-profile': {
+        const input = object(value)
+        const from = text(input.from)
+        const to = text(input.to)
+        if (!/^[\w-]{1,64}$/.test(from) || !/^[\w-]{1,64}$/.test(to)) throw new Error('Invalid profile name.')
+        await manager.api('/profiles/rename', 'POST', { from, to }); await manager.refresh(); break
       }
       case 'reload-plugins': await manager.api('/plugins/reload', 'POST'); await manager.refresh(); break
       case 'set-features': {

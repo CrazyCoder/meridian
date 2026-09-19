@@ -188,6 +188,8 @@ function quotas(limit = 100, manage = false) {
     const cachedProvenance = text(account.authProvenance) === 'cached'
     const planTag = plan ? `<span class="plan-tag">${esc(plan.toUpperCase())}${cachedProvenance ? ' (cached)' : ''}</span>` : ''
     const routesSummary = object(state?.routesSummary)
+    const aliases = Array.isArray(account.aliases) ? (account.aliases as unknown[]).map(text).filter(Boolean) : []
+    const aliasesTag = aliases.length > 0 ? `<small class="mono muted" style="margin-left:8px;font-size:10px" title="Also answers to: ${esc(aliases.join(', '))}">aka ${esc(aliases.join(', '))}</small>` : ""
     const profileTally = object(object(routesSummary.byProfile)[id])
     const servedCount = number(profileTally.served)
     const refusedCount = number(profileTally.refused)
@@ -197,7 +199,7 @@ function quotas(limit = 100, manage = false) {
     const spend = computeProfileSpend(profile, account)
     const spendClass = spend.state === 'fading' ? 'spend-fading' : spend.state === 'spent' && spend.reason !== 'unusable' ? 'spend-spent' : ''
     const spendStyle = spend.fade > 0 && spend.state === 'fading' ? ` style="--spend-fade:${spend.fade.toFixed(2)}"` : ''
-    return `<article class="account ${active ? 'selected-account' : ''} ${spendClass}"${spendStyle}><div class="account-head"><div class="avatar">${esc(id.slice(0, 1).toUpperCase())}</div><div><strong>${esc(id)}</strong>${planTag}${tallyTag}${account.email ? `<small>${esc(account.email)}</small>` : ''}</div>${active ? (isSpent ? `<span class="status active">Active</span><span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : '<span class="status active">Active</span>') : isSpent ? `<span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : needsLogin ? '<span class="status bad">Needs login</span>' : ''}</div>${effectiveReason ? `<p class="account-warning ${isSpent ? 'account-refusing' : ''}" title="${esc(isSpent && spentDiagnosis ? text(spentDiagnosis.rationale) : profile.error || '')}">${esc(effectiveReason)}</p>` : ''}${rows(profile.windows).map(window => {
+    return `<article class="account ${active ? 'selected-account' : ''} ${spendClass}"${spendStyle}><div class="account-head"><div class="avatar">${esc(id.slice(0, 1).toUpperCase())}</div><div><strong>${esc(id)}</strong>${planTag}${tallyTag}${aliasesTag}${account.email ? `<small>${esc(account.email)}</small>` : ''}</div>${active ? (isSpent ? `<span class="status active">Active</span><span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : '<span class="status active">Active</span>') : isSpent ? `<span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : needsLogin ? '<span class="status bad">Needs login</span>' : ''}</div>${effectiveReason ? `<p class="account-warning ${isSpent ? 'account-refusing' : ''}" title="${esc(isSpent && spentDiagnosis ? text(spentDiagnosis.rationale) : profile.error || '')}">${esc(effectiveReason)}</p>` : ''}${rows(profile.windows).map(window => {
       const value = number(window.utilization)
       const clamped = Math.max(0, Math.min(1, value ?? 0))
       const reset = number(window.resetsAt)
