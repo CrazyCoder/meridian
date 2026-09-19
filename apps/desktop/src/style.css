@@ -144,6 +144,20 @@ section { margin-bottom: 24px; }
 .account-head { margin-bottom: 12px; }
 .account-head > .status { margin-left: auto; }
 .selected-account { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.account.spend-fading > *, .account.spend-spent > * {
+  filter: grayscale(var(--spend-fade, 0));
+  opacity: calc(1 - 0.55 * var(--spend-fade, 0));
+  transition: filter 0.2s, opacity 0.2s;
+}
+.account.spend-fading:hover > *, .account.spend-spent:hover > * {
+  filter: none;
+  opacity: 1;
+}
+.sort-tabs { display: flex; gap: 2px; }
+.sort-tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted); font-family: inherit; font-size: 11px; font-weight: 500; letter-spacing: 0.3px; padding: 2px 8px 3px; cursor: pointer; }
+.sort-tab:hover { color: var(--text); }
+.sort-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.sort-tab:focus-visible { outline: none; color: var(--accent); border-bottom-color: var(--accent); }
 .account-warning { font-size: 12px; }
 .account-warning.account-refusing {
   background: #fef2f2;
