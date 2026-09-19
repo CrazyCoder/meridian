@@ -101,10 +101,20 @@ function quotas(limit = 100, manage = false) {
           : stale
             ? 'Usage may be out of date'
             : ''
+    const spentObj = profile.spent && typeof profile.spent === 'object' ? profile.spent as Record<string, unknown> : null
+    const isSpent = Boolean(spentObj && (!spentObj.until || Number(spentObj.until) > Date.now()))
+    const spentDiagnosis = spentObj?.diagnosis && typeof spentObj.diagnosis === 'object' ? spentObj.diagnosis as Record<string, unknown> : null
+    const spentBucket = spentDiagnosis ? text(spentDiagnosis.bucket) : ''
+    const spentBucketLabel = spentBucket ? (spentBucket === 'five_hour' ? '5h limit' : spentBucket.replace(/^seven_day/, '7d').replaceAll('_', ' ')) : 'rate limit'
+    const spentUntil = spentObj ? number(spentObj.until) : undefined
+    const spentUntilText = spentUntil ? (spentUntil > Date.now() ? `resets ${new Date(spentUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '') : ''
+    const effectiveReason = isSpent
+      ? `Refusing requests: account exhausted (${spentBucketLabel})${spentUntilText ? ` · ${spentUntilText}` : ''}`
+      : reason
     const plan = text(account.subscriptionType)
     const cachedProvenance = text(account.authProvenance) === 'cached'
     const planTag = plan ? `<span class="plan-tag">${esc(plan.toUpperCase())}${cachedProvenance ? ' (cached)' : ''}</span>` : ''
-    return `<article class="account ${active ? 'selected-account' : ''}"><div class="account-head"><div class="avatar">${esc(id.slice(0, 1).toUpperCase())}</div><div><strong>${esc(id)}</strong>${planTag}${account.email ? `<small>${esc(account.email)}</small>` : ''}</div>${active ? '<span class="status active">Active</span>' : needsLogin ? '<span class="status bad">Needs login</span>' : ''}</div>${reason ? `<p class="account-warning" title="${esc(profile.error || '')}">${esc(reason)}</p>` : ''}${rows(profile.windows).map(window => {
+    return `<article class="account ${active ? 'selected-account' : ''}"><div class="account-head"><div class="avatar">${esc(id.slice(0, 1).toUpperCase())}</div><div><strong>${esc(id)}</strong>${planTag}${account.email ? `<small>${esc(account.email)}</small>` : ''}</div>${active ? (isSpent ? `<span class="status active">Active</span><span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : '<span class="status active">Active</span>') : isSpent ? `<span class="status bad" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Account refusing')}">Refusing</span>` : needsLogin ? '<span class="status bad">Needs login</span>' : ''}</div>${effectiveReason ? `<p class="account-warning ${isSpent ? 'account-refusing' : ''}" title="${esc(isSpent && spentDiagnosis ? text(spentDiagnosis.rationale) : profile.error || '')}">${esc(effectiveReason)}</p>` : ''}${rows(profile.windows).map(window => {
       const value = number(window.utilization)
       const clamped = Math.max(0, Math.min(1, value ?? 0))
       const reset = number(window.resetsAt)

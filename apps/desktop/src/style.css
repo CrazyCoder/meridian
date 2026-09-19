@@ -145,6 +145,21 @@ section { margin-bottom: 24px; }
 .account-head > .status { margin-left: auto; }
 .selected-account { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
 .account-warning { font-size: 12px; }
+.account-warning.account-refusing {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  padding: 6px 10px;
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  .account-warning.account-refusing {
+    background: #450a0a;
+    border-color: #7f1d1d;
+    color: #fca5a5;
+  }
+}
 .account-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .account-actions > span { font-size: 11px; }
 .empty { min-height: 88px; border: none; background: var(--surface); text-align: center; align-items: center; padding: 20px; }
