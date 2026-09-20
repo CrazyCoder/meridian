@@ -1,5 +1,12 @@
 # Meridian Desktop — development preview
 
+Meridian supports Claude and an Antigravity branch preview. The **Providers**
+page keeps setup, status and quota windows separate, with shared navigation and
+activity. For Antigravity, build the [preview service](../../README.md#try-antigravity)
+and connect this source-built app to its local URL. Installing the current npm
+release from **Versions** does not install the Antigravity branch. See the
+[feature and unfinished-work checklist](../../docs/antigravity-support.md).
+
 An optional Electron app for local Meridian installations. The first platform
 is macOS, with native Liquid Glass through
 [electron-liquid-glass](https://github.com/Meridius-Labs/electron-liquid-glass)

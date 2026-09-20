@@ -1,5 +1,10 @@
 # Configuration
 
+Claude is the default backend. Set `MERIDIAN_BACKEND=antigravity` to select the
+official agy CLI backend; its permissions, models and environment variables are
+documented in the [Antigravity guide](antigravity.md). Claude SDK settings below
+do not automatically apply to Antigravity.
+
 [← Back to README](../README.md)
 
 Environment variables, endpoints, authentication, SDK feature toggles, passthrough mode, and CLI commands.

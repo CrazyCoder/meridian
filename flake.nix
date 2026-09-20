@@ -1,5 +1,5 @@
 {
-  description = "Meridian – Local Anthropic API powered by your Claude Max subscription";
+  description = "Meridian – Local API bridge for Claude and Antigravity subscriptions";
 
   inputs = {
     bun2nix = {

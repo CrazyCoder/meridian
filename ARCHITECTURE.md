@@ -1,8 +1,151 @@
 # Architecture
 
-A local proxy that bridges Anthropic- and OpenAI-compatible clients to the Claude Agent SDK. This document defines the module structure, dependency rules, and design decisions.
+A local proxy that bridges supported Anthropic- and OpenAI-compatible clients to Claude through the Agent SDK or Antigravity through the official agy CLI. This document defines the module structure, dependency rules, and design decisions.
 
 ## Request Flow
+
+### Antigravity runtime and combined provider service
+
+`backend: "antigravity"` (or `MERIDIAN_BACKEND=antigravity`) selects a separate
+runtime at the public server entrypoint before Claude authentication, sessions,
+plugins or background maintenance start. Claude remains the default. The
+existing `AgentAdapter` describes incoming clients and is not reused as a
+backend selector.
+
+`backends/antigravityProtocol.ts` owns pure validation, history identity and
+prompt rendering. Its opt-in numeric thinking-budget normalization maps to Gemini
+effort variants before continuation identity is calculated; runtime model discovery
+checks availability, and responses expose the effective model.
+`antigravityRuntime.ts` owns the official CLI subprocesses and loopback MCP transport.
+Its bounded interrupted-continuation fingerprints permit only exact completed-result
+replay after cancellation joins the old process, before any subsequent client
+call was emitted and with native actions disabled. Exact concurrent retries wait
+for joining and use the existing result-ID claim; successful replay removes the
+exception without clearing consumed IDs. Optional SQLite preserves only the
+fingerprints, not in-flight work. `antigravityAttachments.ts` materializes supplied images,
+documents and adapted media in a disposable workspace; the hook permits exact
+generated paths. `antigravityUrl.ts` validates/pins public HTTPS image downloads;
+`antigravityMedia.ts` owns local ffmpeg/Whisper adaptation. `antigravityNative.ts`
+defines the separately opted-in browser/subagent policy; browser MCP uses isolated
+Chrome. `antigravityProcess.ts` contains platform quoting and process termination.
+`antigravityProbe.ts` runs only official version/configuration/model-discovery commands, bounds
+output and deadlines, and joins termination (including forced kill) before one
+timeout retry for configuration or model discovery (never version or ordinary exits). Failed read-only probes impose a five-second account-check cooldown with Retry-After; generation is never retried by this mechanism. Runtime account validation remains fresh and shared
+only among concurrent callers; settings refusals and ordinary command failures
+are never retried or replaced with cached authorization.
+`antigravityOpenai.ts` validates supported OpenAI subsets before shared translation;
+`antigravityOpenaiMedia.ts` preserves original OpenAI attachments while adapting
+them into the common media pipeline. `antigravityResponses.ts` holds bounded,
+credential-scoped Responses snapshots with one oldest-first count/byte ledger
+across volatile payloads and durable metadata (rebuilt from SQLite on startup); `antigravityJobs.ts` owns background
+cancellation and bounded event replay. `antigravityReplay.ts` saves terminal text
+answers to exact Anthropic tool-result continuations in a separate credential-scoped
+budget (128 entries, 16 MiB total, 1 MiB each, 30 minutes). Snapshots are saved
+before terminal delivery and replay as JSON or lazily generated SSE without model,
+response-hook or usage accounting duplication. Explicit request IDs extend this
+same budget to ordinary prompts and tool batches. Identity binds a credential
+scope and complete request fingerprint; concurrent duplicates wait with bounded,
+abortable waiter sets. Tool batches are saved before the first tool block, preserve
+original call IDs on replay, and become non-replayable when their results are
+being accepted or consumed. CLI loss still uses completed-history result recovery.
+Native-capability requests and OpenAI routes do not use this cache. Pi's example
+extension assigns IDs before SDK retries and retains only a request hash/ID for an
+exact failed-turn retry. New prompts, session operations, changed payloads and
+successful/aborted turns reset that identity. OpenCode's V1 example plugin uses its
+public active assistant-message identity because its processor reruns header hooks
+on retry; a random ID per header-hook invocation would repeat generation. Its
+provider fetch wrapper forwards text events incrementally and holds tool/terminal
+events until EOF and message_stop (4 MiB, five minutes, abortable). Interrupted
+delivery gets one cache-only JSON recovery with the original request identity;
+the wrapper validates every displayed text prefix and message ID before emitting
+only the missing suffix and tool batch. Cache misses never generate a replacement.
+This preserves incremental display without executing an incomplete tool prefix
+and does not alter server request validation or client permissions. Optional `antigravityState.ts` persists
+Meridian-owned records in private SQLite with an exclusive lifetime owner guard.
+`antigravitySessions.ts` atomically claims exact completed/joined text/client-tool
+native mappings and uses the public CLI conversation flag. A separate hash-only unfinished-request journal prevents blind re-execution of
+identified Messages requests after an unclean restart when no answer snapshot exists.
+It is bounded to 128 entries/30 minutes, refuses admission instead of eviction,
+and releases guards after joined cleanup. Backend shutdown waits for identified
+request finalizers, including bounded telemetry observers, before closing SQLite.
+It does not record external tool outcomes.
+In-flight processes never enter that durable session cache; private CLI transcripts are never read.
+`antigravitySetup.ts` owns explicit Pi/OpenCode client configuration, separate from
+server orchestration. The build packages self-contained retry integrations under
+`dist/antigravity-clients`; npm, Nix and Docker installations carry those assets.
+Setup prepares edits before writing, preserves unrelated settings, rejects malformed
+or conflicting input, creates private backups and uses per-file atomic replacement.
+`telemetry/providerSetup.ts` shares pure command generation and setup presentation
+between the web provider page and desktop. Desktop clipboard requests contain
+choices rather than arbitrary text; the main process validates them against its
+current service/model state before copying through Electron. Browser clipboard
+denial falls back to manual selection. Neither UI executes the generated command.
+Client defaults change only with `--set-default`; model limits are conservative
+client settings, not provider-enforced generation caps.
+`antigravityPlugins.ts` exposes explicit Antigravity request transforms and isolated
+response/telemetry observers, separate from Claude SDK plugins.
+`antigravityGrammar.ts` validates custom payloads in bounded worker/Python jobs
+before client delivery, never on the HTTP event loop.
+`antigravityTokens.ts` provides explicitly labeled, side-effect-free estimates. `antigravityStops.ts` is a pure incremental text-stop matcher.
+`antigravitySchema.ts` compiles request-local Ajv validators for client tool
+arguments and native structured results. It never fetches remote references or
+coerces client data. Tool definitions travel in the prompt as well as MCP, so
+model calls do not depend on access to private CLI schema files.
+`antigravity.ts` adapts the standard Request/Response
+interface to Anthropic JSON/SSE. Only `server.ts` imports Hono and binds the
+public listener. Backend modules do not import Claude session or cache modules.
+
+The runtime maps contain live/warm conversations and outstanding tool correlations,
+like `sessionTree.ts`; they are not another durable session cache. Tool calls
+remain pending inside the official CLI until their client result arrives.
+The exact pending assistant prefix also permits appended user steering, either
+beside the tool result or in subsequent user messages. New instructions travel
+in a separate MCP result envelope field; they do not become tool output and do
+not start a second process. Client-owned delegation tools follow the same MCP
+path as file tools. Native subagents require an independent operator grant and
+inherit the guarded workspace. MCP request identity is scoped per initialized
+session, avoiding collisions between native children. The synthetic parallel MCP
+tool validates a whole batch before delivery; reverse-order results remain correlated. Tool choice
+may change between responses without changing the remaining pending contract.
+Client plugin changes to system instructions or tool definitions use completed-
+history replay after claiming all results and joining the old pending process.
+Model, session, execution controls and delivered history must still match. The
+new process installs its own tool catalog and deny hook; telemetry records
+`client-context-replay`. Failed preflight releases the replay claim for retry.
+Native schema mode permits `finish`, withholds prose and emits only the final
+structured result after clean exit. Text stops deliberately terminate and join
+the process; they are separate from native token-budget controls.
+Completed ordinary requests retain an idle live process. Exact matching history
+and contract append only new user messages through official stream stdin. Schema
+and stop paths remain one-shot. Changed histories, compaction and expired/restarted
+processes replay full client history unless an eligible completed/joined mapping
+is restored through the public CLI conversation flag. A complete tool-call/result
+request without a live owner also replays,
+allowing recovery after expiry or process restart without an extra user message.
+A bounded set of consumed tool IDs rejects recent duplicate results without an eligible saved answer; a transient
+claim prevents simultaneous recovery during preflight. Consumed ID digests can
+persist in the optional Meridian state store; neither mechanism promises
+exactly-once external tool execution. Admission may reclaim a process waiting
+idle for a tool result or another user turn, joining it before replacement; active responses are never
+evicted. A late completed result can use the same replay path. Native Claude transcript lifecycle and lineage persistence cannot be
+applied to Antigravity. `ProxyInstance.close()` joins owned subprocesses;
+direct fetch embedders use `closeBackend()`. Shutdown also joins workspace cleanup
+for processes already removed from admission maps before closing SQLite.
+
+`backend: "combined"` retains the Claude listener and mounts Antigravity at
+`/antigravity/*`, with independent admission, processes, quotas and shutdown.
+The `/providers` page and `/providers/status` report both without mixing account
+identities or quota percentages. `providerStatus.ts` normalizes provider facts;
+`telemetry/providerView.ts` is shared pure presentation for the web and desktop.
+CLI quota reads are single-flight and cached, preserving stale readings on
+failure. Bounded request metadata and native activity optionally persist in Meridian
+state; runtime counters are rebuilt from retained exchanges. Claude session-cache
+ownership is unchanged.
+
+See [the backend guide](docs/antigravity.md) for the explicit permission opt-in,
+capability errors and recovery limits. Contract work is tracked in #1073.
+
+### Default Claude runtime
 
 ```
 Agent (OpenCode) ──► HTTP POST /v1/messages ──► Proxy Server

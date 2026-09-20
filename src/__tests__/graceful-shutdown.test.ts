@@ -215,8 +215,12 @@ describe("graceful shutdown", () => {
 
     const response = await responseP
     await response.text()
-    for (let index = 0; index < 100 && server.getInFlightCount!() !== 0; index++) {
-      await Bun.sleep(1)
+    // Streaming cancellation returns before asynchronous teardown finishes.
+    // CI can take longer than 100 one-millisecond polls; this test checks
+    // eventual cleanup and revoked publication, not a 100 ms latency contract.
+    const deadline = Date.now() + 2_000
+    while (server.getInFlightCount!() !== 0 && Date.now() < deadline) {
+      await Bun.sleep(10)
     }
     expect(server.getInFlightCount!()).toBe(0)
     expect(lookupSharedSession("forced-shutdown")).toBeUndefined()

@@ -1,74 +1,39 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="Meridian — Harness Claude, your way." width="800" />
+  <img src="assets/banner.svg" alt="Meridian — Claude and Antigravity, in your tools." width="920" />
 </p>
 
 <p align="center">
-  <strong>Your tools. Your sessions. One place to see what’s happening.</strong>
-</p>
-
-<p align="center">
-  <a href="https://github.com/rynfar/meridian/releases">Releases</a> ·
-  <a href="#get-started">Get started</a> ·
-  <a href="docs/agents.md">Connect your agent</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#try-antigravity">Try Antigravity</a> ·
+  <a href="#desktop">Desktop</a> ·
+  <a href="#documentation">Documentation</a> ·
   <a href="https://discord.gg/jP2a2Z92NZ">Discord</a>
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@rynfar/meridian"><img src="https://img.shields.io/npm/v/@rynfar/meridian?style=flat-square&color=58a6ff" alt="npm version" /></a>
-  <img src="https://img.shields.io/badge/desktop-macOS_preview-bc8cff?style=flat-square" alt="Desktop: macOS preview" />
-  <img src="https://img.shields.io/badge/headless-macOS_·_Linux_·_Windows-58a6ff?style=flat-square" alt="Headless: macOS, Linux and Windows" />
-  <a href="https://opensource.org/license/mit"><img src="https://img.shields.io/badge/license-MIT-bc8cff?style=flat-square" alt="MIT license" /></a>
+  <a href="https://github.com/rynfar/meridian/pull/1074"><img src="https://img.shields.io/badge/Antigravity-branch_preview-bc8cff?style=flat-square" alt="Antigravity: branch preview" /></a>
+  <a href="https://opensource.org/license/mit"><img src="https://img.shields.io/badge/license-MIT-58a6ff?style=flat-square" alt="MIT license" /></a>
 </p>
 
-Meridian connects Anthropic- and OpenAI-compatible clients to Claude through the
-Claude Agent SDK. Keep the editor or terminal you like, with streaming, persistent
-sessions, account routing and visibility into usage and prompt caching.
+Meridian connects coding clients to **Claude and Antigravity using your subscription**.
+Run Pi, OpenCode or another supported client against a local API, and manage
+providers, requests and usage from a browser or the optional Mac app.
 
-**Now with an optional Mac app.** Manage Meridian versions, install plugins, find
-failed requests and see your usage limits without keeping a terminal open.
-Headless Meridian remains fully supported—npm, Docker, Nix and your existing
-service manager all remain valid ways to run it.
+Claude requests run through Anthropic’s Agent SDK. Antigravity requests run
+through Google’s official, signed-in `agy` CLI. Account permissions, model
+availability and subscription limits still apply.
 
-## Meet Meridian Desktop
+| <img src="assets/providers/claude.png" width="40" alt="Claude logo" /><br>Claude | <img src="assets/providers/antigravity.png" width="40" alt="Antigravity logo" /><br>Antigravity |
+| :--- | :--- |
+| **Released** · Claude Agent SDK | **Branch preview** · Official `agy` CLI |
+| Persistent sessions, prompt caching and multiple account profiles | Streaming, client tools, conversation reuse and saved-answer recovery |
+| [Client compatibility and setup](docs/agents.md) | [Pi and OpenCode setup](docs/antigravity.md) |
+| Headless macOS, Linux and Windows | Authenticated acceptance on macOS arm64; Linux/Windows verification unfinished |
 
-<p align="center">
-  <img src="assets/desktop-dashboard.jpg" alt="Meridian Desktop overview showing usage limits, cache activity and recent requests. Sample data." width="1000" />
-</p>
+## Quick start
 
-<p align="center"><sub>macOS dashboard preview · Sample data</sub></p>
-
-| See what matters | Keep it under control |
-| --- | --- |
-| **Usage & limits** — account quota windows, reset times and token activity. | **Versions** — install published Meridian releases, switch versions and roll back. |
-| **Requests & cache** — timing, failures, cache history and request details. | **Service** — start, stop, restart and recover an app-managed installation. |
-| **Logs & alerts** — searchable diagnostics and opt-in failure, cache and quota notifications. | **Plugins** — install and update the Pi, OpenCode, Hermes and OpenClaw scrub plugins. |
-
-Native macOS chrome, menu bar controls and Liquid Glass on supported Macs through
-[electron-liquid-glass](https://github.com/Meridius-Labs/electron-liquid-glass).
-The desktop preview targets **macOS on Apple Silicon**. Linux and Windows desktop
-apps are planned; their runtime support is not ready yet.
-
-## Get started
-
-### With the Mac app
-
-The first downloadable desktop release is being prepared. Until it is published,
-use the [desktop preview instructions](apps/desktop/README.md#run-locally).
-Signed, notarized `.dmg` and `.zip` downloads will appear under
-[GitHub Releases](https://github.com/rynfar/meridian/releases).
-
-1. Connect to an existing local Meridian service, or install Meridian from **Versions**.
-2. For a new installation, choose app management in **Service** and start it.
-3. Sign in to a Claude account, then follow your [agent’s setup guide](docs/agents.md).
-
-The app can monitor Docker or Nix installations through a published local HTTP
-port. Their package manager retains control of updates and lifecycle. Supported
-macOS LaunchAgents can be handed to the app and returned to headless operation.
-[How service ownership works →](apps/desktop/README.md#connect-to-an-existing-installation)
-
-### Headless, as always
-
-Requires Node.js 22 or newer and a Claude account configured for the SDK.
+For the released **Claude** backend, install [Node.js 22+](https://nodejs.org/), then:
 
 ```sh
 npm install -g @rynfar/meridian
@@ -76,75 +41,126 @@ claude login
 meridian
 ```
 
-Meridian listens at `http://127.0.0.1:3456`. For OpenCode V1, run
-`meridian setup` once and restart OpenCode. Other clients—including OpenCode V2—have
-[specific setup instructions](docs/agents.md).
+Open `http://127.0.0.1:3456`. For OpenCode V1, run `meridian setup` and restart
+OpenCode. For Pi and other clients, follow the [client setup guide](docs/agents.md).
+See [configuration](docs/configuration.md) for API-key protection and Windows
+setup, or [deployment](docs/deployment.md) for Docker and Nix.
+
+## Try Antigravity
+
+**Antigravity is available on the published feature branch, not in the current npm
+release.** [PR #1074](https://github.com/rynfar/meridian/pull/1074) tracks the work.
+The verified setup uses **agy 1.2.7**, **Pi 0.72.1** or **OpenCode V1 1.18.31**,
+and macOS on Apple Silicon. Other versions need their own verification.
+
+Install Node.js 22+, [Bun](https://bun.sh/) and the
+[official Antigravity CLI](https://antigravity.google/). Run `agy` to sign in with
+your subscription account and disable paid overage credits in its settings.
+Then build the preview:
 
 ```sh
-# Example for a POSIX shell, with Meridian API-key protection disabled:
-ANTHROPIC_API_KEY=x ANTHROPIC_BASE_URL=http://127.0.0.1:3456 opencode
+git clone --branch feat/antigravity-backend https://github.com/rynfar/meridian.git meridian-antigravity
+cd meridian-antigravity
+bun install --frozen-lockfile
+npm run build
+
+MERIDIAN_BACKEND=antigravity \
+MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1 \
+MERIDIAN_AGY_STATE_PATH="$HOME/.local/state/meridian/antigravity.sqlite" \
+MERIDIAN_PORT=3457 \
+node dist/cli.js
 ```
 
-`x` is a client-required placeholder. If you configure Meridian’s API-key
-protection, use that key instead. Claude authentication comes from the configured
-Claude account. See [configuration](docs/configuration.md) for authentication,
-ports and Windows setup, or [deployment](docs/deployment.md) for Docker and Nix.
+Open `http://127.0.0.1:3457/providers` and use **Connect Pi / OpenCode**, or follow
+the [CLI setup instructions](docs/antigravity.md#configure-installed-clients).
+The tool bridge lets the client execute tools with its own permissions. The
+SQLite path enables saved state across service restarts; it does not guarantee
+recovery of an unfinished action.
 
-**No desktop dependency.** Installing the headless package does not install
-Electron. You can run Meridian entirely without the app, including its browser
-[telemetry dashboard](MONITORING.md).
+### What works
 
-## Built for ongoing work
+- **The coding loop:** incremental text, client tools, parallel tool batches,
+  approvals, questions, cancellation and client-owned plugins/delegation.
+- **Model and output selection:** available model/effort variants, forced tools
+  and validated structured output.
+- **Client APIs:** Anthropic Messages, OpenAI Chat Completions and a documented
+  Responses subset.
+- **Attachments:** images and public HTTPS image URLs; documents, speech and
+  video through local conversion. These are not native media APIs.
+- **Continuity:** warm conversation reuse, eligible completed-session restoration,
+  history replay and bounded recovery of saved answers and tool IDs.
+- **Provider management:** web and macOS setup, separate quota/status displays,
+  shared navigation and activity. Native browser/subagent access requires
+  separate explicit grants.
 
-- **Keep conversations going.** Sessions resume across requests and proxy restarts,
-  with handling for client compaction, undo and branching.
-- **Use the protocol your client speaks.** Anthropic Messages, OpenAI Chat
-  Completions and Responses endpoints, including streaming and tool forwarding.
-- **Keep accounts organized.** Multiple Claude profiles, explicit account selection
-  and opt-in sticky session routing.
-- **Understand cache behavior.** Request history, prompt-cache metrics, diagnostic
-  events and optional persistent telemetry. API-equivalent cost estimates are
-  estimates, not your subscription bill.
-- **Keep your deployment.** CLI, containers, declarative Nix services or the
-  optional desktop manager share the same Meridian server.
+### What is unfinished
+
+Active-task reattachment and automatic reconciliation of uncertain tool outcomes
+are unfinished. Some provider-specific plugins, hosted-tool/file contracts and
+client versions need adapters and acceptance tests. Authenticated Linux/Windows
+verification is also outstanding.
+
+The CLI does not expose exact output-token caps, numeric thinking budgets,
+sampling controls or every native media/reasoning feature. Meridian cannot add
+those guarantees through a wrapper. Upstream CLI failures can still interrupt a
+turn. The [support and recovery checklist](docs/antigravity-support.md) records
+what is missing, available workarounds and what would close each gap.
+
+## Desktop
 
 <p align="center">
-  <img src="assets/how-it-works.svg" alt="Your client connects to Meridian, which sends requests through the Claude Agent SDK." width="920" />
+  <img src="assets/desktop-dashboard.jpg" alt="Meridian Desktop showing usage limits, cache activity and recent requests. Sample data." width="1000" />
+</p>
+<p align="center"><sub>macOS dashboard preview · Sample data</sub></p>
+
+The optional Mac app manages the local service, versions, plugins and diagnostics.
+Use **Providers** to navigate Claude and Antigravity; their accounts and quota
+windows stay separate. Request history helps track failures and activity across
+the service.
+
+The desktop preview targets **macOS on Apple Silicon**. The first downloadable
+release is being prepared; use the [source instructions](apps/desktop/README.md#run-locally)
+in the meantime. To try Antigravity, connect the app to the preview service built
+above. Installing the current npm release from **Versions** does not install the
+Antigravity branch.
+
+Headless use remains supported. The npm package does not install Electron;
+Docker, Nix and existing service managers can run the same server.
+
+## How it works
+
+<p align="center">
+  <img src="assets/how-it-works.svg" alt="Pi, OpenCode and other supported clients connect to Meridian. Claude uses the Agent SDK; Antigravity uses the official agy CLI. Each provider uses its own signed-in account." width="920" />
 </p>
 
-Meridian uses the SDK’s authentication and request execution. Account access,
-model availability and usage limits still depend on your provider account.
-
-## Bring your agent
-
-Setup guides cover **OpenCode, Pi, Claude Code, Codex CLI, Cline, Aider, Crush,
-ForgeCode, Droid, Open WebUI, Cherry Studio, Polytoken, Jcode and Prime Agent**.
-Compatibility varies by client and version; see the
-[tested-agent matrix](docs/agents.md#compatibility-at-a-glance) for evidence and
-limitations. Prime Agent concurrent subagents remain unsuitable for unattended
-or usage-sensitive work. Continue is unverified.
-
-The desktop **Plugins** page installs the four official scrub plugins. Client
-connection setup is still separate; installing a scrub plugin does not configure
-its corresponding client. [Plugin guide →](docs/plugins.md)
+Meridian translates supported client requests at the provider boundary. It keeps
+Claude-specific account routing and cache behavior separate from Antigravity’s
+CLI sessions and permissions. Antigravity generation stays on the signed-in CLI;
+there is no Google API-key or model-SDK fallback.
 
 ## Documentation
 
-| Start here | What you’ll find |
+| Guide | Contents |
 | --- | --- |
-| [Desktop guide](apps/desktop/README.md) | Setup, service ownership, updates, plugins and platform status |
-| [Agent setup](docs/agents.md) | Client configuration and compatibility notes |
-| [Configuration](docs/configuration.md) | CLI, environment variables, endpoints and API-key protection |
-| [Accounts & profiles](docs/profiles.md) | Sign-in, multiple accounts and session routing |
+| [Antigravity setup](docs/antigravity.md) | Models, client tools, attachments, permissions and setup |
+| [Antigravity support & recovery](docs/antigravity-support.md) | Feature status, unfinished work and recovery limits |
+| [Claude client setup](docs/agents.md) | Compatibility matrix and client configuration |
+| [Desktop](apps/desktop/README.md) | Local preview, service ownership and platform status |
+| [Configuration](docs/configuration.md) | CLI, environment variables and API-key protection |
+| [Accounts & profiles](docs/profiles.md) | Claude sign-in, multiple accounts and routing |
 | [Deployment](docs/deployment.md) | Docker, Nix and headless services |
 | [Plugins](docs/plugins.md) | Official packages and plugin configuration |
 | [Monitoring](MONITORING.md) | Usage, request diagnostics and prompt caching |
 | [Development](docs/development.md) | Build, test and programmatic API |
-| [Desktop releases](docs/desktop-releases.md) | Signing, notarization and download publication |
+| [Live verification](E2E.md) | Tested versions, flows and known failures |
 
-## Contribute
+## Contributing
 
-[Report a bug or suggest a feature](https://github.com/rynfar/meridian/issues),
-open a PR, or join [Discord](https://discord.gg/jP2a2Z92NZ).
-Read [AGENTS.md](AGENTS.md), [ARCHITECTURE.md](ARCHITECTURE.md) and
-[E2E.md](E2E.md) before changing behavior. Meridian is [MIT licensed](https://opensource.org/license/mit).
+[Report an issue](https://github.com/rynfar/meridian/issues), open a PR or join
+[Discord](https://discord.gg/jP2a2Z92NZ). Read [AGENTS.md](AGENTS.md),
+[ARCHITECTURE.md](ARCHITECTURE.md) and [E2E.md](E2E.md) before changing behavior.
+For Antigravity reports, include your OS, `agy` and client versions, the failing
+flow and redacted diagnostics.
+
+Meridian is [MIT licensed](https://opensource.org/license/mit). Claude and Antigravity are trademarks of
+their respective owners. [Provider asset credits](assets/providers/README.md).
