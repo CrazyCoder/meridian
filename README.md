@@ -115,9 +115,9 @@ Use **Providers** to navigate Claude and Antigravity; their accounts and quota
 windows stay separate. Request history helps track failures and activity across
 the service.
 
-The desktop preview targets **macOS on Apple Silicon**. The first downloadable
-release is being prepared; use the [source instructions](apps/desktop/README.md#run-locally)
-in the meantime. To try Antigravity, connect the app to a Meridian 1.74.0+ service configured as shown above.
+The desktop preview targets **macOS on Apple Silicon**. Download the signed,
+notarized DMG or ZIP from [GitHub Releases](https://github.com/rynfar/meridian/releases/tag/meridian-v1.74.0),
+or follow the [source instructions](apps/desktop/README.md#run-locally). To try Antigravity, connect the app to a Meridian 1.74.0+ service configured as shown above.
 Older Meridian versions do not include Antigravity.
 
 Headless use remains supported. The npm package does not install Electron;
