@@ -1,6 +1,6 @@
 # Architecture
 
-A transparent proxy that bridges OpenCode (Anthropic API format) to Claude Max (Agent SDK). This document defines the module structure, dependency rules, and design decisions.
+A local proxy that bridges Anthropic- and OpenAI-compatible clients to the Claude Agent SDK. This document defines the module structure, dependency rules, and design decisions.
 
 ## Request Flow
 
@@ -33,6 +33,8 @@ Agent (OpenCode) ◄── SSE Response ◄────────────�
 
 ## Module Map
 
+Selected modules are shown below; the [development guide](docs/development.md#architecture) provides source entry points for the other adapters and protocol routes.
+
 ```
 src/
 ├── proxy/
@@ -61,10 +63,14 @@ src/
 │   │   ├── lineage.ts         ← Pure functions: hashing, lineage verification
 │   │   ├── fingerprint.ts     ← Conversation fingerprinting, client CWD extraction
 │   │   ├── cache.ts           ← LRU session caches, lookup/store operations
-│   │   └── turnCoordinator.ts ← Process-wide strict serialization for reliable session IDs
+│   │   ├── turnCoordinator.ts ← Process-wide serialization for reliable session IDs
+│   │   ├── crossProcessTurnCoordinator.ts ← Durable coordination across proxy processes
+│   │   ├── processIncarnation.ts ← Process/host identity for lock ownership
+│   │   └── durableFileSystem.ts ← Durable file operations
 │   ├── sessionStore.ts        ← Shared file store (cross-proxy session resume)
 │   ├── profiles.ts            ← Multi-profile support: resolve, list, switch auth contexts (leaf)
 │   ├── profileCli.ts          ← CLI commands for profile management (leaf, I/O)
+│   ├── statusProbe.ts         ← Asks a busy port whether it is Meridian, and collects what / shows
 │   ├── agentDefs.ts           ← Subagent definition extraction from tool descriptions
 │   ├── agentMatch.ts          ← Fuzzy agent name matching
 │   ├── design.ts              ← Claude Design MCP proxy (token store/refresh, auth precedence, login flow)
@@ -84,9 +90,12 @@ src/
 │   ├── pricingStore.ts        ← User pricing overrides (persisted JSON)
 │   ├── profileBar.ts          ← Shared profile switcher bar (injected into HTML pages)
 │   ├── profilePage.ts         ← Profile management page HTML
+│   ├── cliDashboard.ts        ← The landing page rendered for a terminal (pure)
 │   └── types.ts               ← Telemetry types
-└── plugin/
-    └── claude-max-headers.ts  ← OpenCode plugin for session header injection
+
+plugin/                       ← Repository root, alongside src/
+├── meridian.ts               ← OpenCode V1 session header plugin
+└── meridian-v2.ts            ← OpenCode V2 plugin
 ```
 
 ## Dependency Rules
@@ -380,3 +389,41 @@ A trailing user tool-result slot may gain new content while every stored block r
 The OpenCode adapter separately recognizes complete `user-prompt-submit-hook` JSON envelopes for UserPromptSubmit additional context and common SDK hook-control fields, including `continue`. These per-turn blocks remain in the original SDK request but are excluded from durable lineage comparisons when a durable block remains. Unknown/malformed envelopes, surrounding prose, hook-only messages and assistant-authored lookalikes remain significant. Other adapters do not inherit this rule. A subset of arbitrary user blocks is never sufficient proof of a continuation.
 
 Structured resume deltas are delivered in one SDK user input, matching text-delta delivery. SDK streamed inputs are independently answered live turns; splitting a growing request's appended context from its final question can yield concatenated answers. The shared pure coalescer preserves result wrappers and media order, and also backs fresh replay framing.
+
+## Optional desktop application (preview)
+
+`apps/desktop` is an independent Electron package; headless installations do not
+install or import it. The sandboxed renderer calls a narrow preload interface.
+The main process validates the sender and performs local HTTP requests against
+existing Meridian endpoints. No server API or plugin contract changes are
+required. Native Liquid Glass loads only on supported macOS systems.
+
+The renderer keeps page navigation and unsaved forms local. `uiData.ts` filters
+request metadata without inspecting arbitrary nested content; direct tests cover
+combined searches and the continuation-only low-cache filter.
+
+The app can connect to an external service or own a separate installation.
+Managed versions are installed atomically under Electron's user-data directory,
+and run through the published CLI under bundled stock Node (avoiding Electron's
+native-module ABI). A Node preload watches the parent IPC channel; the CLI owns
+its normal signal drain. Startup checks the selected HTTP version and, on macOS,
+the listener PID. Failed activations restore the previous selected version.
+The tray keeps the app alive when its window closes; explicit quit drains only
+its owned child. Crash recovery is bounded to three attempts.
+
+Docker/Nix/other external supervisors retain ownership when the UI connects.
+Compatible macOS LaunchAgents can transfer ownership through a confirmed IPC
+action. An encrypted journal precedes supervisor changes and remains until the
+original supervisor is healthy after return. Recovery recognizes an already
+restored supervisor after an interrupted return. The curated plugin installer
+uses versioned npm directories and atomic shared-configuration replacement; it
+never installs into an externally managed service. See [the desktop README](apps/desktop/README.md) for
+implemented scope and remaining live verification.
+
+The menu-bar panel has its own sandboxed renderer and native glass window. IPC
+accepts only the exact main frame and local entry URL of either desktop window.
+Both render the same manager snapshot and use the same lifecycle/profile actions.
+`notifications.ts` separates desktop delivery policy from incident collection;
+category preferences, burst thresholds and persisted cooldown timestamps prevent
+per-request alerts. Recovery exhaustion is critical; individual child exits remain
+in the in-app history.

@@ -214,12 +214,14 @@ const { resetProcessSdkSemaphoreForTests } = await import("../proxy/concurrency"
 const { resetActiveProfile } = await import("../proxy/profiles")
 const { __setFetchOAuthUsageOverride } = await import("../proxy/oauthUsage")
 const { rateLimitStore } = await import("../proxy/rateLimitStore")
-const { loadSettings, saveSettings } = await import("../proxy/settings")
+const { loadSettings, saveSettings } = await import("../settings")
 const {
   evictSharedSession,
   lookupPriorityAssignmentResult,
   lookupSharedSessionResult,
 } = await import("../proxy/sessionStore")
+const { telemetryStore } = await import("../telemetry")
+type TelemetryRow = import("../telemetry").RequestMetric
 
 const PROFILES = [
   { id: "work", claudeConfigDir: "/tmp/meridian-test-prof-work" },
@@ -478,6 +480,27 @@ describe("priority routing", () => {
     const body = await res.json() as { content: Array<{ text: string }> }
     expect(body.content[0]?.text).toContain("prof-personal")
   })
+
+  it("reports a failover as ONE telemetry row naming every account it touched", async () => {
+    telemetryStore.clear()
+    failingDirs.add("prof-work")
+    const app = createTestApp()
+    expect((await post(app, {}, "telemetry route chain unique message")).status).toBe(200)
+
+    const hops = await (await app.fetch(new Request("http://localhost/telemetry/requests?hops=1"))).json() as TelemetryRow[]
+    expect(hops).toHaveLength(2)
+    expect(hops.every((h) => h.routeKind === "priority-hop")).toBe(true)
+    expect(new Set(hops.map((h) => h.routeGroupId)).size).toBe(1)
+
+    const rows = await (await app.fetch(new Request("http://localhost/telemetry/requests"))).json() as TelemetryRow[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.routeKind).toBe("priority")
+    expect(rows[0]!.profileId).toBe("personal")
+    expect(rows[0]!.routeChain).toEqual([
+      { profileId: "work", ok: false, status: 429, error: "rate_limit_error" },
+      { profileId: "personal", ok: true, status: 200, error: null },
+    ])
+  }, 20_000)
 
   it("fails over on the CLI's shorter 'You've hit your limit' wording", async () => {
     failureMessage = "Claude Code returned an error result: You've hit your limit · resets 6:40pm (UTC)"

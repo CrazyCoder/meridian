@@ -55,7 +55,7 @@ const BILLING_SIGNALS: readonly RegExp[] = [
   /(?:expired|inactive|lapsed|invalid|no active|cancell?ed) subscription/,
   /payment (?:method|required|failed|declined|details|info)/,
   /update your payment/,
-  /(?:out of|draw from|draws from) extra usage/,
+  /(?:out of|draw from|draws from)(?: your)? extra usage/,
   /insufficient (?:credit|funds|balance)/,
   // The real CLI shortens an API billing refusal to this exact sentence.
   // Anchor the whole line so incidental tool output does not exhaust a profile.
@@ -451,6 +451,27 @@ export function classifyError(errMsg: string, model?: string): ClassifiedError {
       status: 502,
       type: "api_error",
       message: `Claude Code process exited unexpectedly (code ${code}). Check proxy logs for details. If this persists, try 'claude login' to refresh authentication.`
+    }
+  }
+
+  // The proxy's own bookkeeping locks and limits. They carry "timed out", so
+  // the generic timeout branch below would answer them as a request timeout and
+  // send the operator to shrink a context that has nothing to do with it. The
+  // raw text names absolute host paths, so only the reason reaches the client.
+  if (
+    (lower.includes("timed out waiting for") && lower.includes(".lock"))
+    || lower.includes("ownership backlog is full")
+    || lower.includes("ownership capacity is full")
+  ) {
+    const reason = lower.includes("ownership backlog is full")
+      ? "the retirement backlog is full"
+      : lower.includes("ownership capacity is full")
+        ? "the ownership capacity is full"
+        : "a bookkeeping lock is busy"
+    return {
+      status: 503,
+      type: "overloaded_error",
+      message: `Meridian's session bookkeeping is saturated: ${reason}. This is proxy load, not the request; retry shortly.`
     }
   }
 

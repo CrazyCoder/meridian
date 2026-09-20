@@ -19,24 +19,29 @@ Environment variables, endpoints, authentication, SDK feature toggles, passthrou
 | `MERIDIAN_IDLE_TIMEOUT_SECONDS` | `CLAUDE_PROXY_IDLE_TIMEOUT_SECONDS` | `120` | HTTP keep-alive timeout |
 | `MERIDIAN_SHUTDOWN_GRACE_MS` | `CLAUDE_PROXY_SHUTDOWN_GRACE_MS` | `30000` | Milliseconds `close()` waits for in-flight `/v1/messages` requests to finish after it stops admitting new ones, before closing the port. See [Graceful shutdown](#graceful-shutdown). |
 | `MERIDIAN_SESSION_TURN_MAX_HOLD_MS` | `CLAUDE_PROXY_SESSION_TURN_MAX_HOLD_MS` | `600000` | Hard ceiling on how long one turn may hold its session's serialization lease. On timeout the lease is force-released with a warning and queued turns for that session proceed concurrently. See [Concurrent requests to the same session](#concurrent-requests-to-the-same-session). |
-| `MERIDIAN_TELEMETRY_SIZE` | `CLAUDE_PROXY_TELEMETRY_SIZE` | `1000` | Telemetry ring buffer size |
+| `MERIDIAN_TELEMETRY_SIZE` | `CLAUDE_PROXY_TELEMETRY_SIZE` | `1000` | Telemetry ring buffer size, in rows. Pool routing writes one row **per account attempted**, so a request that failed over twice spends three. `/telemetry` reports what is actually held. |
+| `MERIDIAN_DIAGNOSTIC_LOG_SIZE` | `CLAUDE_PROXY_DIAGNOSTIC_LOG_SIZE` | `500` | Diagnostic log ring buffer size (the Logs tab and `GET /telemetry/logs`) |
 | `MERIDIAN_NO_FILE_CHANGES` | `CLAUDE_PROXY_NO_FILE_CHANGES` | unset | Disable "Files changed" summary in responses |
 | `MERIDIAN_STRIP_THINKING` | `CLAUDE_PROXY_STRIP_THINKING` | unset | Set to `1` to strip raw `<thinking>` tags from user-authored prompt text. Off by default — `<thinking>` is a common chain-of-thought convention in hand-written prompts (#720); enable only if your harness is observed leaking it verbatim. |
 | `MERIDIAN_SONNET_MODEL` | `CLAUDE_PROXY_SONNET_MODEL` | `sonnet` | Sonnet context tier: `sonnet` (200k, default) or `sonnet[1m]` (1M, requires Extra Usage†). Not to be confused with `MERIDIAN_DEFAULT_SONNET_MODEL` below, which pins a concrete model id, not a context tier. |
 | `MERIDIAN_FABLE_MODEL` | `CLAUDE_PROXY_FABLE_MODEL` | `fable[1m]` | Fable context tier opt-out: set to `fable` to disable the 1M extended context window and stay on the 200k base variant (also governs Mythos, which rides the Fable tier). `fable[1m]` is a documented no-op. Not to be confused with `MERIDIAN_DEFAULT_FABLE_MODEL` below, which pins a concrete model id, not a context tier. |
 | `MERIDIAN_OPUS_MODEL` | `CLAUDE_PROXY_OPUS_MODEL` | `opus[1m]` | Opus context tier opt-out: set to `opus` to disable the 1M extended context window and stay on the 200k base variant. `opus[1m]` is a documented no-op. Not to be confused with `MERIDIAN_DEFAULT_OPUS_MODEL` below, which pins a concrete model id, not a context tier. |
 | `MERIDIAN_1M_CONTEXT_SUPPORT` | `CLAUDE_PROXY_1M_CONTEXT_SUPPORT` | unset | Set to `0`/`false`/`no` to disable 1M context entirely — every model resolves to its 200k base variant, so Meridian never requests the extended window (avoids Extra Usage on 1M). To opt out a single tier instead, use `MERIDIAN_FABLE_MODEL` or `MERIDIAN_OPUS_MODEL` above. |
-| `MERIDIAN_DEFAULT_AGENT` | — | `opencode` | Default adapter for unrecognized agents: `opencode`, `forgecode`, `pi`, `crush`, `droid`, `cherry`, `claudecode`, `passthrough`, `polytoken`. Re-read per request from the process environment — restart the proxy to pick up deployment-level env changes. |
+| `MERIDIAN_DEFAULT_AGENT` | — | `opencode` | Default adapter for unrecognized agents: `opencode`, `forgecode`, `pi`, `prime`, `crush`, `droid`, `cherry`, `claude-code`, `passthrough`, `polytoken`, `openai`, `jcode`, `codex`. Aliases: `prime-agent`, `cherrystudio`, `claudecode`. Re-read per request from the process environment — restart the proxy to pick up deployment-level env changes. |
 | `MERIDIAN_ROUTING` | — | `active` | Session-to-profile routing: `active` (all traffic to the active profile), `sticky` ([sticky session routing](profiles.md#sticky-session-routing)), or `priority` ([priority failover](profiles.md#priority-failover-routing)) |
 | `MERIDIAN_PROFILE_ORDER` | — | *(config order)* | Priority-mode pool order, comma-separated, highest priority first (e.g. `work,personal`). Also editable at `/settings`. |
 | `MERIDIAN_PRIORITY_FAILBACK` | — | `new-conversation` | Priority failback policy: `new-conversation` (current behavior) or `next-user-turn`. Environment value overrides `priorityFailback` in the settings JSON. Applies only to priority routing and OpenCode turn metadata; other adapters retain `new-conversation` behavior. |
+| `MERIDIAN_FOLLOW_ACTIVE` | `CLAUDE_PROXY_FOLLOW_ACTIVE` | unset | Base URL of another Meridian instance to take the active profile from, e.g. `http://127.0.0.1:3456`. For a development instance running beside a primary one — see [Following another instance's active profile](#following-another-instances-active-profile). |
 | `MERIDIAN_PASSTHROUGH_EARLY_STOP` | — | `1` | Set to `0` to disable [digest-turn elimination](#how-tool-calling-works-in-passthrough) and restore the old end-of-turn behavior |
 | `MERIDIAN_PASSTHROUGH_MAX_TURNS` | `CLAUDE_PROXY_PASSTHROUGH_MAX_TURNS` | *(unset — capped at 1)* | Pin the passthrough SDK turn budget. **Setting this opts out of [digest-turn elimination](#how-tool-calling-works-in-passthrough)** — an explicit value always wins over the cap, so a turn budget set to work around an older issue keeps paying for the discarded digest turn. Unset it unless you still need it. |
 | `MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY` | — | *(unset — off)* | Set to `1` to recover a capped passthrough turn whose `tool_use` blocks fully streamed but were never captured, because an abort landed between stream completion and tool dispatch. **Experimental and streaming-only**: non-streaming responses are unaffected, and the positive path has integration coverage but no live abort-window gate yet. Recovery is refused unless the turn had `maxTurns=1`, an open envelope, no cancellation of any kind, and every streamed block completed naturally with a client-declared tool name. |
+| `MERIDIAN_SESSION_GC_LOCK_WAIT_MS` | `CLAUDE_PROXY_SESSION_GC_LOCK_WAIT_MS` | `2000` | How long session bookkeeping waits for its lifecycle lock before giving up. A wait that expires now answers **503 `overloaded_error`** naming the reason, not a 504 that blames the request. Raise it on a busy proxy that would rather wait than fail; minimum 100 ms. |
 | `MERIDIAN_SILENT_TURN_RECOVERY` | `CLAUDE_PROXY_SILENT_TURN_RECOVERY` | `1` | Set to `0` to stop spending a recovery turn on a [silent turn](#silent-turns). Detection and telemetry stay on either way |
 | `MERIDIAN_UPSTREAM_IDLE_MS` | `CLAUDE_PROXY_UPSTREAM_IDLE_MS` | `90000` | Milliseconds the upstream stream may go quiet before the turn is treated as stalled. Raise it for long-thinking turns that were being killed mid-flight; `0` disables the guard entirely. Applies to the recovery turn too. |
 | `MERIDIAN_UPSTREAM_IDLE_MAX_CONSECUTIVE` | `CLAUDE_PROXY_UPSTREAM_IDLE_MAX_CONSECUTIVE` | `3` | Consecutive idle stalls for the same request and session before returning a terminal error. Identical retries are then rejected before another SDK query for one idle window (at least 60 seconds). A changed request or completed turn resets the streak; rejected retries do not extend the pause. `0` disables this ceiling. Tracking is bounded and local to the proxy instance; requests without a correlatable session are not pooled. |
-| `MERIDIAN_SUPPRESS_SCRATCHPAD` | — | `1` | Set to `0` to let the SDK advertise its proxy-host scratchpad directory in passthrough mode |
+| `MERIDIAN_SUPPRESS_SCRATCHPAD` | — | `1` | Set to `0` to disable prompt-level scratchpad suppression in passthrough mode (#627, #1049) |
+| `MERIDIAN_SUPPRESS_SCRATCHPAD_ENV` | — | `0` | Set to `1` to also pass `CLAUDE_CODE_SESSION_KIND=bg` to the SDK subprocess. Disabled by default to prevent CLI 2.1.274+ from registering persistent phantom background jobs under `~/.claude/jobs/` (#1049) |
+| `MERIDIAN_CONFIG_DIR` | — | `~/.config/meridian` | Meridian's own config directory. Moving it moves everything inside it — see [below](#relocating-the-config-directory). |
 | `MERIDIAN_PRICING_CONFIG` | `CLAUDE_PROXY_PRICING_CONFIG` | `~/.config/meridian/model-pricing.json` | Path to the model pricing overrides file used by cost estimation |
 | `MERIDIAN_PROFILES` | — | unset | JSON array of profile configs (overrides disk discovery). See [Multi-Profile Support](profiles.md). |
 | `MERIDIAN_DEFER_TOOL_THRESHOLD` | — | `15` | Number of tools before non-core tools are deferred via ToolSearch. Set to `0` to disable. |
@@ -55,10 +60,172 @@ Environment variables, endpoints, authentication, SDK feature toggles, passthrou
 | `MERIDIAN_BUILD_SHA`, `MERIDIAN_BUILD_BRANCH`, `MERIDIAN_BUILD_DIRTY` | — | unset | Optional commit stamps surfaced in `/health` `build`. Absent unless something sets them at launch. |
 | `MERIDIAN_DEBUG` | `CLAUDE_PROXY_DEBUG` | unset | Set to `1` for verbose request/session logging |
 | `MERIDIAN_SILENT` | `CLAUDE_PROXY_SILENT` | unset | Set to `1` to suppress startup output (used by embedding plugins) |
+| `MERIDIAN_ENFORCE_MAX_TOKENS` | `CLAUDE_PROXY_ENFORCE_MAX_TOKENS` | unset | Set to `1` to apply the client output budget; see [output limits](#known-limitations). |
+| `MERIDIAN_HOST_ID` | — | derived | Stable, unique container identity for session locks; see [deployment](deployment.md#persistence-and-host-identity). |
+| `MERIDIAN_QUIET` | `CLAUDE_PROXY_QUIET` | unset | Suppress informational telemetry startup output; warnings and errors still print. |
+| `MERIDIAN_AUTH_RENEWAL_WARN_DAYS` | — | `3` | Renewal warning horizon reported by health when credential renewal information is available. |
 | `MERIDIAN_PLUGIN_DIR` | — | `~/.config/meridian/plugins` | Plugin auto-discovery directory |
 | `MERIDIAN_PLUGIN_CONFIG` | — | `~/.config/meridian/plugins.json` | Plugin manifest path |
+| `MERIDIAN_CREDENTIALS_READONLY` | `CLAUDE_PROXY_CREDENTIALS_READONLY` | unset | Set to `1` to forbid this instance from refreshing or writing OAuth credentials. For a second instance sharing another's credential files — see [Read-only credentials](#read-only-credentials). |
 
-†Sonnet 1M requires Extra Usage on all plans including Max ([docs](https://code.claude.com/docs/en/model-config#extended-context)). Opus 1M is included with Max/Team/Enterprise at no extra cost. Fable 1M is also included at no Extra Usage cost, verified live on both Max and Team.
+†These are Meridian context defaults, not a billing guarantee. Availability and extended-context charges depend on the model and account; consult [Anthropic model configuration](https://code.claude.com/docs/en/model-config#extended-context). Historical Max/Team tests do not establish entitlement for another account.
+
+### Read-only credentials
+
+`MERIDIAN_CREDENTIALS_READONLY=1` makes an instance incapable of modifying
+credentials. It exists so a second instance — a development build, a staging
+copy — can run beside a production one **against the same credential files**
+without being able to corrupt them.
+
+The hazard is two instances holding the same OAuth refresh token. Meridian
+refreshes proactively on boot and every 45s. If Anthropic rotates a refresh
+token on use, whichever instance refreshes first can invalidate the other's
+copy, and the only recovery is an interactive `claude login` per account.
+
+Sharing the files is usually not a choice. `profiles.json` is read from
+`~/.config/meridian/` unconditionally — `MERIDIAN_CONFIG_DIR` relocates
+`settings.json` only — so any second instance sees the same profile list
+pointing at the same credential directories. This flag is what makes that
+safe.
+
+With it set:
+
+| Behaviour | Effect |
+|---|---|
+| Proactive refresh on boot and every 45s | Not scheduled |
+| Auth keepalive every 45s | Not scheduled |
+| Auth-status cache (60s TTL) | Also invalidated when the credential file's mtime changes, so a rotation by the other instance is picked up on the next tick |
+| Any credential write | Refused at the credential store, and logged to stderr |
+| Any OAuth refresh request | Not sent — the grant would rotate the token server-side even if the result were never written |
+
+The instance announces the mode once at startup. Reads are untouched: it
+re-reads credentials from disk, which is how a refresh performed by the other
+instance is picked up.
+
+The refusal sits at the credential store rather than only on the two timers,
+so a write path nobody anticipated fails loudly instead of silently corrupting
+a token file the other instance depends on. If you see
+`REFUSED credential write` in the log, a call path is missing a guard — the
+message names the operation and the store, never a credential value.
+
+**Limit — the SDK subprocess is outside this guarantee.** Meridian shells out
+to the Claude Agent SDK with `CLAUDE_CONFIG_DIR` pointing at the profile's
+directory. Anything that subprocess writes happens outside this process and
+cannot be intercepted by a flag in it.
+
+Measured on 2026-08-07 against a live proxy (Linux, Claude Code 2.1.198,
+`claude-haiku-4-5`), hashing one profile's `.credentials.json` before and after
+a single request routed to it:
+
+- A control window spanning two 45s refresh ticks left the file unchanged,
+  establishing a quiescent baseline.
+- After the request (HTTP 200, a genuine SDK round trip), the file was
+  **byte-identical** — same SHA-256, same mtime, same size.
+- The subprocess is demonstrably willing to write to that directory: the same
+  request updated `.claude.json`, `policy-limits.json`, `remote-settings.json`,
+  `backups/`, `jobs/` and `sessions/`. It simply did not touch
+  `.credentials.json`.
+
+So on the path that matters in practice — the access token still valid, the
+proxy having refreshed it earlier — the SDK does not write credentials back.
+
+**Not measured:** whether the SDK writes the file when it has to refresh an
+*expired* access token itself. Reproducing that requires either waiting out an
+~8h token lifetime or editing a live credential file, and in this deployment
+the proxy's own refresh (5-minute buffer) reaches it first. If the SDK does
+write on that path, this flag cannot prevent it. Treat the guarantee as
+covering everything Meridian does, not everything the subprocess might do.
+
+### Relocating the config directory
+
+`MERIDIAN_CONFIG_DIR` moves the directory Meridian keeps its own state in, so a
+second instance pointed at an empty directory starts genuinely empty:
+
+| File | Holds |
+|---|---|
+| `settings.json` | Active profile, routing mode, priority order |
+| `profiles.json` | Configured profiles ([Multi-Profile Support](profiles.md)) |
+| `profiles/<id>/` | Per-profile `CLAUDE_CONFIG_DIR` (credentials, SDK state) |
+| `adapter-instances.json` | [Adapter instances](agents.md#adapter-instances) |
+| `sdk-features.json` | Per-adapter [SDK feature toggles](#sdk-feature-toggles-experimental) |
+| `model-pricing.json` | Cost-estimation overrides |
+| `telemetry.db` | Persisted telemetry, when enabled |
+
+`MERIDIAN_PRICING_CONFIG` and `MERIDIAN_TELEMETRY_DB` still win for their own
+file when set. `XDG_CONFIG_HOME` is deliberately ignored: honouring it would
+relocate the configuration of everyone who has it set, without them asking.
+
+Two paths do **not** follow it yet — plugins (`plugins/`, `plugins.json`) and
+`design-token.json` still default under `~/.config/meridian` whatever this is set
+to. Point a second instance's plugins elsewhere with `MERIDIAN_PLUGIN_DIR` /
+`MERIDIAN_PLUGIN_CONFIG` / `MERIDIAN_DESIGN_TOKEN_PATH` in the meantime.
+
+Running a second instance beside your usual one:
+
+```bash
+mkdir -p ~/.config/meridian-dev
+MERIDIAN_CONFIG_DIR=~/.config/meridian-dev MERIDIAN_PORT=3457 meridian
+```
+
+That instance has no profiles until you add them (`MERIDIAN_CONFIG_DIR=... meridian
+profile add ...`), and switching its active profile cannot disturb the other one.
+Upgrading from a version where the variable moved `settings.json` alone? Your
+profiles stay where they are — copy `profiles.json` and `profiles/` across, or
+unset the variable. Meridian says so once at startup if it finds the new location
+empty and the default one populated.
+
+### Following another instance's active profile
+
+`MERIDIAN_FOLLOW_ACTIVE=http://127.0.0.1:3456` makes an instance take its
+active profile from the instance at that URL instead of from its own
+`settings.json`.
+
+This exists for running a development build beside a primary instance and
+comparing them. `MERIDIAN_CONFIG_DIR` relocates `settings.json` and nothing
+else, so a second instance keeps its **own** `activeProfile` — whatever moves
+the primary's active profile (a click in the UI, `meridian profile use`, an
+external scheduler) leaves the second instance serving from a different
+account, and the comparison is no longer like-for-like.
+
+The value is a Meridian base URL. A bare `host:port` is accepted and assumed
+to be `http`. The followed instance is polled every 10s on `GET /profiles/list`
+and the value is cached, so the request path never waits on the network.
+
+What it does and does not change:
+
+- **Replaces exactly one input** to profile resolution — the active profile.
+  An explicit `x-meridian-profile` header still wins, per request.
+- **Refuses to follow a profile this instance does not have.** The local active
+  profile is used instead and the reason is reported; routing to a name that is
+  not configured here would silently resolve to an unrelated account.
+- **Never fails closed.** If the followed instance is down, slow, or answers
+  something unusable, the last known value keeps being served. If a good value
+  has never been read, the local active profile is used. A poll failure is
+  logged once per outage, not once per poll.
+- **A value that has not been confirmed for two minutes is still served**, and
+  is flagged `stale` on `/profiles/list` and in the header chip. Falling back
+  to the local value on a timeout would split the comparison exactly when you
+  are least likely to notice.
+- **`POST /profiles/active` is refused with `409`**, naming the followed URL.
+  A local write would be shadowed on the next resolution and erased by the next
+  poll — a picker that appears to work and silently doesn't. The web UI's
+  account cards stop being clickable and `meridian profile use` prints the
+  refusal.
+- **No effect under `MERIDIAN_ROUTING=priority`** for unpinned requests, which
+  are dispatched across the pool without consulting the active profile. Startup
+  says so if both are set.
+- **Following your own address is refused** at startup: the followed value
+  could never change and local switching would be refused, freezing the active
+  profile permanently.
+
+The mode is announced at startup and surfaced on `/profiles/list` as a `follow`
+object (`url`, `activeProfile`, `followedValue`, `reason`, `stale`,
+`lastSyncedAt`, `lastError`), which the shared header chip renders on every
+page.
+
+Limitation: the poll sends no credentials, so a followed instance behind
+`MERIDIAN_API_KEY` will always fail the poll and the follower will fall back to
+its local active profile.
 
 ### Subprocess traffic
 
@@ -101,6 +268,7 @@ adapter lets the subprocess run the built-in WebFetch at all.
 | `POST /v1/chat/completions` | OpenAI-compatible chat completions |
 | `POST /v1/responses` | OpenAI Responses API (Codex CLI ≥ 0.96) |
 | `GET /v1/models` | OpenAI-compatible model list |
+| `POST /v1/sessions/:key/cancel` | Cancel live requests in a session subtree |
 | `GET/POST /v1/design/*` | Claude Design MCP proxy (see [Claude Design MCP](agents.md#claude-design-mcp)) |
 | `GET/POST /design-login` | OAuth flow for the design scopes |
 | `GET /health` | Auth status, mode, plugin status |
@@ -118,7 +286,7 @@ adapter lets the subprocess run the built-in WebFetch at all.
 | `GET /settings` | SDK feature toggles + model pricing UI |
 | `GET /plugins` | Plugin management page (`/plugins/list`, `POST /plugins/reload` for JSON/actions) |
 
-Health response example:
+Illustrative health response excerpt (versions and status vary by installation):
 
 ```json
 {
@@ -223,7 +391,7 @@ While draining:
   its own public entrypoint, so a request the proxy already accepted is never
   refused part-way through the internal translation hop:
 
-  ```json
+  ```http
   HTTP/1.1 503
   x-meridian-draining: 1
   Content-Type: application/json
@@ -273,7 +441,9 @@ rewrites the opening message.
 | `crush` | `x-session-id`, then `x-session-affinity` |
 | `jcode` | `x-jcode-session` |
 | `passthrough` (LiteLLM) | `x-litellm-session-id` |
-| `cherry`, `droid`, `forgecode`, `openai` | none — fingerprint only |
+| `cherry`, `openai` | Inherit OpenCode header handling; generic OpenAI history packing still differs from keyed native clients |
+| `polytoken` | Valid `x-polytoken-session` |
+| `droid`, `forgecode` | none — fingerprint fallback |
 
 ### Claude Code behind a gateway
 
@@ -404,7 +574,7 @@ Every request line carries `lineage=`, and every divergence also carries
 | `independent-request:subagent` | Declared a subagent flow |
 | `independent-request:no-cache-identity` | No header and no derivable fingerprint |
 
-A resumed turn prints no `diverged=` field at all. The three
+A resumed turn prints no `diverged=` field at all. The
 `independent-request:*` causes skip session lookup before it happens; the rest
 are the verdict of a lookup that ran.
 
@@ -426,7 +596,7 @@ new turn *in the same profile's session scope* — and the waiting request's
 message history is no longer a valid continuation or compaction of that new
 state — Meridian returns:
 
-```json
+```http
 HTTP/1.1 400
 Content-Type: application/json
 
@@ -457,8 +627,9 @@ signal, not as account exhaustion:
 
 This only fires for requests that share a reliable session identity —
 unrelated and headerless sessions are never strictly serialized against each
-other and never see this concurrency error. Three further exemptions:
+other and never see this concurrency error. Exceptions and lease behavior:
 
+- **Concurrent-client adapters.** Pi (including Oh My Pi) declares concurrent callers under one key. Conflicting complete histories are replayed rather than refused merely for advancing while queued. Passthrough `modified-history` conflicts also take fresh replay. A replay can lose cache reuse.
 - **Scoped per profile.** One session id backs an independent conversation
   per profile, each with its own resume cache. Turns under different profiles
   still serialize against each other (they share one id), but a commit under
@@ -501,13 +672,14 @@ ANTHROPIC_API_KEY=your-secret-key ANTHROPIC_BASE_URL=http://meridian-host:3456 o
 
 | Command | Description |
 |---------|-------------|
-| `meridian` | Start the proxy server |
+| `meridian` | Start the proxy server. When the port is already serving Meridian, prints `meridian status` and exits 0 instead of failing |
+| `meridian status` | Print what the running instance is doing — the `/` page rendered for a terminal. Reads `MERIDIAN_HOST`/`MERIDIAN_PORT`; exits 1 when nothing of ours is there |
 | `meridian setup` | Configure the OpenCode plugin in `~/.config/opencode/opencode.json` |
 | `meridian profile add <name> [--headless]` | Add a profile and authenticate via Claude OAuth; `--headless` prints a URL, prompts for the returned code, and stores the exchanged credentials |
 | `meridian profile add <name> --oauth-token [TOKEN]` | Add a headless profile from a `claude setup-token` value (prompts when `TOKEN` is omitted) |
 | `meridian profile list` (alias `profile ls`) | List all profiles and their auth status |
 | `meridian profile switch <name>` | Switch the active profile (requires running proxy) |
-| `meridian profile login <name> [--headless]` | Re-authenticate an expired profile (browser-login profiles only); `--headless` uses the URL/code flow |
+| `meridian profile login <name> [--headless]` | Re-authenticate an expired profile, adding it first if that name has no profile yet (browser-login profiles only); `--headless` uses the URL/code flow |
 | `meridian profile remove <name>` | Remove a profile and its credentials |
 | `meridian refresh-token` | Manually refresh the Claude OAuth token (exits 0/1) |
 
@@ -607,14 +779,16 @@ The system prompt controls are independent — any combination works:
 The core question is **who executes the tools** — the SDK or the client?
 
 - **Passthrough mode** (default for OpenCode and Pi) — Claude generates tool calls, but Meridian captures them and sends them back to the client for execution. The client runs the tool using its own implementation, with its own sandboxing, file tracking, and UI, then sends the result in the next request. This is how OpenCode, oh-my-opencagent (OMO), and most coding agents work — they have their own read/write/bash tools and need to stay in control of what runs on the user's machine.
-- **Internal mode** — Claude Code handles everything. The SDK executes tools directly on the host, runs its full agent loop, and returns the final result. This is for clients that are purely chat interfaces (Open WebUI, simple API consumers) with no tool execution of their own.
+- **Internal mode** — Claude Code handles everything. The SDK executes tools directly on the host, runs its full agent loop, and returns the final result. The `cherry` adapter uses this for built-in web tools. Generic OpenAI endpoints default to passthrough; choosing a chat UI does not itself enable internal tools.
 
 Most users don't need to configure anything — the adapter sets the right mode automatically. To override:
 
 ```bash
 MERIDIAN_PASSTHROUGH=1 meridian   # force passthrough
-MERIDIAN_PASSTHROUGH=0 meridian   # force internal
+MERIDIAN_PASSTHROUGH=0 meridian   # request internal mode where the adapter permits it
 ```
+
+Codex and Polytoken require client-owned tools and cannot be switched to internal mode. Adapter instances can also override the global preference.
 
 ### How tool calling works in passthrough
 
@@ -672,7 +846,7 @@ Coverage: `E38` in [E2E.md](../E2E.md), with `MERIDIAN_DEBUG_FORCE_SILENT_TURN=1
 
 ### Known limitations
 
-- **Single tool round-trip per request** — in passthrough mode, the SDK is configured with `maxTurns=3` (or 4 for deferred tools). Multi-step agentic loops where Claude needs several consecutive tool calls require the client to re-send after each round.
+- **Client-owned tool loops** — ordinary passthrough turns default to `maxTurns=1` to stop at the tool boundary. Deferred tools, advisors, structured output, and explicit turn budgets can lift that cap; see [digest-turn elimination](#how-tool-calling-works-in-passthrough). The client sends another request after executing the returned tools.
 - **Blocked tools** — 10 built-in SDK tools (Read, Write, Bash, etc.) are blocked to prevent conflicts with the client's own tools. 19 additional Claude Code-only tools (CronCreate, EnterWorktree, Agent, etc.) are blocked because they require capabilities that external clients don't support.
 - **Subagent extraction** — Meridian parses the client's Task tool description to extract subagent names and build SDK AgentDefinitions. If the client's agent framework uses a non-standard format, subagent routing may not work automatically.
 - **Scratchpad suppression (passthrough)** — the Claude CLI advertises a proxy-host scratchpad directory that clients can't use; OpenCode 1.18+ permission-blocks writes to it. Meridian suppresses it in passthrough mode (`CLAUDE_CODE_SESSION_KIND=bg` on the subprocess). Kill switch: `MERIDIAN_SUPPRESS_SCRATCHPAD=0`.
@@ -700,3 +874,23 @@ Two very different things can carry the word "abort" — one is normal, one is a
 - **A bug (report it):** an **empty tool call in your client UI** — `tool {}` with "Tool execution aborted" — is never expected behavior, on any version. It means a call was cut off in transit.
 
 **The definitive check:** the `/telemetry` dashboard's **Envelope** card. Meridian audits its own output on every response — green "wire contract clean" means every tool call was delivered intact regardless of what internal logs say. If it shows red, the logs contain `ENVELOPE VIOLATION` lines with request IDs — include those in a bug report and it can usually be root-caused directly.
+
+## Headless quick start on Windows
+
+With Node.js 22 or newer and Claude Code authentication available, run:
+
+```powershell
+npm install -g @rynfar/meridian
+claude login
+meridian
+```
+
+In another PowerShell window, set the client environment:
+
+```powershell
+$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:3456"
+$env:ANTHROPIC_API_KEY = "x" # Use your Meridian API key if protection is enabled.
+```
+
+Then follow the [setup instructions for your client](agents.md). The desktop app
+is currently a Mac preview; it is not required for Windows headless use.

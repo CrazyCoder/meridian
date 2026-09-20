@@ -145,7 +145,9 @@ export const profileBarCss = `
     background: rgba(188,140,255,0.12);
     border: 1px solid rgba(188,140,255,0.35);
     cursor: default;
-  }
+    .meridian-header .mh-profile.following { border-color: var(--accent2, #bc8cff); }
+  .meridian-header .mh-profile .mh-profile-follow {
+    color: var(--accent2, #bc8cff); font-size: 10px;  }
   .meridian-header .mh-status {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 11px; color: var(--muted, #8b949e); white-space: nowrap;
@@ -243,7 +245,20 @@ export const profileBarJs = `
     fetch('/profiles/list').then(function(r) { return r.json(); }).then(function(data) {
       var current = (data.profiles || []).find(function(p) { return p.isActive; });
       if (!current) { profileChip.classList.remove('visible'); return; }
-      profileChip.innerHTML = esc(current.id) + ' <span class="mh-profile-type">' + esc(current.type || '') + '</span>';
+      // Follow mode: say so on every page. An instance quietly taking its
+      // active profile from another one, with a picker that won't stick, is
+      // otherwise an hour of confusion.
+      var follow = data.follow;
+      var followLabel = follow ? (follow.activeProfile ? 'following' : 'follow: local') : '';
+      if (follow && follow.stale) followLabel += ' (stale)';
+      profileChip.innerHTML = esc(current.id) + ' <span class="mh-profile-type">' + esc(current.type || '') + '</span>'
+        + (follow ? ' <span class="mh-profile-follow">' + esc(followLabel) + '</span>' : '');
+      profileChip.classList.toggle('following', !!follow);
+      profileChip.title = follow
+        ? 'Active profile follows ' + follow.url + ' (MERIDIAN_FOLLOW_ACTIVE)'
+          + (follow.activeProfile ? '' : ' — no usable value from it, using the local profile')
+          + '. Switching here is refused; switch on the followed instance.'
+        : 'Active profile — switch from the home page';
       profileChip.classList.add('visible');
     }).catch(function() {});
   }
@@ -255,3 +270,29 @@ export const profileBarJs = `
   window.meridianHeaderRefresh = loadHeader;
 })();
 `
+
+/** Native desktop chrome: system appearance with the canonical Meridian hues.
+ * Web pages continue using themeCss and the shared profile header above. */
+export const desktopThemeCss = `
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f5f7; --surface: #ffffff; --surface2: #edeff2;
+    --border: #dde0e5; --text: #23272e; --muted: #69717e;
+    --accent: #176bce; --accent2: #8250b5;
+    --green: #237c40; --yellow: #976400; --red: #ca3b36;
+    --sidebar: #e9edf1; --control: #ffffff; --control-border: #d0d5dc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --surface: #161b22; --surface2: #1c2128;
+      --border: #30363d; --text: #e6edf3; --muted: #8b949e;
+      --accent: #58a6ff; --accent2: #bc8cff;
+      --green: #3fb950; --yellow: #d29922; --red: #f85149;
+      --sidebar: #161b22; --control: #242b35; --control-border: #39424e;
+    }
+  }
+  body { background: var(--bg); }
+  html.native-glass body { background: transparent; }
+`
+
+export const desktopWindowColors = { transparent: '#00000000', dark: '#0d1117', light: '#f4f5f7' } as const

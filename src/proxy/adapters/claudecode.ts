@@ -149,6 +149,19 @@ export function isClaudeCodeClient(c: Context): boolean {
 export const claudeCodeAdapter: AgentAdapter = {
   name: "claude-code",
 
+  /**
+   * NOTE: agent-specific (claude-code) — Headless Claude Code (`claude -p "..."`)
+   * sends a session-start side request (`tools=0`, single user message) and the
+   * primary turn (`tools=24`, message count 2) concurrently under the same
+   * session id (`metadata.user_id: {"session_id": "..."}`) (#1043). The client
+   * has no per-flow signal or plugin header. Whichever request commits first
+   * advances the mapping, so the other arrives holding a branch that no longer
+   * matches. Setting `runsConcurrentTurnsPerSessionKey: true` allows the loser
+   * of that race to be reclassified as a fresh replay rather than refused with
+   * HTTP 400 `session_turn_conflict`.
+   */
+  runsConcurrentTurnsPerSessionKey: true,
+
   /** NOTE: Claude Code-specific. Its environment belongs to the remote client. */
   clientEnvironmentMayDifferFromProxy: true,
 

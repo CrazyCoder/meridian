@@ -1,5 +1,102 @@
 # Upstream review handoff
 
+## Delivered: Review and Autonomous Processing Batch (2026-09-19)
+
+### PR #1060 (Issue #1027): OpenCode V2 beta-19271 Qualification
+- Base: `d8516bea`
+- Delivery PR: [#1060](https://github.com/rynfar/meridian/pull/1060), merged as `303ce0d0`.
+- Problem: `@opencode-ai/cli@0.0.0-beta-19271` was published upstream, and Meridian's `SUPPORTED_OPENCODE_V2_VERSIONS` only accepted `beta-18314` and `beta-18866`.
+- Fix: Qualified `0.0.0-beta-19271` in `SUPPORTED_OPENCODE_V2_VERSIONS`, updated test assertions in `scripts/e2e-opencode-v2-package.mjs` and `scripts/e2e-idle-stall-clients.mjs`, and documented OpenCode V2 host qualification policy in `docs/agents.md`.
+- Validation:
+  - Real offline package E42 gate: PASSED.
+  - Real extended live E42 gate (`bun scripts/e2e-opencode-v2-package.mjs --live --extended --separate-proxy-cwd`): PASSED.
+  - Full test suite (`npm test`) 100% pass across 76 suites.
+  - CI: all 6 workflows green. Issue #1027 closed.
+
+### PR #1061 (Contributor PR #771): Profile Login Unknown ID Auto-Creation
+- Base: `303ce0d0`
+- Contributor PR: [#771](https://github.com/rynfar/meridian/pull/771) by @Nowaker (`19cf472a8380e5c814fd05d6d14b091c172b1994`).
+- Delivery PR: [#1061](https://github.com/rynfar/meridian/pull/1061), merged as `96a75ac5`.
+- Problem: `meridian profile login <id>` exited with code 1 if `<id>` was unknown, forcing a separate `meridian profile add` invocation for the same user intent.
+- Fix: Cherry-picked contributor commit preserving author and date. Extracted pure `isValidProfileId` and `planProfileLogin` decision helper in `src/proxy/profileCli.ts`. When an unknown ID is provided, warns with standard yellow warning notice and invokes `profileAdd(id, options)` to create and authenticate the profile. Path traversal attempts are rejected before touching disk.
+- Validation:
+  - Unit tests: `bun test src/__tests__/profile-login-plan.test.ts` (8/8 pass).
+  - Production build: `bun run build` and `npm run typecheck` clean.
+  - Full test suite: `npm test` 100% pass.
+  - CI: all 6 workflows green. PR #771 closed.
+
+### PR #1062 (PR #765): Plugin Flake Inputs Update
+- Base: `96a75ac5`
+- Contributor PR: [#765](https://github.com/rynfar/meridian/pull/765) (`ce320144ed2034c92669094bc108dcc58fb581e7`).
+- Delivery PR: [#1062](https://github.com/rynfar/meridian/pull/1062), merged as `865b8331`.
+- Problem: Nix `flake.lock` had outdated revisions for `meridian-plugin-hermes-scrub`, `meridian-plugin-opencode-scrub`, and `meridian-plugin-pi-scrub`.
+- Fix: Cherry-picked updated flake revisions.
+- Validation:
+  - Nix CI workflows (`build (macos-latest)`, `build (ubuntu-latest)`, `verify`) and all main repository CI workflows passed. PR #765 closed.
+
+## Delivered: Claude Code Headless Concurrent Turns #1043 (2026-09-18)
+
+- Base: `75d0c507` (incorporation of contributor PR #1048 as #1055).
+- Worktree: `/Users/rynfar/repos/meridian/.claude/worktrees/claude-code-headless`, branch `fix/claude-code-headless-concurrency`.
+- Problem: Claude Code CLI in headless mode (`claude -p "..."`) fires a session-start side request (`tools=0`, single user message) and the primary prompt (`tools=24`, message count 2) concurrently under the same session ID in `metadata.user_id: {"session_id": "..."}`. Meridian serialized both turns via the turn lease, but when the second turn acquired the lease after the first committed, `lostRaceWhileWaiting` fired and rejected the turn with HTTP 400 "This session advanced while the request was waiting" because Claude Code has no per-flow plugin headers.
+- Fix: Set `runsConcurrentTurnsPerSessionKey: true` on `claudeCodeAdapter` in `src/proxy/adapters/claudecode.ts`. This activates `declaresConcurrentFlow`, allowing the loser of the race to be safely admitted as a fresh replay while preserving serialized turn execution (`maxActiveQueries: 1`).
+- Verification:
+  - Unit test in `src/__tests__/claude-code-adapter.test.ts`.
+  - Concurrency test in `src/__tests__/proxy-concurrency-coordination.test.ts`.
+  - Real Claude Code 2.1.277 live CLI execution in headless mode (`claude -p "Reply with OK"`) confirming 0 turn conflicts and clean exit code 0.
+  - Full test suite (1243 tests) and typecheck pass cleanly.
+
+## Current bounded work: Windows GC #896 (2026-09-14)
+
+This entry supersedes the historical "nothing is in progress" statements below
+for **#896 only**. The owner requested native Windows review, then authorized
+fixing the Bun/Volta failure found in that review. Disposition: accept with the
+correction implemented; hold integration pending the Pi live gate and final CI.
+No release, community comment, original-PR closure, or unrelated backlog work
+is authorized by this task.
+
+- Base: `1d7544b6`; source PR head: `7fe1acaf9a9ab34f7d76ee4d9360a9f69ce24eb6`.
+- Worktree: `/tmp/meridian-windows-gc-fix`, branch `codex/windows-session-gc`.
+- Author-preserving cherry-picks (Aaron Masover, `amasover@gmail.com`):
+  `4b712fd` → `0b7b985`, `defdad3` → `8d58432`, `7fe1aca` → `acd19f4`.
+  The CI conflict preserved both the existing CWD checks and the added GC job;
+  the resulting contributor tree exactly matched the reviewed PR head.
+- Maintainer correction resolves the actual Node executable under Bun with a
+  bounded single-line probe, caches successful resolution, and launches that
+  binary directly. This avoids Volta's multiline eval corruption and fences
+  the actual executor PID. The new regression asserts both multiline execution
+  and exact child/executor PID equality.
+- Native Windows 11 26200.8037, Bun 1.3.11, Node 24.18.0, SDK 0.2.141,
+  Claude Code 2.1.259. Original main reproduces backlog-full; uncorrected PR
+  with normal Volta PATH fails 4/5 GC tests; corrected normal PATH passes 6/6.
+  Windows typecheck and build pass. Linux `npm test` (with pretest typecheck)
+  passes 3950 tests, 0 failures, 1 skip; build passes.
+- Real SDK creation/pin/deletion gate passes on Windows with the corrected
+  code, including `result.is_error === false`. The temporary before/after
+  probe also observed main defer a real transcript and corrected GC delete it.
+  Directory-less exact-ID SDK inspection is intentional: project-scoped reads
+  failed to find the Windows transcript while supported exact-ID lookup found
+  it. No private transcript files were inspected.
+- The initial live request failures were due to Windows' inherited
+  `ANTHROPIC_BASE_URL`; it was removed only in disposable test processes.
+  Actual Pi 0.73.1 through the isolated proxy reaches the Pi adapter but the
+  upstream returns HTTP 400, "You're out of extra usage." This is a failed
+  acceptance gate, not a GC success or a demonstrated GC defect. No quota or
+  billing settings were changed.
+- An initial diagnostic accepted SDK subtype `success` alone. That can mask
+  `is_error:true`; the committed gate now rejects it. The stricter direct-SDK
+  gate passed; the Pi gate remains blocked by the explicit API refusal.
+- Reproducible live gate: `scripts/e2e-windows-session-gc.mjs`, documented in
+  `E2E.md`, optionally with `PI_CLI_PATH` for the actual client. Raw logs:
+  `/home/trevorwalker/.local/share/meridian-reviews/pr-896/` and Windows temp
+  `meridian-pr896-fix`. A separate broader Windows suite hit preexisting POSIX
+  mode expectations and a Bun crash; it is not counted as a pass (see prior
+  review record).
+
+Next: consult the integration PR linked to #896 for final-head CI, rerun the
+actual Pi gate when the upstream account accepts requests, then assess merge.
+Do not infer permission to release. The original contributor PR remains open.
+
 Checkpoint: 2026-09-11, after publishing Meridian 1.70.0 and then 1.71.0,
 repairing the E42 gate (#1014), closing the V2 cold-start gap (#1008), landing
 two of the three #980 splits (#1011, #1009), and triaging #1024 to
@@ -29,8 +126,13 @@ the probe-discipline rules in #1019 (`619bbe70`).
 split, `fix: recover visible empty capped streams` — see #1011. Still open for a
 canary and a live gate: #1009.
 
-**1.71.0 is published**, authorized explicitly by the owner; verified below.
-Nothing on `main` is unreleased. A future release needs its own authorization.
+**1.71.1 is published**, authorized explicitly by the owner: tag `ea5e9845`,
+npm `latest`, provenance `gitCommit` equal to the tag commit, Docker on both
+architectures, and the published artifact driven from the registry. It carries
+the #1024 fix the reporter was waiting on.
+
+**Unreleased on `main`:** the typecheck hook (#1035) and the session bookkeeping
+incorporation (#1036). A release needs its own explicit authorization.
 
 **1.70.0 is published.** The owner authorized it explicitly; PR #1006 was merged
 as `0acf3b19` and the publication is verified below — npm, provenance by
@@ -118,7 +220,128 @@ assertions. The release was not held: the artifact under test passed everything,
 and the defect is in the harness. **This was not written off as "a rerun
 passed"** — it is root-caused to a named code path and tracked.
 
-## Investigated: #1024 is configuration, not a Meridian defect
+## Delivered: session bookkeeping off the request path, #1030 as #1036
+
+Contributor PR by @justprosh, incorporated as `596a0d83` with Aleksey
+Proshutinskiy's authorship preserved (`ba3792b8` → `2a524584`, `8b573a3c` →
+`cf1aac50`) and a `Co-authored-by` trailer on the squash. Both commits applied
+cleanly to current `main` — no conflicts. Branch `codex/session-bookkeeping`,
+worktree `/tmp/meridian-1030`.
+
+**#1030 is still OPEN.** Its head was rechecked as `8b573a3c`, unchanged, so
+nothing of theirs was lost. Closing it notifies the contributor, so that is left
+to the owner along with a note.
+
+**What it fixes.** A ~500 turns/hour deployment losing **13–16% of turns** to a
+504 that blamed the request. Four independent bookkeeping defects: a deletion
+backlog that never drained (254 attempts on one resource, then
+`ownership backlog is full` for every *new* conversation); a 26 MiB store parsed
+synchronously (135 ms) several times per request and once under the lifecycle
+lock; unarmed leases with no TTL fencing conversations until restart (30 leaked,
+28 older than 15 minutes); and pretty-printed machine-only files costing ~20–25%
+of bytes and CPU under the lock. Saturation now answers 503 `overloaded_error`
+naming the reason instead of a 504.
+
+**How it was reviewed, and the one thing that mattered.** The new tests were run
+against the **pre-fix** tree, which is the only way to tell evidence from
+decoration:
+
+| new tests | pre-fix |
+|---|---|
+| `classifyError` saturation | 3 of 4 fail (the 4th is a control) |
+| read-cache identity reuse | fails |
+| read-cache safety properties | pass — regression guards, not demonstrations |
+| lease TTL | could not run (imports a symbol absent pre-fix) |
+| **deletion verdict** | **pass** |
+
+The headline defect's tests pass pre-fix. Their fixture's child output is short
+enough that the old `output.slice(-4_000)` still contained the verdict, so they
+prove the new mechanism works but not that it fixes the reported failure — only
+an output larger than the tail budget separates them. `cd753c73` pins that shape
+directly. **This is the fourth time this month a test passed while covering
+nothing** (#1025, the plugin-less 400, #1004's missing gate, now this one);
+running a PR's own tests against the pre-fix tree is the cheapest way to catch
+it and should be routine.
+
+**The read cache's premise was checked, not taken.** Identity keying by
+`{path, ino, mtimeMs, size}` is exact only if every writer publishes through
+`rename`. `writeStore` writes a unique temp, fsyncs, renames — new inode per
+publish — and re-takes identity from the same fd it reads bytes from, closing
+the stat/read race. The other two `writeFileSync` calls in that module target
+lock and claim paths, never the store.
+
+`3d2a8755` documents `MERIDIAN_SESSION_GC_LOCK_WAIT_MS`, which shipped
+undocumented — the knob an operator reaches for when the new 503 says a lock is
+busy. Env names verified against `src/env.ts`, not assumed.
+
+**Validation.** `npm test` 3948 pass / 1 skip / 0 fail, build. Live E41 all four
+modes plus `publication-lifetime`, `settlement-proof` and `duplicate-checkpoint`
+— run twice, on the incorporated tree and again after the two maintainer
+commits.
+
+**Not verified, deliberately:** the three quantitative claims (254 attempts,
+135 ms under lock, 30 leaked leases) are the reporter's measurements. The
+mechanisms and their guards were verified; the load was not reproduced. A
+synthetic 26 MiB store is the obvious next gate if the performance claim should
+be pinned rather than argued.
+
+## Delivered: #1024, plugin-less OpenCode concurrency, as #1031
+
+Root cause is configuration; the fix shipped anyway because failing a user's
+first turn is the wrong response to a client that cannot send the signal.
+
+Merged as `2e118a92`, branch `codex/opencode-pluginless-concurrent-flow`,
+worktree `/tmp/meridian-1024fix`. **#1024 deliberately stays open** until
+@calebdw confirms on their machine.
+
+**The decision, and why it was narrow.** The owner had no strong view, so the
+options were priced against the code. The conflict guard already skips when
+`declaresConcurrentFlow` is true, and `adapters/pi.ts` already sets
+`runsConcurrentTurnsPerSessionKey: true` for exactly this reason — the in-code
+rationale reads "an adapter can declare the same fact for its whole protocol
+when the client has no per-flow signal to send". A plugin-less OpenCode request
+*is* such a client. So the change reuses that mechanism and applies it only to
+requests carrying no plugin signal, via a pure predicate
+(`isPluginlessOpenCodeRequest`) that the existing warning already computed.
+
+Rejected: setting `runsConcurrentTurnsPerSessionKey` on the whole OpenCode
+adapter. One line shorter, but it would relax the guard for plugin-equipped
+users too, where a collision is a real defect and should stay loud.
+
+Also rejected, and previously tried and reverted — see the header of
+`pluginless-opencode-warning.test.ts`: inferring which stream is the title from
+request shape. "Tool-less, one message" is equally the first turn of an ordinary
+chat.
+
+**Before / after, live, reporter's models:**
+
+| headerless, Opus primary + Haiku title | before | after |
+|---|---|---|
+| primary | 200 | 200 |
+| title | **400** | **200** |
+
+Plugin-equipped control unchanged at 200/200 with no warning. Serialization is
+untouched (`maxActiveQueries` still 1) and the loser still runs fresh; the cost
+is a cold prompt cache, which the warning text now states instead of predicting
+a 400 that no longer happens.
+
+**Coverage added, because none existed.** The full suite passed *before* the
+change too — no test pinned the plugin-less 400, which is why the behaviour
+could be relaxed silently. Added: predicate unit tests (UA case, both agent
+modes, and negatives including `opencode2`, `crush`, `Polytoken`,
+`my-opencode/1.0` as a prefix-not-substring check); an HTTP-layer test that a
+plugin-less pair is admitted, still serialized, runs fresh and emits no
+`session_turn_conflict`, **verified to fail on the tree without the one-line
+condition**; and an HTTP-layer control that a plugin-equipped pair still takes
+the 400 — that control passes with *and* without the fix, which is what proves
+the scoping.
+
+`npm test` 3927 pass / 1 skip / 0 fail, typecheck, build, all four E41 modes.
+
+**A reply to @calebdw is drafted and NOT posted**; sending still needs owner
+authorization.
+
+## Superseded triage note: #1024 was first read as configuration only
 
 Reported by @calebdw against Meridian 1.68.0 through the third-party
 `opencode-with-claude@1.10.1`: the first message of every new session fails with
@@ -1573,6 +1796,178 @@ on 1.3.11 and on unmodified main.
 the GitHub account verifies as `no_user`, and the merge is refused with "the
 base branch policy prohibits the merge" with no mention of signatures. Use the
 repo's `user.email`; do not substitute one from the environment.
+
+## Checkpoint: 2026-09-18 (Autonomous Review Session)
+
+### Completed items in this review session
+
+1. **Issue #1027 (`Supported OpenCode V2 betas are ~400 revisions behind`)**:
+   - Delivered in PR #1060 (`303ce0d0`).
+   - Extended pinned OpenCode V2 beta range through `0.0.0-beta-18866`.
+   - Closed Issue #1027.
+
+2. **Contributor PR #771 (`feat(profile): create the profile when profile login names an unknown one`) by @Nowaker**:
+   - Delivered in PR #1061 (`96a75ac5`).
+   - Auto-creates profile on login if named profile does not exist.
+   - Closed PR #771 as incorporated.
+
+3. **Contributor PR #765 (`chore: update plugin flake inputs`) by @Nowaker**:
+   - Delivered in PR #1062 (`865b8331`).
+   - Updated Nix flake inputs for plugins and flake-parts.
+   - Closed PR #765 as incorporated.
+
+4. **Contributor PR #772 (`feat(dev): MERIDIAN_CREDENTIALS_READONLY, for a second instance on shared credentials`) by @Nowaker**:
+   - Delivered in PR #1064 (`b7b820e9`).
+   - Adds `MERIDIAN_CREDENTIALS_READONLY=1` support preventing secondary instances from modifying shared credential stores.
+   - Closed PR #772 as incorporated.
+
+5. **Contributor PR #773 (`feat(cli): print the dashboard when the port is already serving Meridian`) by @Nowaker**:
+   - Delivered in PR #1065 (`a80a15e2`).
+   - Adds pre-flight port probing: when port is already running Meridian, displays terminal dashboard and exits 0 instead of failing `EADDRINUSE`.
+   - Added `meridian status` command.
+   - Closed PR #773 as incorporated.
+
+6. **Contributor PR #774 (`fix(config): make MERIDIAN_CONFIG_DIR relocate the directory, not one file in it`) by @Nowaker**:
+   - Delivered in PR #1066 (`c07cefd4`).
+   - Relocates all Meridian configuration files (`profiles.json`, `profiles/<id>`, `adapter-instances.json`, `sdk-features.json`, `model-pricing.json`, `telemetry.db`) under `MERIDIAN_CONFIG_DIR`.
+   - Keys 5s disk caches by resolved path.
+   - Stabilized `desktop-manager.test.ts` shutdown race under recovery.
+   - Closed PR #774 as incorporated.
+
+7. **Contributor PR #818 (`fix(profiles): loggedIn is not true if the profile has no token`) by @Nowaker**:
+   - Delivered in PR #1069 (`1cfd9805`).
+   - Fixes `readCredentialFile` and `discoverProfiles` to verify that a profile's credential file contains a valid, non-empty access token before marking `loggedIn: true`.
+   - Surfaces "Sign-in required" on cards and tray if a credential file exists without a valid token.
+   - Desktop parity in `apps/desktop/src/renderer.ts` and `apps/desktop/src/trayRenderer.ts`.
+   - Closed PR #818 as incorporated.
+
+8. **Contributor PR #795 & #804 (`fix(profiles): remember the account's plan at headless login` & `fix(profiles): backfill the plan on token refresh`) by @Nowaker**:
+   - Delivered in PR #1070 (`85f87f74`).
+   - Persists account plan fields (`subscriptionType`, `rateLimitTier`) returned by Anthropic OAuth during headless profile login.
+   - Backfills missing plan fields during background OAuth token refresh into `profiles.json`.
+   - Adds unit tests in `src/__tests__/profile-login-plan-fields.test.ts` and `src/__tests__/token-refresh-plan-backfill.test.ts`.
+   - Closed PR #795 and #804 as incorporated.
+
+9. **Contributor PR #824 (`feat(usage): keep the last good usage reading when rate-limited, and mark cached facts`) by @Nowaker**:
+   - Delivered in PR #1071 (`46c10563`).
+   - Retains the last successful quota and usage reading when upstream rate limits (`429`) occur, preventing quota displays from flipping to blank/missing.
+   - Tags cached facts with provenance (`cached: true`) in web telemetry and desktop UI.
+   - Closed PR #824 as incorporated.
+
+10. **Contributor PR #819 (`feat(health): /livez and /readyz liveness and readiness probes`) by @Nowaker**:
+    - Delivered in PR #1072 (`0d3d30c2`).
+    - Implemented `/livez` (lightweight process health) and `/readyz` (full subsystem readiness) probe routes for Kubernetes and supervisor environments.
+    - Verified route auth auditing and added unit tests in `src/__tests__/health-probes.test.ts`.
+    - Closed PR #819 as incorporated.
+
+11. **Contributor PR #826 (`feat(routing): say when an account is refusing, and route around it`) by @Nowaker**:
+    - Delivered in PR #1075 (`a5596f25`).
+    - Proactive allowance refusal routing: detects 5h vs 7d quota bucket exhaustion and preemptively routes around spent profiles to prevent avoidable upstream 429s.
+    - Exposes refusal rationale in `/quota` and UI cards.
+    - Closed PR #826 as incorporated.
+
+12. **Contributor PR #833 (`feat(telemetry): show the route chain, refusal load, and telemetry retention`) by @Nowaker**:
+    - Delivered in PR #1076 (`cfe13038`).
+    - Telemetry route attribution: exposes the full failover hop chain, per-profile served/refused tallies, and refusal metrics across web and desktop.
+    - Closed PR #833 as incorporated.
+
+13. **Contributor PR #776 & #777 (`feat(dashboard): dim spent accounts and offer a sort that sinks them` & `feat(profiles): also dim spent accounts on /profiles`) by @Nowaker**:
+    - Delivered in PR #1077 (`f1bb2d5f`).
+    - Visual dimming/fading of spent accounts and view sorting tabs (`Configured`, `Most used`, `Least used`) on both web dashboard and desktop manager.
+    - Closed PR #776 and #777 as incorporated.
+
+14. **Contributor PR #775 (`feat(profiles): reorder the profile pool by drag or keyboard, on both pages`) by @Nowaker**:
+    - Delivered in PR #1078 (`2268eef0`).
+    - Drag-and-drop and keyboard reordering (`Alt+Up` / `Alt+Down`) for profile failover priority in the pool, synced with desktop ordering.
+    - Closed PR #775 as incorporated.
+
+15. **Contributor PR #841 (`feat(profiles): rename a profile from the CLI and web UI`) by @Nowaker**:
+    - Delivered in PR #1079 (`fe9c69d1`).
+    - Profile renaming CLI (`meridian profile rename <old> <new>`) and Web UI modal. Automatically manages legacy alias redirects and updates desktop state.
+    - Closed PR #841 as incorporated.
+
+16. **Contributor PR #778, #779, #849 (`feat(settings): overhaul settings layout with routing first, harness tabs, and telemetry storage`) by @Nowaker**:
+    - Delivered in PR #1080 (`1ff2c678`).
+    - Settings reorganization into dedicated tabs (Routing, Telemetry retention, Harnesses/Adapters), plus sqlite telemetry retention tuning.
+    - Closed PR #778, #779, and #849 as incorporated.
+
+17. **Contributor PR #803 (`feat(profiles): say what plan an account is on, and how much usage it buys`) by @Nowaker**:
+    - Delivered in PR #1081 (`ce68af8f`).
+    - Visual plan badges and dynamic multiplier chips (`1x`, `5x`, `20x`) based on tier allowance across web dashboard, desktop manager, and tray renderer.
+    - Closed PR #803 as incorporated.
+
+18. **Contributor PR #822 (`feat(profiles): show the organization an account belongs to, and its details on hover`) by @Nowaker**:
+    - Delivered in PR #1082 (`7651b3ea`).
+    - Discovers Anthropic organization name and surfaces it with hover detail in web cards, desktop manager, and tray tooltips.
+    - Closed PR #822 as incorporated.
+
+19. **Contributor PR #805 (`feat(auth): log every property Anthropic returns during authentication`) by @Nowaker**:
+    - Delivered in PR #1083 (`944e7971`).
+    - Safe property logging during Anthropic authentication exchange with safe string key allowlisting.
+    - Closed PR #805 as incorporated.
+
+20. **Contributor PR #780 (`chore(opencode): pre-approve Meridian's own directories, refuse its credentials`) by @Nowaker**:
+    - Delivered in PR #1084 (`a93da86c`).
+    - OpenCode pre-approved project permissions in `.opencode/opencode.json`, explicitly denying access to credential storage while granting proxy cache/config.
+    - Closed PR #780 as incorporated.
+
+21. **Contributor PR #782 & #806 (`feat(profiles): follow mode with active profile and roster adoption`) by @Nowaker**:
+    - Delivered in PR #1085 (`dacc1b1b`).
+    - `MERIDIAN_FOLLOW_ACTIVE` engine allowing follower instances to mirror a primary instance's active profile and adopt shareable file-backed profiles.
+    - Desktop Parity: Desktop header notice surfaces followed status and stale alerts; active card and tray reflect follow state; local switching is gracefully disabled with explanatory tooltips.
+    - Closed PR #782 and #806 as incorporated.
+
+22. **Release 1.73.0 (PR #1053) & Test Isolation (PR #1087)**:
+    - Delivered and published in Release Please workflow run `35468508440`.
+    - Candidate head SHA: `58a563b4845ffc771cd5eb4e787fc2feb7a4509f`.
+    - Merged with exact match to `main`: `0cfda823e418a5560e33c33f63f831ed92973bbf`.
+    - Scope included PR #1087 (`8eac9254`) isolating Claude SDK mock in follow-active tests to eliminate global mock leakage across test files.
+    - All 4 release workflow jobs passed:
+      - `release-please` (tag `meridian-v1.73.0`, release `meridian: v1.73.0`)
+      - `desktop / mac` (signed/notarized DMGs and ZIPs attached to release)
+      - `docker` (multi-arch images pushed to GHCR `ghcr.io/rynfar/meridian:1.73.0`, `:1.73`, `:latest`)
+      - `publish` (`npm publish --provenance --access public` via OIDC trusted publishing, Sigstore index `2893429092`, integrity `sha512-vJPtgC6wv72nBdkre3vCUtZG3Nnz8rAGavdVKzk2KZOZeuoYSh9pQbMULdKm07Qy8EM10PpXdu5pscauiBsDyw==`)
+    - Installed-package validation: verified `npm view @rynfar/meridian version` -> `1.73.0`, executed clean install in isolated temporary directory and verified `npx @rynfar/meridian --version` -> `1.73.0`.
+
+### Current Backlog Status & Open Issue Triage
+
+- **Antigravity Integration (PR #1074, PR #1050, Issue #1073)**:
+  - Excluded from this review workflow; handled by a dedicated agent per owner directive.
+
+- **Contributor PR #792 (`feat(profiles): complete a profile login from the web UI`) by @Nowaker**:
+  - Status: DRAFT. Contributor requested in PR description: `# DRAFT - please do not review or merge yet`. Deferred until author marks ready.
+
+- **Issue #1068 (`feat: define an opt-in contract for request-scoped context in passthrough sessions`)**:
+  - RFC / Design inquiry from Pydantic AI Harness maintainers regarding client request-scoped context (planning reminders, context-limit warnings) that are sent with one request and removed on subsequent requests, triggering `modified-history` fresh replays.
+  - Action / Status: Needs architectural guidance from repository owner before any patch. Options proposed by reporter: (1) advisory-context envelope eligible for lineage normalization, (2) separate request-context field, or (3) documented append-only requirement.
+
+- **Issue #1024 (`OpenCode title + primary turn collide on one SDK session`)**:
+  - Root cause resolved in PR #1031 (`2e118a92`) by admitting plugin-less OpenCode concurrent turns and degrading gracefully instead of returning 400.
+  - Status: Resolved in codebase; kept open pending confirmation from reporter (@calebdw).
+
+- **Issue #1011 (`Land the two passthrough commits held back from #980`)**:
+  - Commit 2 (`feat(proxy): classify abort causes`) landed in PR #1022 (`0fd59403`).
+  - Commit 1 (`fix: recover visible empty capped streams`, `c5804275`) deferred by owner decision because it introduced stream/non-stream asymmetry and altered gate-defended guarantees in `E2E.md`.
+
+- **Issue #1009 (`Uncaptured-tool recovery for capped passthrough turns`)**:
+  - Implementation landed behind opt-in flag `MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY=1` in PR #1025 (`d8516bea`).
+  - Status: Stays open pending canary validation on affected deployment and a positive fault-injection live gate.
+
+- **Issues #933 & #917 (`npm test is flaky on CI` / `Intermittent CI failures: concurrency tests fail fast`)**:
+  - Transcripts backlog saturation fixed in #935; test timeouts widened to 30s in #990; global Claude SDK mock pollution fixed in PR #1087.
+  - Status: Tracked. Singleton concurrency test races under high runner CPU load and potential ordering dependencies remain under observation.
+
+- **Issue #769 (`Official OpenClaw scrub plugin (meridian-plugin-openclaw-scrub)`)**:
+  - Official plugin repository built at `https://github.com/rynfar/meridian-plugin-openclaw-scrub` and listed via PR #799.
+  - Status: Tracking upstream OpenClaw changes and moving fingerprint targets with community contributors.
+
+- **Issue #767 (`OpenCode + Opus: turns diverge as modified-history with overlap messageCount - 1`)**:
+  - Investigated and mitigated in 1.61.0 (#784) and #872. Tested on current `main` across 80+ Opus requests with 0 divergences.
+  - Status: Main verified clean; awaiting reporter closure or reproduction with new mismatch diagnostic.
+
+- **Issue #650 (`Wire event-driven plugin-input bumps`)**:
+  - Repository dispatch receiver merged in #653; notification workflows merged in plugin repos.
+  - Status: Waiting for owner to mint fine-grained PAT and set `MERIDIAN_DISPATCH_TOKEN` secret across plugin repos.
 
 ## Restart safely
 

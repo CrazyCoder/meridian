@@ -234,6 +234,12 @@ describe("claudeCodeAdapter — basic configuration surface", () => {
   it("skips meridian's synthetic file-change tracker (Claude Code shows its own edits)", () => {
     expect(claudeCodeAdapter.shouldTrackFileChanges!()).toBe(false)
   })
+
+  it("declares concurrent turns per session key (#1043)", () => {
+    // Headless Claude Code fires a session-start side request and the primary
+    // turn concurrently under the same session id without per-flow headers.
+    expect(claudeCodeAdapter.runsConcurrentTurnsPerSessionKey).toBe(true)
+  })
 })
 
 describe("claudeCodeAdapter.extractFileChangesFromToolUse", () => {

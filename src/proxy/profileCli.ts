@@ -1,7 +1,7 @@
 /**
  * CLI commands for profile management.
  *
- * Browser-login profiles are stored under ~/.config/meridian/profiles/{id}/
+ * Browser-login profiles are stored under <config dir>/profiles/{id}/
  * — each directory is a standalone CLAUDE_CONFIG_DIR with its own OAuth
  * tokens. OAuth-token profiles (added via `--oauth-token`) live entirely in
  * profiles.json — no per-profile config dir.
@@ -14,13 +14,25 @@ import { createHash, randomBytes } from "node:crypto"
 import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { configPath } from "../configDir"
+import { claudeLog } from "../logger"
+import { authFieldPaths, describeAuthFields } from "./authDiscovery" 
 import { resolveClaudeExecutableSync } from "./models"
+import { fetchOAuthPlanFields, type OAuthPlanFields } from "./oauthPlan"
 import type { ProfileConfig } from "./profiles"
-import { setSetting } from "./settings"
-import { createPlatformCredentialStore } from "./tokenRefresh"
+import { envBool } from "../env"
 
-const PROFILES_DIR = join(homedir(), ".config", "meridian", "profiles")
-const CONFIG_FILE = join(homedir(), ".config", "meridian", "profiles.json")
+import {
+  applyProfileRename,
+  defaultProfilesConfigFile,
+  defaultProfilesDir,
+  loadProfileConfigFrom,
+  reclaimAlias,
+  saveProfileConfigTo,
+} from "./profileRename"
+import { getSetting, setSetting } from "../settings"
+import { createPlatformCredentialStore, type CredentialsFile } from "./tokenRefresh"
+
 const OAUTH_AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize"
 export const OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 export const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -34,12 +46,32 @@ const OAUTH_SCOPES = [
   "user:file_upload",
 ]
 
+function profilesConfigFile(): string {
+  return configPath("profiles.json")
+}
+
 function ensureProfilesDir(): void {
-  mkdirSync(PROFILES_DIR, { recursive: true })
+  mkdirSync(configPath("profiles"), { recursive: true })
 }
 
 function getProfileDir(id: string): string {
-  return join(PROFILES_DIR, id)
+  return configPath("profiles", id)
+}
+
+/**
+ * Pure: is this ID safe to use as a profile name?
+ *
+ * A profile ID becomes a directory name under PROFILES_DIR, so anything
+ * carrying a path separator or a `..` segment would escape that directory.
+ * Restricting to plain identifiers keeps IDs both safe and shell-friendly.
+ */
+export function isValidProfileId(id: string): boolean {
+  return Boolean(id) && !/[^a-zA-Z0-9_-]/.test(id)
+}
+
+/** Yellow text — plain when stdout is piped, where escape codes are noise. */
+function yellow(text: string): string {
+  return process.stdout.isTTY ? `\x1b[33m${text}\x1b[0m` : text
 }
 
 interface AuthLoginOptions {
@@ -116,18 +148,19 @@ export function parseAuthorizationCodeInput(input: string): ParsedAuthorizationC
 }
 
 function loadProfileConfig(): ProfileConfig[] {
-  if (!existsSync(CONFIG_FILE)) return []
+  const file = profilesConfigFile()
+  if (!existsSync(file)) return []
   try {
-    return JSON.parse(readFileSync(CONFIG_FILE, "utf-8"))
+    return JSON.parse(readFileSync(file, "utf-8"))
   } catch (err) {
-    console.warn(`[meridian] Failed to read ${CONFIG_FILE}: ${err instanceof Error ? err.message : err}`)
+    console.warn(`[meridian] Failed to read ${file}: ${err instanceof Error ? err.message : err}`)
     return []
   }
 }
 
 function saveProfileConfig(profiles: ProfileConfig[]): void {
   ensureProfilesDir()
-  writeFileSync(CONFIG_FILE, `${JSON.stringify(profiles, null, 2)}\n`, { mode: 0o600 })
+  writeFileSync(profilesConfigFile(), `${JSON.stringify(profiles, null, 2)}\n`, { mode: 0o600 })
 }
 
 function getAuthStatus(configDir: string): { loggedIn: boolean; email?: string; subscriptionType?: string } {
@@ -149,10 +182,52 @@ function getAuthStatus(configDir: string): { loggedIn: boolean; email?: string; 
       env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
       stdio: ["pipe", "pipe", "pipe"],
     })
-    return JSON.parse(result.toString())
+    const status = JSON.parse(result.toString())
+    // The third payload, and the one every UI actually reads. It is also the
+    // narrowest: it reports the plan family and no tier, so a log that shows
+    // its full key list is what proves the missing field was never offered
+    // here rather than dropped by Meridian.
+    claudeLog("auth.status_discovered", {
+      source: "cli_sync",
+      fields: authFieldPaths(status),
+      payload: describeAuthFields(status),
+    })
+    return status
   } catch (err) {
+    claudeLog("auth.status_failed", { source: "cli_sync", error: String(err) })
     console.warn(`[meridian] Auth check failed for ${configDir}: ${err instanceof Error ? err.message : err}`)
     return { loggedIn: false }
+  }
+}
+
+type CompleteOAuthTokenResponse = OAuthTokenResponse & { refresh_token: string }
+
+function hasRequiredTokens(tokenData: OAuthTokenResponse): tokenData is CompleteOAuthTokenResponse {
+  return Boolean(tokenData.access_token && tokenData.refresh_token)
+}
+
+/**
+ * Build the record a login writes to disk.
+ *
+ * Split out so the on-disk shape is directly assertable: the defect this closes
+ * was a field missing from this object literal, which no test of the
+ * surrounding prompt/fetch I/O would have caught. Plan fields spread in only
+ * when known — `subscriptionType: undefined` would write a null-ish key into a
+ * file the real CLI also parses.
+ */
+export function buildLoginCredentials(
+  tokenData: CompleteOAuthTokenResponse,
+  plan: OAuthPlanFields,
+  now: number = Date.now(),
+): CredentialsFile {
+  return {
+    claudeAiOauth: {
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token,
+      expiresAt: tokenData.expires_at ?? now + (tokenData.expires_in ?? 8 * 60 * 60) * 1000,
+      scopes: tokenData.scope?.split(" ").filter(Boolean) ?? OAUTH_SCOPES,
+      ...plan,
+    },
   }
 }
 
@@ -190,12 +265,14 @@ async function completeManualOAuthLogin(configDir: string): Promise<boolean> {
       signal: AbortSignal.timeout(30_000),
     })
   } catch (err) {
+    claudeLog("auth.token_request_failed", { error: String(err) })
     console.error(`\x1b[31m✗ OAuth token exchange failed: ${err instanceof Error ? err.message : err}\x1b[0m`)
     return false
   }
 
   if (!response.ok) {
     const body = await response.text().catch(() => "")
+    claudeLog("auth.token_bad_response", { status: response.status, bodyLength: body.length })
     console.error(`\x1b[31m✗ OAuth token exchange failed (${response.status}).\x1b[0m`)
     if (body) console.error(`  ${body.slice(0, 300)}`)
     return false
@@ -205,39 +282,49 @@ async function completeManualOAuthLogin(configDir: string): Promise<boolean> {
   try {
     tokenData = await response.json() as OAuthTokenResponse
   } catch (err) {
+    claudeLog("auth.token_parse_failed", { error: String(err) })
     console.error(`\x1b[31m✗ OAuth token response was invalid: ${err instanceof Error ? err.message : err}\x1b[0m`)
     return false
   }
 
-  if (!tokenData.access_token || !tokenData.refresh_token) {
+  // Logged before the required-token check, so a response that is missing one
+  // of them still says what it did contain — that case is exactly when the
+  // field list is worth having.
+  claudeLog("auth.token_discovered", {
+    fields: authFieldPaths(tokenData),
+    payload: describeAuthFields(tokenData),
+  })
+
+  if (!hasRequiredTokens(tokenData)) {
     console.error("\x1b[31m✗ OAuth token response did not include the required tokens.\x1b[0m")
     return false
   }
 
-  const expiresAt = tokenData.expires_at ?? Date.now() + (tokenData.expires_in ?? 8 * 60 * 60) * 1000
+  const plan = await fetchOAuthPlanFields(tokenData.access_token)
   const store = createPlatformCredentialStore({ claudeConfigDir: configDir })
-  return store.write({
-    claudeAiOauth: {
-      accessToken: tokenData.access_token,
-      refreshToken: tokenData.refresh_token,
-      expiresAt,
-      scopes: tokenData.scope?.split(" ").filter(Boolean) ?? OAUTH_SCOPES,
-    },
+  const credentials = buildLoginCredentials(tokenData, plan)
+  // What ends up on disk, which is not the same question as what arrived: the
+  // two lines together localize a lost field to the response or to this build.
+  claudeLog("auth.credentials_built", {
+    fields: authFieldPaths(credentials.claudeAiOauth),
+    payload: describeAuthFields(credentials.claudeAiOauth),
   })
+  return store.write(credentials)
 }
 
 export async function profileAdd(id: string, options: AuthLoginOptions = {}): Promise<void> {
-  if (!id || /[^a-zA-Z0-9_-]/.test(id)) {
+  if (!isValidProfileId(id)) {
     console.error("\x1b[31m✗ Invalid profile ID.\x1b[0m Use only letters, numbers, hyphens, underscores.")
     process.exit(1)
   }
 
-  const profiles = loadProfileConfig()
+  let profiles = loadProfileConfig()
   if (profiles.find(p => p.id === id)) {
     console.error(`\x1b[31m✗ Profile "${id}" already exists.\x1b[0m`)
     console.error(`  Run: meridian profile list`)
     process.exit(1)
   }
+  profiles = reclaimAlias(profiles, id)
 
   // Offer to import existing ~/.claude credentials if this is the first profile
   // and the default config dir has valid, active auth
@@ -333,17 +420,18 @@ export async function profileAdd(id: string, options: AuthLoginOptions = {}): Pr
 }
 
 export async function profileAddOauthToken(id: string, tokenArg: string | undefined): Promise<void> {
-  if (!id || /[^a-zA-Z0-9_-]/.test(id)) {
+  if (!isValidProfileId(id)) {
     console.error("\x1b[31m✗ Invalid profile ID.\x1b[0m Use only letters, numbers, hyphens, underscores.")
     process.exit(1)
   }
 
-  const profiles = loadProfileConfig()
+  let profiles = loadProfileConfig()
   if (profiles.find(p => p.id === id)) {
     console.error(`\x1b[31m✗ Profile "${id}" already exists.\x1b[0m`)
     console.error(`  Run: meridian profile list`)
     process.exit(1)
   }
+  profiles = reclaimAlias(profiles, id)
 
   let token = tokenArg?.trim() ?? ""
   if (!token) {
@@ -383,6 +471,9 @@ export function profileList(): void {
       ? `\x1b[32m✓ ${auth.email} (${auth.subscriptionType || "unknown"})\x1b[0m`
       : "\x1b[31m✗ not logged in\x1b[0m"
     console.log(`  ${p.id.padEnd(20)} ${status}`)
+    if (p.aliases && p.aliases.length > 0) {
+      console.log(`  ${"".padEnd(20)} \x1b[90malso answers to: ${p.aliases.join(", ")}\x1b[0m`)
+    }
   }
   console.log()
   printEnvHint(profiles)
@@ -422,7 +513,7 @@ export function profileRemove(id: string): void {
     console.error(`\x1b[31m✗ Profile "${id}" not found.\x1b[0m`)
     process.exit(1)
   }
-  const dirsToRemove = dirsToRemoveOnProfileRemove(removed, PROFILES_DIR)
+  const dirsToRemove = dirsToRemoveOnProfileRemove(removed, configPath("profiles"))
   profiles.splice(idx, 1)
   saveProfileConfig(profiles)
 
@@ -434,6 +525,27 @@ export function profileRemove(id: string): void {
   if (profiles.length > 0) {
     printEnvHint(profiles)
   }
+}
+
+export function profileRename(from: string, to: string): void {
+  if (envBool("CREDENTIALS_READONLY")) {
+    console.error("\x1b[31m✗ MERIDIAN_CREDENTIALS_READONLY=1 — this instance may not modify credentials.\x1b[0m")
+    console.error("  Rename the profile from the instance that owns them.")
+    process.exit(1)
+  }
+
+  const wasActive = getSetting("activeProfile") === from
+  const result = applyProfileRename(from, to, { profilesDir: defaultProfilesDir(), configFile: defaultProfilesConfigFile() })
+  if (!result.ok) {
+    console.error(`\x1b[31m✗ ${result.error}\x1b[0m`)
+    if (result.hint) console.error(`  ${result.hint}`)
+    process.exit(1)
+  }
+
+  console.log(`\x1b[32m✓ Profile "${from}" renamed to "${to}".\x1b[0m`)
+  console.log(`  Requests naming ${result.aliases.map(a => `"${a}"`).join(", ")} are served by "${to}" until the name is added again.`)
+  if (wasActive) console.log(`  Active profile is now "${to}".`)
+  printEnvHint(result.profiles)
 }
 
 export async function profileSwitch(id: string): Promise<void> {
@@ -462,19 +574,51 @@ export async function profileSwitch(id: string): Promise<void> {
   }
 }
 
-export async function profileLogin(id: string, options: AuthLoginOptions = {}): Promise<void> {
-  const profiles = loadProfileConfig()
+export type ProfileLoginPlan =
+  | { action: "create" }
+  | { action: "reject-invalid-id" }
+  | { action: "reject-oauth-token" }
+  | { action: "login"; profile: ProfileConfig }
+
+/**
+ * Pure: decide what `meridian profile login <id>` should do.
+ *
+ * An unknown ID is a request to create that profile, not an error — the ID is
+ * validated first because only this branch turns it into a directory. A profile
+ * that already exists is never re-validated: it was written by an earlier `add`
+ * (or by hand), and login must keep working on it either way.
+ *
+ * Caller performs the login itself — this returns the decision only.
+ */
+export function planProfileLogin(id: string, profiles: ProfileConfig[]): ProfileLoginPlan {
   const profile = profiles.find(p => p.id === id)
-  if (!profile) {
-    console.error(`\x1b[31m✗ Profile "${id}" not found.\x1b[0m Run: meridian profile add ${id}`)
+  if (!profile) return isValidProfileId(id) ? { action: "create" } : { action: "reject-invalid-id" }
+  if (profile.oauthToken || profile.type === "oauth-token") return { action: "reject-oauth-token" }
+  return { action: "login", profile }
+}
+
+export async function profileLogin(id: string, options: AuthLoginOptions = {}): Promise<void> {
+  const plan = planProfileLogin(id, loadProfileConfig())
+
+  if (plan.action === "reject-invalid-id") {
+    console.error("\x1b[31m✗ Invalid profile ID.\x1b[0m Use only letters, numbers, hyphens, underscores.")
     process.exit(1)
   }
 
-  if (profile.oauthToken || profile.type === "oauth-token") {
+  if (plan.action === "reject-oauth-token") {
     console.error(`\x1b[31m✗ Profile "${id}" uses an OAuth token; \`claude auth login\` does not apply.\x1b[0m`)
     console.error(`  To replace the token: meridian profile remove ${id} && meridian profile add ${id} --oauth-token`)
     process.exit(1)
   }
+
+  if (plan.action === "create") {
+    console.log(yellow(`⚠ Profile "${id}" does not exist yet — adding it first.`))
+    console.log()
+    await profileAdd(id, options)
+    return
+  }
+
+  const profile = plan.profile
 
   console.log(`\x1b[36mRe-authenticating profile: ${id}\x1b[0m`)
   console.log()
@@ -576,7 +720,7 @@ function promptToken(question: string): string {
 }
 
 function printEnvHint(_profiles: ProfileConfig[]): void {
-  console.log(`\x1b[90mConfig: ${CONFIG_FILE}\x1b[0m`)
+  console.log(`\x1b[90mConfig: ${profilesConfigFile()}\x1b[0m`)
   console.log("\x1b[90mProfiles are picked up automatically — no restart needed.\x1b[0m")
 }
 
@@ -588,9 +732,11 @@ Commands:
   meridian profile add <name> --oauth-token [TOKEN] Add a profile from a \`claude setup-token\` value
                                                     (if TOKEN is omitted, you will be prompted; input is hidden)
   meridian profile list                             List profiles and auth status
+  meridian profile rename <old> <new>               Rename a profile; <old> keeps routing to it until reused
   meridian profile remove <name>                    Remove a profile
   meridian profile switch <name>                    Switch the active profile (requires running proxy)
-  meridian profile login <name> [--headless]        Re-authenticate an existing profile (claude-max only)
+  meridian profile login <name> [--headless]        Re-authenticate a profile, adding it first if it does not
+                                                    exist yet (claude-max only)
 
 Examples:
   meridian profile add personal                     # Add personal account (browser login)
@@ -601,5 +747,6 @@ Examples:
                                                     # Add headless CI profile (token from CLI argument)
   meridian profile login work --headless            # Re-authenticate via OAuth URL/code prompt
   meridian profile switch work                      # Switch to work account
+  meridian profile rename work employer             # Rename; "work" still routes to it
   meridian profile list                             # Show all profiles`)
 }

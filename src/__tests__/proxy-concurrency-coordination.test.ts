@@ -130,6 +130,32 @@ function piRequest(
   })
 }
 
+/**
+ * Headless Claude Code sends `metadata.user_id = {"session_id": "..."}` with
+ * a `claude-cli/...` User-Agent and no per-flow header.
+ */
+function claudeCodeRequest(
+  messages: Array<{ role: string; content: unknown }>,
+  sessionId: string,
+  extraHeaders: Record<string, string> = {},
+): Request {
+  return new Request("http://localhost/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "user-agent": "claude-cli/2.1.277",
+      ...extraHeaders,
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 128,
+      stream: false,
+      messages,
+      metadata: { user_id: JSON.stringify({ session_id: sessionId }) },
+    }),
+  })
+}
+
 function observeTurnArrival(sessionId: string) {
   let markArrived = () => {}
   const arrived = new Promise<void>(resolve => { markArrived = resolve })
@@ -319,6 +345,92 @@ describe("SDK and Session concurrency coordination", () => {
     expect(loserSessionId).toMatch(/^[0-9a-f-]{36}$/)
     const stored = Object.values(readSessionStoreSnapshot()).map(s => s.claudeSessionId)
     expect(stored).toContain(loserSessionId!)
+  })
+
+  it("answers, instead of refusing, a plugin-less OpenCode client's concurrent turn (#1024)", async () => {
+    // OpenCode fires a Haiku `agent=title` stream and the primary turn about a
+    // second apart on ONE session id. With Meridian's plugin the title says so
+    // in a header and is detached; a client running some other plugin sends no
+    // such header, so both look like the same conversation and the loser used
+    // to take a hard 400 on the FIRST turn of every new session.
+    //
+    // It is exactly pi's situation — one session id for the main turn and its
+    // side calls, no per-flow signal available — so it gets pi's treatment.
+    const app = createProxyServer({ port: 0, host: "127.0.0.1", silent: true }).app
+    const ua = { "user-agent": "opencode/1.18.30 ai-sdk/provider-utils/4.0.46 runtime/bun/1.3.14" }
+    const messages = [{ role: "user", content: "same request" }]
+    const firstP = app.fetch(request(messages, "pluginless", false, ua))
+    const firstControl = await waitForControl(0)
+    const secondP = app.fetch(request(messages, "pluginless", false, ua))
+
+    firstControl.release()
+    expect((await firstP).status).toBe(200)
+    const secondControl = await waitForControl(1)
+    secondControl.release()
+    expect((await secondP).status).toBe(200)
+
+    // Degraded, not waved through: still one turn at a time, and the loser runs
+    // fresh rather than resuming the winner and merging two conversations.
+    expect(maxActiveQueries).toBe(1)
+    expect(queryCalls).toBe(2)
+    expect(capturedParams[1]?.options?.resume).toBeUndefined()
+    expect(telemetryStore.getRecent().filter(m => m.error === "session_turn_conflict")).toHaveLength(0)
+  })
+
+  it("still refuses the loser when the OpenCode plugin's signal is present", async () => {
+    // The control for #1024: relaxing the rule must reach ONLY clients that
+    // cannot send the signal. A plugin-equipped client that genuinely races
+    // itself keeps the loud failure, because for it a collision is a defect
+    // rather than an unavoidable protocol shape.
+    const app = createProxyServer({ port: 0, host: "127.0.0.1", silent: true }).app
+    const headers = {
+      "user-agent": "opencode/1.18.30 ai-sdk/provider-utils/4.0.46 runtime/bun/1.3.14",
+      "x-opencode-agent-mode": "primary",
+    }
+    const messages = [{ role: "user", content: "same request" }]
+    const firstP = app.fetch(request(messages, "plugged", false, headers))
+    const firstControl = await waitForControl(0)
+    const secondP = app.fetch(request(messages, "plugged", false, headers))
+
+    firstControl.release()
+    expect((await firstP).status).toBe(200)
+    const second = await secondP
+    expect(second.status).toBe(400)
+    expect((await second.json() as { error: { message: string } }).error.message)
+      .toContain("advanced while the request was waiting")
+    expect(queryCalls).toBe(1)
+    expect(telemetryStore.getRecent().filter(m => m.error === "session_turn_conflict")).toHaveLength(1)
+  })
+
+  it("answers, instead of refusing, a headless Claude Code client's concurrent turn (#1043)", async () => {
+    // Claude Code in headless mode (`claude -p "..."`) fires a session-start
+    // side request and the primary prompt concurrently under the same session
+    // ID in metadata.user_id. The primary request waits for turn lease, then
+    // gets rejected with HTTP 400 because sessionTurnLease.advancedWhileWaiting
+    // is true and !declaresConcurrentFlow. With
+    // runsConcurrentTurnsPerSessionKey: true, the loser is reclassified as a
+    // fresh replay instead of failing with HTTP 400.
+    const app = createProxyServer({ port: 0, host: "127.0.0.1", silent: true }).app
+    const sessionId = "claude-code-race"
+    const sideRequest = [{ role: "user", content: "session warmup" }]
+    const primaryRequest = [
+      { role: "user", content: "Reply with exactly the word OK" },
+    ]
+
+    const firstP = app.fetch(claudeCodeRequest(sideRequest, sessionId))
+    const firstControl = await waitForControl(0)
+    const secondP = app.fetch(claudeCodeRequest(primaryRequest, sessionId))
+
+    firstControl.release()
+    expect((await firstP).status).toBe(200)
+    const secondControl = await waitForControl(1)
+    secondControl.release()
+    expect((await secondP).status).toBe(200)
+
+    expect(maxActiveQueries).toBe(1)
+    expect(queryCalls).toBe(2)
+    expect(capturedParams[1]?.options?.resume).toBeUndefined()
+    expect(telemetryStore.getRecent().filter(m => m.error === "session_turn_conflict")).toHaveLength(0)
   })
 
   it("replays a declared-flow loser instead of rewinding the turn it lost to (#870)", async () => {

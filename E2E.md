@@ -265,7 +265,7 @@ UI. Both fixtures isolate Meridian state and work only in temporary directories.
 | E39 | [OpenCode internal-agent session key (#845)](#e39-opencode-internal-agent-session-key-845) | **Manual**, real OpenCode: its `title` agent runs under the USER'S session id, so the user's first turn used to queue behind it and then get HTTP 400 `session_turn_conflict`. Asserts the first turn succeeds, waits ~0ms on the session lease, and every later request is `lineage=continuation`. **Run after any OpenCode upgrade and before releases touching session keys or the turn coordinator** | 2026-08-19 |
 | E40 | [Passthrough digest-turn cap](#e40-passthrough-digest-turn-cap) | **Automated**: `bun scripts/e2e-digest-turn-cap.mjs` — real SDK. Asserts the capped tool turn generates no digest text, costs materially less than uncapped on an identical prompt, still RESUMES at its captured checkpoint, leaves text-only turns returning `success`, and does not truncate parallel tool calls. **Run before any release touching the passthrough tool loop, `maxTurns`, or the early-stop checkpoint** | 2026-08-20 |
 | E41 | [Passthrough multi-turn: one call, one answer](#e41-passthrough-multi-turn-one-call-one-answer) | **Automated**: `bun scripts/e2e-passthrough-turns.mjs [--stream]` — real proxy + SDK + Claude Max. Chain and `PROBE_PARALLEL=1` modes assert exact tool-call batching, a distinct durable fork per result round, one real answer per delivered call in the active transcript, and full prompt-cache continuity. **Run all four chain/parallel × stream/non-stream combinations before releases touching passthrough resume or the deny hook** | 2026-08-26 |
-| E42 | [OpenCode V2 beta compatibility](#e42-opencode-v2-beta-compatibility) | **Automated**, exact betas `18314` and `18866`: run `e2e-opencode-v2-package.mjs --live --extended` with each pinned binary. Covers hidden title/summary isolation, process restart, passthrough tools, undo/fork/compaction, overlapping general children and the model-discovery round trip with its Meridian-only effort variant. Also test source and packed npm artifacts. **Run after any V2 plugin/API change; another beta is not a pass** | 2026-08-27 |
+| E42 | [OpenCode V2 beta compatibility](#e42-opencode-v2-beta-compatibility) | **Automated**, exact betas `18314`, `18866`, and `19271`: run `e2e-opencode-v2-package.mjs --live --extended` with each pinned binary. Covers hidden title/summary isolation, process restart, passthrough tools, undo/fork/compaction, overlapping general children and the model-discovery round trip with its Meridian-only effort variant. Also test source and packed npm artifacts. **Run after any V2 plugin/API change; another beta is not a pass** | 2026-09-18 |
 | E43 | [Passthrough tools in a namespaced client](#e43-passthrough-tools-in-a-namespaced-client) | **Automated**: `bun scripts/e2e-passthrough-namespaced-tools.mjs [--stream]` — real proxy + SDK. A client tool declared `mcp__oc__read` collides with the namespace Meridian nests client tools under; asserts the call is still dispatched and captured, delivered under the name the client declared, and answered from the client's real result, with an ordinary and a foreign-namespace control alongside. **Run before any release touching passthrough tool registration, the deny hook, or tool-name delivery** | 2026-09-08 |
 | E44 | [Tier refusal failover](#e44-tier-refusal-failover) | **Automated**: `bun scripts/e2e-tier-refusal-failover.mjs [--stream]` — local refusal fixture, **real Claude Max fallback**. Asserts the credits-era per-tier banner is recorded 429 on the refusing profile and that a healthy profile actually answers. Catches what unit tests cannot: the shape that arrives carries the upstream status. **Run before releases touching error classification or priority failover** | 2026-09-08 |
 | E45 | [Codex auto-defer](#e45-codex-auto-defer) | **Automated**: `bun scripts/e2e-codex-auto-defer.mjs` — real proxy + SDK, 40 Codex-shaped tools. Asserts a Codex request reports no deferral and that `exec_command` is loaded rather than found via ToolSearch. The codex transform inherited OpenCode's core tool names, which match nothing Codex sends, so every tool was deferred. **Run before releases touching the codex transform, auto-defer, or `computePassthroughMaxTurns`** | 2026-09-08 |
@@ -3782,16 +3782,18 @@ hidden title/summary work, attached compaction, and child sessions without
 changing request bodies. It also proves that durable primary lineage survives
 real V2 tools, a Meridian restart, undo, fork, and parallel subagents.
 
-Validate both supported hosts, `0.0.0-beta-18314` and `0.0.0-beta-18866`.
+Validate all supported hosts, `0.0.0-beta-18314`, `0.0.0-beta-18866`, and `0.0.0-beta-19271`.
 The beta CLI can update itself, so the automated gate verifies its exact version
 before and after each run and disables automatic updates. Use isolated installs:
 
 ```bash
 npm install --prefix /tmp/opencode-18314 @opencode-ai/cli@0.0.0-beta-18314
 npm install --prefix /tmp/opencode-18866 @opencode-ai/cli@0.0.0-beta-18866
+npm install --prefix /tmp/opencode-19271 @opencode-ai/cli@0.0.0-beta-19271
 npm run build
 E2E_OPENCODE_BIN=/tmp/opencode-18314/node_modules/.bin/opencode2 bun scripts/e2e-opencode-v2-package.mjs --live --extended
 E2E_OPENCODE_BIN=/tmp/opencode-18866/node_modules/.bin/opencode2 bun scripts/e2e-opencode-v2-package.mjs --live --extended
+E2E_OPENCODE_BIN=/tmp/opencode-19271/node_modules/.bin/opencode2 bun scripts/e2e-opencode-v2-package.mjs --live --extended
 ```
 
 Without `--live`, this uses the actual client against a scripted local API. It
@@ -3851,7 +3853,10 @@ E2E_OPENCODE_BIN=/tmp/opencode-18866/node_modules/.bin/opencode2 \
 The fixture answers non-`POST` requests without parsing a body, and forwards them
 upstream with their original method. Parsing unconditionally used to throw on the
 body-less catalog `GET`, which failed discovery closed **and** set the process
-exit code — the gate printed `PASS` and exited 1 (#1014).
+exit code — the gate printed `PASS` and exited 1 (#1014). Both non-`POST` and
+live `POST` forwards catch connection failures during client exit or fixture
+teardown, record `status: 0` (or `teardownStraggler: true` once teardown begins),
+and return 502/503 rather than throwing an unhandled rejection (#1028).
 Set `E2E_MERIDIAN_ROOT` to an independently installed `npm pack` consumer to test
 the shipped package without development dependencies. Run both betas in source
 and consumer modes. `--v1` with the pinned V1 `opencode@1.18.11` executable is the
@@ -4783,3 +4788,179 @@ curl ... -H 'x-polytoken-session:   '
 returned `LINES=4` in four client round-trips with `adapter=polytoken` and
 `lineage=continuation` from turn 2, unchanged with `MERIDIAN_PASSTHROUGH=0`. All
 four detection controls behaved as recorded above.
+
+## Desktop interface preview
+
+Build and package using `apps/desktop/README.md`. In the actual Mac app:
+
+1. Connect to an existing headless instance and verify health, quota errors,
+   request history, and cache data without changing its supervisor.
+2. Install two published releases through Versions. Select app management on a
+   separate port, start, restart, switch versions, and roll back.
+3. Close the window and verify the owned listener stays alive in the menu bar.
+   Quit the app and verify only its owned listener drains/stops.
+4. Left-click the menu-bar icon: inspect cache metrics, account limits and errors;
+   verify two accounts and their switch controls fit without scrolling, then
+   switch accounts and verify the active profile changes. Verify Escape and
+   clicking outside dismiss the panel, and right-click opens the fallback menu.
+   Verify managed Start/Restart/Stop and external-service controls separately.
+5. Disable Open dashboard at launch, relaunch and verify menu-bar operation.
+   Exercise category preferences and notification snooze/resume across restart.
+6. Verify a new request failure produces an in-app incident. Separately verify
+   opt-in native notification delivery, profile sign-in completion and feature
+   mutations before release.
+
+For the required real SDK/model continuation gate, start the service through
+that app, then run:
+
+```sh
+E2E_MERIDIAN_URL=http://127.0.0.1:3489 \
+E2E_DESKTOP_FIXTURE=/tmp/meridian-desktop-conversation.json \
+E2E_PROFILE=work node scripts/e2e-desktop-request.mjs --live
+```
+
+Use a new disposable fixture file for each independent run. Repeat with the
+same file after a UI restart/version switch; the model must recall the marker
+and the fixture records the versions used. `E2E_MODEL` chooses the actual model;
+`E2E_MERIDIAN_API_KEY` supplies authentication if the local service requires it.
+The script does not start services or modify account configuration.
+
+2026-09-14: the actual unsigned arm64 Electron app initialized native Liquid
+Glass and connected to Meridian 1.67.0 on localhost:3456. It displayed real
+profiles/history/cache data and explicit unavailable quota results. Through the
+app, a separate copy of 1.71.1 was installed and started on 3489; 1.71.0 was
+installed and activated, followed by rollback to 1.71.1. The original headless
+service stayed on 3456 throughout. Closing the app window retained the owned
+listener; quitting the app stopped 3489 and left 3456 healthy.
+
+The real `claude-haiku-4-5` request reached the installed SDK but returned HTTP
+500: `OAuth session expired and could not be refreshed`. This is **missing live
+success evidence**, not a pass. Successful responses/continuations after
+restart and switching remain gated on reauthentication. Automated launchd
+handoff, completed sign-in, Windows, and Linux runtime behavior are not
+established by these checks. The native notification test returned
+`UNErrorDomain error 1`; the app displayed the delivery failure. Successful
+system notification delivery remains unverified. Do not release or enable
+handoff based on these checks.
+
+2026-09-15 UI refinement: the packaged Mac app displayed the external service's
+500-request history. Searching `openai` returned two matches; opening one showed
+its date, account/client, timing breakdown, token counts and full request/session
+IDs. Account cards showed unavailable usage explicitly. Service, Versions,
+Plugins and Settings displayed the external owner, separately installed releases,
+three active plugins and native Liquid Glass. An unsaved connection-address
+edit survived background polling and was restored without submitting it.
+Diagnostic inspection exposed an older-event slicing bug; the corrected view
+sorts all fetched events newest first, with a direct regression test. These
+read-only UI checks do not resolve the live model, sign-in, notification or
+platform gates above.
+
+
+2026-09-18: signed arm64 app completed the existing profile's Claude sign-in,
+displayed live quota windows, and received Electron's native notification `show`
+event (the earlier unsigned delivery failure did not recur). Real Haiku marker
+requests succeeded before and after a UI restart on Meridian 1.71.1.
+
+The isolated launchd/registry gate is reproducible with:
+
+```sh
+npm run build --prefix apps/desktop
+E2E_DESKTOP_INSTALL="/absolute/path/to/installed/meridian/version" \
+  bun scripts/e2e-desktop-handoff.ts --live
+```
+
+It creates and removes its own LaunchAgent and uses isolated plugin configuration.
+It verifies takeover, installation and live reload of all four published scrub
+plugins, return with all four still active, and recovery after a simulated crash
+between restarting the original supervisor and clearing its journal. The actual
+launchd processes and registry packages are used; no model calls occur in this
+gate. September 18 results passed all stages. Existing services are untouched.
+
+The first multi-turn version-switch probe failed with “The previous message
+does not contain a marker.” Its “previous message” prompt was ambiguous after
+more than two turns. A separate bare-marker prompt
+received a model refusal. Both failures were retained. The fixture prompt now
+explicitly describes the software continuity test and asks for the original
+fixture identifier. A fresh sequence passed on 1.71.0 and then 1.71.1 after a
+UI version switch; the returned identifier was checked exactly on both turns.
+The actual desktop Plugins page also installed OpenClaw 0.1.0 and showed all
+four plugins active.
+
+Final packaged arm64 validation on September 18:
+- Native confirmation transferred a disposable LaunchAgent to app ownership.
+- Plugins installed Hermes 0.1.0 into that service's isolated configuration.
+- Return to headless restored its original supervisor; Hermes remained active.
+- Real Haiku requests returned the same fixture identifier before and after
+  that UI handoff, with the same conversation fixture.
+- OpenCode's installed npm package updated to 0.2.0 through the app. Its plugin
+  metadata still reports 0.1.0; the catalog uses the package manifest for update
+  decisions and installed-version display.
+- Apple accepted notarization submission `4e9453be-9f13-4f96-a779-cb0ccd2746b8`.
+  `codesign --verify --deep --strict`, stapler validation and Gatekeeper execution
+  assessment passed (`source=Notarized Developer ID`).
+
+These results supersede the earlier Mac sign-in, notification and handoff gates.
+Windows/Linux desktop runtime evidence remains absent. No release was published.
+
+## Windows session garbage collection (#895 / #896)
+
+```powershell
+# Use the direct Claude Max endpoint for this test process if the shell normally
+# routes ANTHROPIC_BASE_URL to another local proxy. No persistent setting changes.
+Remove-Item Env:ANTHROPIC_BASE_URL -ErrorAction SilentlyContinue
+bun scripts/e2e-windows-session-gc.mjs
+
+# Also drive the actual installed Pi client through an isolated Meridian proxy.
+$env:PI_CLI_PATH = Join-Path $env:APPDATA 'npm\node_modules\@mariozechner\pi-coding-agent\dist\cli.js'
+bun scripts/e2e-windows-session-gc.mjs
+```
+
+Requires native Windows Bun, Node, Claude Max authentication, and Pi for the
+second command. `E2E_MODEL` overrides the default `claude-haiku-4-5`. The gate
+creates a real transcript in a disposable project, proves a pin preserves its
+exact SDK-visible history, retires it, and requires the production fenced SDK
+child to delete it. It checks absence through supported SDK APIs, without
+reading private transcript files. Pi configuration and Meridian state are
+isolated; the test uses the normal PATH, including Volta if installed.
+
+The unit counterpart is `session-lifecycle-windows-gc.test.ts`. In addition to
+backlog progress and timeout/recovery behavior, it checks that a multiline
+script runs in the exact process identified by the child's PID. A version
+manager's wrapper PID is insufficient for deletion fencing.
+
+
+2026-09-18 macOS cleanup verification: integrating the Windows GC changes exposed
+an existing POSIX timeout cleanup race. Instrumentation showed that the timeout
+successfully killed the owned process group, then its `finally` block signalled
+the same defunct group again and received `EPERM`, masking the intended timeout
+verdict. Cleanup now joins the successful kill instead of sending it twice.
+Both real-child timeout regressions passed after this change. The live SDK gate
+above also passed on macOS with `claude-haiku-4-5`: its pinned transcript stayed
+unchanged, then fenced retirement deleted exactly one transcript with no failures
+or deferred work. This is macOS evidence, not a replacement for Windows evidence.
+
+The desktop catalog refreshes installed package manifests when the service
+changes, including while stopped. A direct manager test checks that switching
+to an external service clears the previous local installation's version state.
+
+### Menu-bar controls and notification policy (2026-09-18)
+
+On macOS, the signed packaged app's native View → Quick controls command opened
+its Liquid Glass panel. Starting Meridian 1.71.1 on port 3489, switching from
+`personal` to the signed-in `work` profile, and restarting all updated the panel
+correctly; the account switch changed degraded health to healthy. The Settings
+page saved dashboard-at-launch and critical-only notification preferences.
+Explicit Send test reported **Delivered to the system**, and Pause changed to
+Resume alerts. No paid model call was needed for these desktop-only changes.
+
+Pure policy checks cover opt-in categories, quota thresholds, request bursts,
+snooze and persisted cooldowns. A real Node child-process test exhausted three
+recovery attempts and delivered exactly one critical notification; a separate
+manager test clears incident history and reopens the manager without resetting
+cooldowns. Native tray-click positioning on multiple displays and Windows/Linux
+runtime behavior still need platform-specific verification.
+
+The refined panel was rechecked in the signed Mac package: active account first,
+colored usage bars, content-sized stopped state, restart, persisted snooze after
+relaunch, Resume alerts and Escape dismissal all worked. Disabling dashboard at
+launch left no visible app window; explicit Finder activation reopened it.

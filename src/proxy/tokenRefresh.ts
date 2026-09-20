@@ -21,6 +21,8 @@ import { homedir, platform, userInfo } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { promisify } from "node:util"
 import { claudeLog } from "../logger"
+import { isCredentialsReadOnly, refuseCredentialWrite } from "./credentialsMode"
+import { fetchOAuthPlanFields, planFieldsMissing } from "./oauthPlan" 
 
 const execFile = promisify(execFileCb)
 
@@ -51,7 +53,7 @@ export function configDirToCredentialsFile(claudeConfigDir: string): string {
   return join(resolve(claudeConfigDir), ".credentials.json")
 }
 
-interface OAuthCredentials {
+export interface OAuthCredentials {
   accessToken: string
   refreshToken: string
   expiresAt: number
@@ -68,9 +70,17 @@ interface OAuthCredentials {
   scopes?: string[]
   subscriptionType?: string
   rateLimitTier?: string
+  /**
+   * Which seat a Team member holds. The only field that separates a Premium
+   * seat from a Standard one: measured across twelve live accounts, every
+   * Premium seat reports `rate_limit_tier: "default_claude_max_5x"` — what a
+   * personal Max 5x reports — and a Standard seat reports `default_raven`,
+   * which names no published allotment at all.
+   */
+  seatTier?: string
 }
 
-interface CredentialsFile {
+export interface CredentialsFile {
   claudeAiOauth: OAuthCredentials
   [key: string]: unknown
 }
@@ -84,6 +94,35 @@ export interface CredentialStore {
   refreshKey?: string
   read(): Promise<CredentialsFile | null>
   write(credentials: CredentialsFile): Promise<boolean>
+}
+
+/**
+ * Wrap a store so that, under MERIDIAN_CREDENTIALS_READONLY, `write()` refuses
+ * and logs instead of touching the backend. Reads are untouched — re-reading
+ * is how this instance picks up a rotation performed by the other one.
+ *
+ * Applied inside the two builders rather than at `createPlatformCredentialStore`
+ * so that EVERY store this module can hand out is guarded, including the
+ * module-level singletons and any backend added later. That is the point of
+ * putting the refusal at the store seam: a caller nobody anticipated (a new
+ * route, a CLI command, a plugin reaching through an exported store) fails
+ * loudly here rather than silently corrupting a token file that a production
+ * instance depends on.
+ *
+ * Returning false rather than throwing keeps every existing caller on the
+ * write-failed path it already handles (`doRefresh` returns false, the CLI
+ * prints its failure, callers fall back to the token on disk).
+ */
+function guardCredentialWrites(store: CredentialStore): CredentialStore {
+  return {
+    ...store,
+    async write(credentials) {
+      if (isCredentialsReadOnly()) {
+        return refuseCredentialWrite("credential-store", store.refreshKey ?? "unknown-store")
+      }
+      return store.write(credentials)
+    },
+  }
 }
 
 /**
@@ -128,7 +167,7 @@ function parseKeychainValue(raw: string): { credentials: CredentialsFile; wasHex
 const keychainWasHexByService = new Map<string, boolean>()
 
 function buildMacosStore(serviceName: string): CredentialStore {
-  return {
+  return guardCredentialWrites({
     refreshKey: `keychain:${serviceName}`,
 
     async read() {
@@ -165,7 +204,7 @@ function buildMacosStore(serviceName: string): CredentialStore {
         return false
       }
     },
-  }
+  })
 }
 
 const macosStore: CredentialStore = buildMacosStore(KEYCHAIN_SERVICE)
@@ -176,7 +215,7 @@ const macosStore: CredentialStore = buildMacosStore(KEYCHAIN_SERVICE)
 
 function buildFileStore(filePath: string): CredentialStore {
   const absPath = resolve(filePath)
-  return {
+  return guardCredentialWrites({
     refreshKey: `file:${absPath}`,
 
     async read() {
@@ -200,7 +239,7 @@ function buildFileStore(filePath: string): CredentialStore {
         return false
       }
     },
-  }
+  })
 }
 
 
@@ -229,6 +268,32 @@ export function credentialsFilePathForProfile(claudeConfigDir?: string): string 
   return claudeConfigDir ? configDirToCredentialsFile(claudeConfigDir) : CREDENTIALS_FILE
 }
 
+/**
+ * What the stored credential says about this account's ability to authenticate.
+ *
+ * `unknown` is deliberately NOT a soft `absent`. `read()` answers `null` both
+ * for a credential that is not there and for one it could not parse, so from
+ * here the two are indistinguishable - and a Keychain that momentarily refuses,
+ * or a file caught mid-write, must never be allowed to report a working account
+ * as logged out. Only a credential that was read successfully and carries no
+ * access token is `absent`.
+ */
+export type StoredCredentialPresence = "present" | "absent" | "unknown"
+
+export async function readStoredCredentialPresence(
+  store: CredentialStore,
+): Promise<StoredCredentialPresence> {
+  let credentials: CredentialsFile | null
+  try {
+    credentials = await store.read()
+  } catch {
+    return "unknown"
+  }
+  if (!credentials) return "unknown"
+  const accessToken = credentials.claudeAiOauth?.accessToken
+  return typeof accessToken === "string" && accessToken.length > 0 ? "present" : "absent"
+}
+
 // ---------------------------------------------------------------------------
 // OAuth refresh
 // ---------------------------------------------------------------------------
@@ -250,6 +315,19 @@ const inflightRefreshByStore = new WeakMap<CredentialStore, Promise<boolean>>()
  */
 export async function refreshOAuthToken(store?: CredentialStore): Promise<boolean> {
   const s = store ?? createPlatformCredentialStore()
+
+  // Refusing the WRITE is not sufficient, and stopping here is not merely an
+  // optimisation. A refresh_token grant rotates the token server-side: the
+  // moment this instance calls the endpoint, the refresh token on disk can
+  // stop working — and having refused to persist the replacement, we would
+  // have invalidated the other instance's credentials AND thrown away the
+  // only thing that could have repaired them. Not making the call is the
+  // only safe behaviour, so the refusal has to sit above the network round
+  // trip rather than at the store.
+  if (isCredentialsReadOnly()) {
+    return refuseCredentialWrite("oauth-refresh", s.refreshKey ?? "unknown-store")
+  }
+
   const refreshKey = s.refreshKey
   if (refreshKey) {
     const inflight = inflightRefreshByKey.get(refreshKey)
@@ -353,13 +431,35 @@ async function doRefresh(store: CredentialStore): Promise<boolean> {
     ...(refreshTokenExpiresAt ? { refreshTokenExpiresAt } : {}),
   }
 
+  // The plan is only ever written at login, so a credential file created before
+  // Meridian persisted it stays plan-blind forever — nothing else in the
+  // lifecycle ever asks. A refresh is the one other moment that holds a valid
+  // access token, which is what the profile endpoint requires, so it is the
+  // only place a backfill can happen without forcing an interactive re-login.
+  //
+  // Gated on the fields being absent, so this costs one extra GET once per
+  // profile rather than on every ~8h refresh: the next refresh reads the value
+  // this one wrote and skips. Merged before the write so the whole thing is
+  // still a single store write, and spread UNDER the existing fields so a
+  // value already on disk always wins over a freshly fetched one.
+  const backfilled = planFieldsMissing(credentials.claudeAiOauth)
+    ? await fetchOAuthPlanFields(tokenData.access_token)
+    : {}
+  if (backfilled.subscriptionType || backfilled.rateLimitTier) {
+    credentials.claudeAiOauth = { ...backfilled, ...credentials.claudeAiOauth }
+  }
+
   const written = await store.write(credentials)
   if (!written) return false
 
   // Logged so it is observable whether Anthropic ever rolls the refresh-token
   // window — undefined here means the renewal countdown stays anchored to the
   // last interactive login.
-  claudeLog("token_refresh.success", { expiresAt, refreshTokenExpiresAt })
+  claudeLog("token_refresh.success", {
+    expiresAt,
+    refreshTokenExpiresAt,
+    backfilledPlan: Object.keys(backfilled),
+  })
   return true
 }
 
@@ -386,6 +486,13 @@ export async function ensureFreshToken(
   const expiresAt = credentials?.claudeAiOauth?.expiresAt
   if (!expiresAt) return false
   if (expiresAt - Date.now() > bufferMs) return true
+  // Read-only instances report the token as they found it instead of routing
+  // into a refusal. This runs before every SDK request, so the refusal log
+  // would repeat per request for the whole buffer window; the refusal belongs
+  // on deliberate refresh attempts. False is already the documented non-fatal
+  // result — the caller proceeds with the on-disk token, which the instance
+  // that OWNS the refresh keeps current.
+  if (isCredentialsReadOnly()) return false
   return refreshOAuthToken(s)
 }
 
@@ -436,28 +543,42 @@ export interface AuthRenewalStatus {
  * on every deployment that predates the CLI writing it.
  */
 /**
- * How long a read of the refresh-token expiry stays fresh.
+ * How long a read of the stored credential facts stays fresh.
  *
  * `/health` is hot: the dashboard polls it every 10s per open page, plugin
  * health checks hit it, and external monitors poll it too. On macOS a
  * credential-store read spawns `/usr/bin/security find-generic-password`, so
- * reading per request means a subprocess per poll — for a value that moves on
- * a ~30-day cadence. Five minutes is far shorter than any meaningful change to
- * the login window and still collapses ~97% of the reads.
+ * reading per request means a subprocess per poll — for values that move on a
+ * ~30-day cadence at best, and only at login for the plan. Five minutes is far
+ * shorter than any meaningful change to either and still collapses ~97% of the
+ * reads.
  */
-const RENEWAL_EXPIRY_TTL_MS = 5 * 60_000
+const CREDENTIAL_FACTS_TTL_MS = 5 * 60_000
 
-const renewalExpiryCache = new Map<string, { value: number | undefined; at: number }>()
-const renewalExpiryInflight = new Map<string, Promise<number | undefined>>()
+/**
+ * The fields read off a credential file that describe the *account* rather
+ * than the current access token. One read serves all of them because they
+ * arrive in one file and are wanted by the same request: `/health` reports the
+ * login window and the plan together.
+ */
+interface StoredCredentialFacts {
+  refreshTokenExpiresAt?: number
+  subscriptionType?: string
+  rateLimitTier?: string
+  seatTier?: string
+}
 
-/** Drop cached refresh-token expiries — for tests, and after a re-login. */
+const credentialFactsCache = new Map<string, { value: StoredCredentialFacts; at: number }>()
+const credentialFactsInflight = new Map<string, Promise<StoredCredentialFacts>>()
+
+/** Drop cached credential facts — for tests, and after a re-login. */
 export function resetAuthRenewalCache(): void {
-  renewalExpiryCache.clear()
-  renewalExpiryInflight.clear()
+  credentialFactsCache.clear()
+  credentialFactsInflight.clear()
 }
 
 /**
- * Read the refresh-token expiry, cached per credential store.
+ * Read the account-describing credential fields, cached per credential store.
  *
  * Keyed on `refreshKey`, which both real stores set (`keychain:` / `file:`).
  * A store WITHOUT one is not cached at all: its identity is unknown, so
@@ -467,33 +588,66 @@ export function resetAuthRenewalCache(): void {
  * A failed read is never cached. A keychain blip should retry on the next
  * poll, not suppress the renewal warning for the whole TTL.
  */
-async function readRefreshTokenExpiry(s: CredentialStore): Promise<number | undefined> {
+async function readCredentialFacts(s: CredentialStore): Promise<StoredCredentialFacts> {
   const key = s.refreshKey
   if (key) {
-    const cached = renewalExpiryCache.get(key)
-    if (cached && Date.now() - cached.at < RENEWAL_EXPIRY_TTL_MS) return cached.value
-    const inflight = renewalExpiryInflight.get(key)
+    const cached = credentialFactsCache.get(key)
+    if (cached && Date.now() - cached.at < CREDENTIAL_FACTS_TTL_MS) return cached.value
+    const inflight = credentialFactsInflight.get(key)
     if (inflight) return inflight
   }
 
-  const read = (async (): Promise<number | undefined> => {
+  const read = (async (): Promise<StoredCredentialFacts> => {
     let credentials: CredentialsFile | null = null
     try {
       credentials = await s.read()
     } catch {
-      return undefined
+      return {}
     }
-    const value = credentials?.claudeAiOauth?.refreshTokenExpiresAt
-    if (key) renewalExpiryCache.set(key, { value, at: Date.now() })
+    const oauth = credentials?.claudeAiOauth
+    const value: StoredCredentialFacts = {
+      refreshTokenExpiresAt: oauth?.refreshTokenExpiresAt,
+      subscriptionType: oauth?.subscriptionType,
+      rateLimitTier: oauth?.rateLimitTier,
+      seatTier: oauth?.seatTier,
+    }
+    if (key) credentialFactsCache.set(key, { value, at: Date.now() })
     return value
   })()
 
   if (!key) return read
-  renewalExpiryInflight.set(key, read)
+  credentialFactsInflight.set(key, read)
   try {
     return await read
   } finally {
-    renewalExpiryInflight.delete(key)
+    credentialFactsInflight.delete(key)
+  }
+}
+
+/**
+ * The plan fields a login persisted, as stored.
+ *
+ * `claude auth status` reports `subscriptionType` and nothing else, so the
+ * tier that separates Max 5x from Max 20x is only ever available here. Both
+ * fields are optional on disk — a credential file written before Meridian
+ * persisted them has neither — and absent keys are omitted rather than nulled
+ * so a caller can spread the result over a live status without erasing it.
+ */
+export interface StoredPlanFields {
+  subscriptionType?: string
+  rateLimitTier?: string
+  seatTier?: string
+}
+
+export async function getStoredPlanFields(
+  store?: CredentialStore,
+): Promise<StoredPlanFields> {
+  const s = store ?? createPlatformCredentialStore()
+  const { subscriptionType, rateLimitTier, seatTier } = await readCredentialFacts(s)
+  return {
+    ...(subscriptionType ? { subscriptionType } : {}),
+    ...(rateLimitTier ? { rateLimitTier } : {}),
+    ...(seatTier ? { seatTier } : {}),
   }
 }
 
@@ -504,7 +658,7 @@ export async function getAuthRenewalStatus(
   const s = store ?? createPlatformCredentialStore()
   // Only the READ is cached. The day count and the flag are recomputed every
   // call so elapsed time and a changed warnDays are always reflected.
-  const refreshTokenExpiresAt = await readRefreshTokenExpiry(s)
+  const { refreshTokenExpiresAt } = await readCredentialFacts(s)
   if (!refreshTokenExpiresAt) return { renewalRequiredSoon: false }
 
   const msRemaining = refreshTokenExpiresAt - Date.now()
@@ -561,6 +715,11 @@ export function startBackgroundRefresh(
   bufferMs = 5 * 60 * 1000,
   failureRetryMs = 5 * 60 * 1000,
 ): void {
+  // Refreshing on a timer regardless of traffic is precisely what a read-only
+  // instance must never do. Never arming the scheduler — rather than arming it
+  // and refusing on each tick — keeps isBackgroundRefreshActive() an honest
+  // answer to "is this process refreshing tokens?".
+  if (isCredentialsReadOnly()) return
   if (scheduledRefreshActive) return
   scheduledRefreshActive = true
   const gen = ++scheduledRefreshGeneration

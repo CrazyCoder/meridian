@@ -1,0 +1,126 @@
+name: Desktop release
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Attach verified downloads to this commit's existing release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mac:
+    # A maintainer may explicitly rehearse a candidate; only main may publish.
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && !inputs.publish)
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate release identity
+        id: release
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          tag="meridian-v$version"
+          if [[ "$PUBLISH" == true ]]; then
+            test "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)"
+            gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Prepare notarization credentials
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_CONTENT APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing signing secret: $name"
+              exit 1
+            fi
+          done
+          umask 077
+          key="$RUNNER_TEMP/meridian-notary.p8"
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$key"
+          echo "APPLE_API_KEY=$key" >> "$GITHUB_ENV"
+      - run: npm ci
+        working-directory: apps/desktop
+      - name: Build, sign and notarize Apple Silicon app
+        working-directory: apps/desktop
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          npm run build
+          # shellcheck disable=SC2016 # electron-builder expands artifact placeholders.
+          npx --no-install electron-builder --mac dmg zip --arm64 --publish never \
+            --config.forceCodeSigning=true \
+            --config.mac.notarize=true \
+            --config.extraMetadata.version="$RELEASE_VERSION" \
+            --config.artifactName='Meridian-Desktop-${version}-mac-${arch}.${ext}'
+      - name: Verify distributed app and checksums
+        working-directory: apps/desktop/release
+        run: |
+          set -euo pipefail
+          app='mac-arm64/Meridian Desktop.app'
+          codesign --verify --deep --strict "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          # Check the ZIP contains the same stapled app that passed Gatekeeper.
+          ditto -x -k Meridian-Desktop-*-mac-arm64.zip "$RUNNER_TEMP/desktop-zip"
+          xcrun stapler validate "$RUNNER_TEMP/desktop-zip/Meridian Desktop.app"
+          codesign --verify --deep --strict "$RUNNER_TEMP/desktop-zip/Meridian Desktop.app"
+          shasum -a 256 Meridian-Desktop-*-mac-arm64.dmg Meridian-Desktop-*-mac-arm64.zip > SHA256SUMS.txt
+          printf 'Source commit: %s\nWorkflow: https://github.com/%s/actions/runs/%s\n' \
+            "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > BUILD-INFO.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meridian-desktop-mac-arm64
+          if-no-files-found: error
+          path: |
+            apps/desktop/release/Meridian-Desktop-*-mac-arm64.dmg
+            apps/desktop/release/Meridian-Desktop-*-mac-arm64.zip
+            apps/desktop/release/SHA256SUMS.txt
+            apps/desktop/release/BUILD-INFO.txt
+      - name: Publish verified downloads
+        if: inputs.publish
+        working-directory: apps/desktop/release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            Meridian-Desktop-*-mac-arm64.dmg Meridian-Desktop-*-mac-arm64.zip \
+            SHA256SUMS.txt BUILD-INFO.txt
+      - name: Remove notarization key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/meridian-notary.p8"

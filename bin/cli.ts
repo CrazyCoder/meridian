@@ -25,6 +25,7 @@ Usage: meridian [command] [options]
 
 Commands:
   (default)        Start the proxy server
+  status           Show what a running instance is doing (the / page, in the terminal)
   setup            Configure the OpenCode plugin (run once after install)
   profile          Manage Claude account profiles (add, list, switch, remove)
   refresh-token    Refresh the Claude Code OAuth token
@@ -51,7 +52,7 @@ See https://github.com/rynfar/meridian for full documentation.`)
 }
 
 if (args[0] === "profile") {
-  const { profileAdd, profileAddOauthToken, profileList, profileRemove, profileSwitch, profileLogin, profileHelp } = await import("../src/proxy/profileCli")
+  const { profileAdd, profileAddOauthToken, profileList, profileRemove, profileRename, profileSwitch, profileLogin, profileHelp } = await import("../src/proxy/profileCli")
   const subcommand = args[1]
   const profileId = args[2]
   const headless = args.includes("--headless")
@@ -67,6 +68,7 @@ if (args[0] === "profile") {
   }
   else if (subcommand === "list" || subcommand === "ls") profileList()
   else if (subcommand === "remove" && profileId) profileRemove(profileId)
+  else if (subcommand === "rename" && profileId && args[3]) profileRename(profileId, args[3])
   else if (subcommand === "switch" && profileId) await profileSwitch(profileId)
   else if (subcommand === "login" && profileId) await profileLogin(profileId, { headless })
   else profileHelp()
@@ -198,6 +200,32 @@ const idleTimeoutSeconds = parseInt(process.env.MERIDIAN_IDLE_TIMEOUT_SECONDS ??
 const pluginDir = process.env.MERIDIAN_PLUGIN_DIR
 const pluginConfigPath = process.env.MERIDIAN_PLUGIN_CONFIG
 
+/**
+ * Print the dashboard for the instance on `host:port`, if that is what is
+ * there. Returns the probe result so each caller can decide what a
+ * non-Meridian answer means — a bad `status` invocation, or a genuine
+ * port conflict.
+ */
+async function printRunningInstance() {
+  const { probeMeridian } = await import("../src/proxy/statusProbe")
+  const result = await probeMeridian(host, port, { apiKey: process.env.MERIDIAN_API_KEY })
+  if (result.kind === "meridian") {
+    const { renderCliDashboard } = await import("../src/telemetry/cliDashboard")
+    process.stdout.write(
+      renderCliDashboard({ host, port, ...result.snapshot }, { color: process.stdout.isTTY === true }),
+    )
+  }
+  return result
+}
+
+if (args[0] === "status") {
+  const result = await printRunningInstance()
+  if (result.kind === "meridian") process.exit(0)
+  const { formatStatusMessage } = await import("../src/proxy/statusProbe")
+  console.error(formatStatusMessage(result, host, port))
+  process.exit(1)
+}
+
 // Load profile configuration:
 //   1. MERIDIAN_PROFILES env var (JSON array) — takes precedence
 //   2. ~/.config/meridian/profiles.json — written by `meridian profile add`
@@ -274,6 +302,9 @@ export async function runCli(
     enableDiskProfileDiscovery()
   }
 
+  const { enableOrganizationLookup } = await import("../src/proxy/organizationName")
+  enableOrganizationLookup()
+
   const proxy = await start({ port, host, idleTimeoutSeconds, pluginDir, pluginConfigPath, profiles, defaultProfile, version, installProcessErrorHandlers: true })
 
   // Handle EADDRINUSE — preserve CLI behavior of exiting on port conflict
@@ -312,5 +343,19 @@ export async function runCli(
 }
 
 if (import.meta.main) {
+  // Ask before starting, because the answer changes what "port in use" means.
+  // The port that Meridian wants is usually held by Meridian, and being told
+  // so is not an error — it is the question `meridian status` answers, asked
+  // by accident. Checking here rather than from the EADDRINUSE handler keeps
+  // the dashboard as the whole output: by the time a bind fails, the
+  // pre-flight auth check and the plugin loader have already printed.
+  const { isPortAvailable } = await import("../src/proxy/statusProbe")
+  if (!(await isPortAvailable(host, port))) {
+    const result = await printRunningInstance()
+    if (result.kind === "meridian") process.exit(0)
+    const { formatConflictMessage } = await import("../src/proxy/statusProbe")
+    console.error(formatConflictMessage(result, host, port))
+    process.exit(1)
+  }
   await runCli()
 }

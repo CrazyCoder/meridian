@@ -162,6 +162,12 @@ describe("classifyError", () => {
       expect(r.type).toBe("billing_error")
     })
 
+    it("detects a third-party app extra-usage refusal (#1045)", () => {
+      const r = classifyError("Claude Code returned an error result: API Error: 400 Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.")
+      expect(r.status).toBe(402)
+      expect(r.type).toBe("billing_error")
+    })
+
     // These used to classify as billing because the branch matched bare
     // substrings anywhere in the text, and it runs before the crash/max-turns
     // branches so it won. Harmless as a wrong status code; not harmless once
@@ -420,6 +426,37 @@ describe("classifyError", () => {
     it("detects 'timed out' keyword", () => {
       const result = classifyError("connection timed out")
       expect(result.status).toBe(504)
+    })
+  })
+
+  describe("session bookkeeping saturation", () => {
+    it("classifies the lifecycle lock wait as proxy load, not a request timeout", () => {
+      const result = classifyError("timed out waiting for /var/lib/meridian/.cache/meridian/session-gc.json.lock")
+      expect(result.status).toBe(503)
+      expect(result.type).toBe("overloaded_error")
+      expect(result.message).toContain("a bookkeeping lock is busy")
+      // The raw message carries absolute host paths; the client sees none.
+      expect(result.message).not.toContain("/var/lib")
+      expect(result.message).not.toContain(".lock")
+    })
+
+    it("classifies the ownership backlog limit as proxy load", () => {
+      const result = classifyError("session transcript ownership backlog is full")
+      expect(result.status).toBe(503)
+      expect(result.type).toBe("overloaded_error")
+      expect(result.message).toContain("the retirement backlog is full")
+    })
+
+    it("classifies the ownership capacity limit as proxy load", () => {
+      const result = classifyError("session transcript ownership capacity is full")
+      expect(result.status).toBe(503)
+      expect(result.type).toBe("overloaded_error")
+    })
+
+    it("still classifies an unrelated timeout as a request timeout", () => {
+      const result = classifyError("connection timed out")
+      expect(result.status).toBe(504)
+      expect(result.type).toBe("timeout_error")
     })
   })
 

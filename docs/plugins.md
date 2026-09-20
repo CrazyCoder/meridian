@@ -4,15 +4,15 @@
 
 Extend Meridian's behavior with composable plugins — no core modifications needed.
 
-**Quick start:** Drop a `.ts` or `.js` file in `~/.config/meridian/plugins/` and restart.
+**Quick start:** Drop a compiled `.js` file in `~/.config/meridian/plugins/` and restart.
 
-```ts
-// ~/.config/meridian/plugins/my-plugin.ts
+```js
+// ~/.config/meridian/plugins/my-plugin.js
 export default {
   name: "my-plugin",
   onRequest(ctx) {
     // modify request context
-    return { ...ctx, systemContext: ctx.systemContext + "\nBe concise." }
+    return { ...ctx, systemContext: (ctx.systemContext || "") + "\nBe concise." }
   },
 }
 ```
@@ -20,6 +20,18 @@ export default {
 - **Manage plugins** at `http://localhost:3456/plugins`
 - **Reload without restart:** `POST /plugins/reload`
 - **Full guide:** See [PLUGINS.md](../PLUGINS.md)
+
+## Install from the Mac app
+
+In [Meridian Desktop](../apps/desktop/README.md), open **Plugins**, check for
+updates, then choose **Install** or **Update**. Pi, OpenCode, Hermes and OpenClaw
+packages are available in the catalog. The app preserves unrelated plugin
+configuration and reloads its owned service; a stopped service loads them on
+its next start. Local headless installations using the same configuration retain
+those plugins after a handoff. Docker and Nix installations manage their own
+packages. Client connection setup is separate from installing a scrub plugin.
+
+For TypeScript authoring and runtime requirements, see the [authoring guide](../PLUGINS.md).
 
 ### Official plugins
 
@@ -30,9 +42,9 @@ opt-in plugins instead:
 | Plugin | What it does |
 |--------|--------------|
 | [`@rynfar/meridian-plugin-hermes-scrub`](https://github.com/rynfar/meridian-plugin-hermes-scrub) | Strips Hermes Agent's `# Finishing the job` harness block from the system prompt. Fixes empty-stream responses when proxying Hermes, and avoids its coding-harness fingerprint. |
-| [`@rynfar/meridian-plugin-pi-scrub`](https://github.com/rynfar/meridian-plugin-pi-scrub) | Strips Pi's coding-agent-harness prompt line that Anthropic meters as Extra Usage. |
+| [`@rynfar/meridian-plugin-pi-scrub`](https://github.com/rynfar/meridian-plugin-pi-scrub) | Strips Pi's coding-agent-harness prompt line from the system prompt. |
 | [`@rynfar/meridian-plugin-opencode-scrub`](https://github.com/rynfar/meridian-plugin-opencode-scrub) | Strips OpenCode harness boilerplate from the system prompt before it reaches Claude. |
-| [`@rynfar/meridian-plugin-openclaw-scrub`](https://github.com/rynfar/meridian-plugin-openclaw-scrub) | Stops OpenClaw traffic being metered as a third-party app. Removes the output-directive block and the heartbeat sections — the three passages measured to trip `400 You're out of extra usage` on their own. |
+| [`@rynfar/meridian-plugin-openclaw-scrub`](https://github.com/rynfar/meridian-plugin-openclaw-scrub) | Removes OpenClaw prompt fingerprints, output directives and stale heartbeat replay. |
 
 **Nix users:** the flake packages hermes-scrub, pi-scrub and opencode-scrub prebuilt — `pkgs.meridianPlugins.<name>` via the `meridian` overlay (or `meridian.legacyPackages.${system}.meridianPlugins`), each exposing `.path` for a `plugins.json` entry or the home-manager `pluginConfig` option. Pins are refreshed by a scheduled workflow that rebuilds every plugin before bumping. openclaw-scrub is not in the flake yet — add it as a `meridian-plugin-openclaw-scrub` input (the packaging is generic; it is picked up by prefix) and relock.
 
@@ -40,6 +52,7 @@ Everyone else: install into Meridian's config dir and register the built file in
 `~/.config/meridian/plugins.json`:
 
 ```bash
+mkdir -p ~/.config/meridian
 cd ~/.config/meridian
 npm install @rynfar/meridian-plugin-hermes-scrub
 ```
@@ -52,9 +65,11 @@ npm install @rynfar/meridian-plugin-hermes-scrub
 }
 ```
 
-Paths must be absolute — the loader does not expand `~`.
+Use absolute paths for npm packages. Bare filenames are resolved in the plugin discovery directory; the loader does not expand `~`.
 
 Both plugin locations are configurable for the standalone CLI: `MERIDIAN_PLUGIN_DIR` overrides the auto-discovery directory and `MERIDIAN_PLUGIN_CONFIG` the manifest path (useful for Nix, containers, or running several instances with different plugin sets).
+
+The metering and failure observations behind these scrubbers are historical and account-specific. A prompt rewrite cannot guarantee subscription eligibility or avoid a genuine quota limit.
 
 ### Docker
 
@@ -68,4 +83,4 @@ services:
       MERIDIAN_PLUGINS: "@rynfar/meridian-plugin-pi-scrub,@rynfar/meridian-plugin-opencode-scrub"
 ```
 
-The entrypoint runs `npm install` into `~/.config/meridian` inside the container and writes the resulting entries to `plugins.json` (or `MERIDIAN_PLUGIN_CONFIG` if set). This runs on every container start and isn't backed by a volume, so plugin installs don't persist across `docker compose down && up` — only across plain restarts of the same container. If you want plugins baked into a reproducible image instead, install them in a custom `Dockerfile` layer at build time rather than via this env var.
+The entrypoint runs `npm install` into `~/.config/meridian` inside the container and writes the resulting entries to `plugins.json` (or `MERIDIAN_PLUGIN_CONFIG` if set). This runs on every container start. The supplied Compose file does not persist that config directory, so installs survive restarts of the same container but are lost when it is recreated unless you add a volume. If you want plugins baked into a reproducible image instead, install them in a custom `Dockerfile` layer at build time rather than via this env var.

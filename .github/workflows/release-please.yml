@@ -9,7 +9,11 @@ on:
       publish_only:
         description: "Skip release-please, just publish the current version to npm"
         type: boolean
-        default: true
+        default: false
+      desktop_rehearsal:
+        description: "Build signed Mac artifacts without publishing a release"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -18,7 +22,7 @@ permissions:
 
 jobs:
   release-please:
-    if: ${{ !inputs.publish_only }}
+    if: ${{ !inputs.publish_only && !inputs.desktop_rehearsal }}
     runs-on: ubuntu-latest
     outputs:
       # Use the unprefixed boolean release-please-action v4 sets for any-path
@@ -58,7 +62,7 @@ jobs:
     # Compare to the literal 'true' string to only publish when release-please
     # actually cut a release. publish_only is a real boolean from
     # workflow_dispatch input, so it can stay as-is.
-    if: ${{ always() && (needs.release-please.outputs.release_created == 'true' || inputs.publish_only == true) }}
+    if: ${{ always() && (needs.release-please.outputs.release_created == 'true' || (inputs.publish_only == true && !inputs.desktop_rehearsal)) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,7 +70,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          registry-url: "https://registry.npmjs.org"
+
+      # Node 22 bundles npm 10; trusted publishing needs npm >=11.5.1.
+      - name: Install npm with trusted-publishing support
+        run: npm install --global npm@11.19.1
 
       - uses: oven-sh/setup-bun@v2
 
@@ -74,8 +81,6 @@ jobs:
       - run: npm test
       - run: bun run build
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # Publish the semver-tagged Docker image on release.
   #
@@ -139,3 +144,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  desktop:
+    needs: release-please
+    if: ${{ always() && (needs.release-please.outputs.release_created == 'true' || inputs.desktop_rehearsal == true) }}
+    uses: ./.github/workflows/desktop-release.yml
+    with:
+      publish: ${{ needs.release-please.outputs.release_created == 'true' }}
+    secrets: inherit
