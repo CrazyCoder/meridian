@@ -1,10 +1,9 @@
 # Meridian Desktop — development preview
 
-Meridian supports Claude and an Antigravity branch preview. The **Providers**
+Meridian supports Claude and an Antigravity preview. The **Providers**
 page keeps setup, status and quota windows separate, with shared navigation and
-activity. For Antigravity, build the [preview service](../../README.md#try-antigravity)
-and connect this source-built app to its local URL. Installing the current npm
-release from **Versions** does not install the Antigravity branch. See the
+activity. For Antigravity, install the [preview service](../../README.md#try-antigravity)
+and connect this source-built app to its local URL. Choose Meridian 1.74.0 or later; earlier versions do not include Antigravity. See the
 [feature and unfinished-work checklist](../../docs/antigravity-support.md).
 
 An optional Electron app for local Meridian installations. The first platform

@@ -24,8 +24,8 @@ These are specific supported flows, not universal API or plugin compatibility.
 
 ## Unfinished work
 
-This is a published branch preview, not a released npm feature. Use the
-[source installation](../README.md#try-antigravity) and the exact tested versions
+Antigravity is a preview in Meridian 1.74.0 and later. Use the
+[installation instructions](../README.md#try-antigravity) and the tested versions
 above when reproducing a problem.
 
 The remaining engineering and acceptance work is:
@@ -38,8 +38,6 @@ The remaining engineering and acceptance work is:
   applies to the documented subset.
 - **Platform acceptance:** authenticated Linux and Windows runs with the actual
   CLI and clients. Fixture tests alone do not establish support.
-- **Release:** review, merge and release the branch. Installing the current npm
-  version does not include this backend.
 
 Other gaps require new official CLI capabilities or cooperation from executing
 tools. They are listed below rather than treated as promised wrapper features.

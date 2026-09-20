@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@rynfar/meridian"><img src="https://img.shields.io/npm/v/@rynfar/meridian?style=flat-square&color=58a6ff" alt="npm version" /></a>
-  <a href="https://github.com/rynfar/meridian/pull/1074"><img src="https://img.shields.io/badge/Antigravity-branch_preview-bc8cff?style=flat-square" alt="Antigravity: branch preview" /></a>
+  <a href="docs/antigravity.md"><img src="https://img.shields.io/badge/Antigravity-preview-bc8cff?style=flat-square" alt="Antigravity: preview" /></a>
   <a href="https://opensource.org/license/mit"><img src="https://img.shields.io/badge/license-MIT-58a6ff?style=flat-square" alt="MIT license" /></a>
 </p>
 
@@ -26,7 +26,7 @@ availability and subscription limits still apply.
 
 | <img src="assets/providers/claude.png" width="40" alt="Claude logo" /><br>Claude | <img src="assets/providers/antigravity.png" width="40" alt="Antigravity logo" /><br>Antigravity |
 | :--- | :--- |
-| **Released** · Claude Agent SDK | **Branch preview** · Official `agy` CLI |
+| **Released** · Claude Agent SDK | **Preview · v1.74.0+** · Official `agy` CLI |
 | Persistent sessions, prompt caching and multiple account profiles | Streaming, client tools, conversation reuse and saved-answer recovery |
 | [Client compatibility and setup](docs/agents.md) | [Pi and OpenCode setup](docs/antigravity.md) |
 | Headless macOS, Linux and Windows | Authenticated acceptance on macOS arm64; Linux/Windows verification unfinished |
@@ -48,31 +48,28 @@ setup, or [deployment](docs/deployment.md) for Docker and Nix.
 
 ## Try Antigravity
 
-**Antigravity is available on the published feature branch, not in the current npm
-release.** [PR #1074](https://github.com/rynfar/meridian/pull/1074) tracks the work.
+**Antigravity is included in Meridian 1.74.0 and later as a preview.**
 The verified setup uses **agy 1.2.7**, **Pi 0.72.1** or **OpenCode V1 1.18.31**,
 and macOS on Apple Silicon. Other versions need their own verification.
 
-Install Node.js 22+, [Bun](https://bun.sh/) and the
+Install Node.js 22+ and the
 [official Antigravity CLI](https://antigravity.google/). Run `agy` to sign in with
 your subscription account and disable paid overage credits in its settings.
-Then build the preview:
+Then install Meridian:
 
 ```sh
-git clone --branch feat/antigravity-backend https://github.com/rynfar/meridian.git meridian-antigravity
-cd meridian-antigravity
-bun install --frozen-lockfile
-npm run build
+npm install -g @rynfar/meridian@1.74.0
 
 MERIDIAN_BACKEND=antigravity \
 MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1 \
 MERIDIAN_AGY_STATE_PATH="$HOME/.local/state/meridian/antigravity.sqlite" \
 MERIDIAN_PORT=3457 \
-node dist/cli.js
+meridian
 ```
 
 Open `http://127.0.0.1:3457/providers` and use **Connect Pi / OpenCode**, or follow
 the [CLI setup instructions](docs/antigravity.md#configure-installed-clients).
+For a source build, follow the [development guide](docs/development.md).
 The tool bridge lets the client execute tools with its own permissions. The
 SQLite path enables saved state across service restarts; it does not guarantee
 recovery of an unfinished action.
@@ -120,9 +117,8 @@ the service.
 
 The desktop preview targets **macOS on Apple Silicon**. The first downloadable
 release is being prepared; use the [source instructions](apps/desktop/README.md#run-locally)
-in the meantime. To try Antigravity, connect the app to the preview service built
-above. Installing the current npm release from **Versions** does not install the
-Antigravity branch.
+in the meantime. To try Antigravity, connect the app to a Meridian 1.74.0+ service configured as shown above.
+Older Meridian versions do not include Antigravity.
 
 Headless use remains supported. The npm package does not install Electron;
 Docker, Nix and existing service managers can run the same server.

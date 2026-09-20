@@ -13,20 +13,17 @@ Antigravity's harness instructions remain in effect and `max_tokens` is advisory
 
 ## Preview availability
 
-Antigravity is currently published on
-[`feat/antigravity-backend`](https://github.com/rynfar/meridian/tree/feat/antigravity-backend)
-in [PR #1074](https://github.com/rynfar/meridian/pull/1074), not in the current npm
-release. Follow the [source build instructions](../README.md#try-antigravity).
-When running from that checkout, substitute `node dist/cli.js` for `meridian`
-in the commands below. Do not replace an existing released installation just to
-try the preview; run it on a separate port.
+Antigravity is included in **Meridian 1.74.0 and later** as a preview. Follow the
+[installation instructions](../README.md#try-antigravity). For a source build,
+substitute `node dist/cli.js` for `meridian` in the commands below. Run the preview
+on a separate port if you already have a Claude service.
 
 ## Feature status
 
 Validated on macOS arm64 with agy **1.2.7**, Pi **0.72.1** and OpenCode V1
 **1.18.31**. [E2E.md](../E2E.md) records the actual-client evidence.
 
-| Area | Available in this branch |
+| Area | Available in 1.74.0 |
 | --- | --- |
 | Coding | Incremental text, tool/result loops, parallel batches, approvals, questions and cancellation |
 | Client extensions | Tested Pi/OpenCode plugins and client-owned delegation |
@@ -379,7 +376,7 @@ environment-variable name, never the key value. Run the command in a terminal
 where Meridian is installed, then restart the client.
 
 
-Builds from this branch include both retry integrations; a source checkout is
+Meridian 1.74.0+ packages include both retry integrations; a source checkout is
 not required. With your official CLI signed in and Meridian running with the
 Antigravity tool bridge enabled, add your account model to either client:
 
