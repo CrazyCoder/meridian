@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.75.0](https://github.com/rynfar/meridian/compare/meridian-v1.74.0...meridian-v1.75.0) (2026-09-22)
+
+
+### Features
+
+* support Claude Opus 5.5 ([#1102](https://github.com/rynfar/meridian/issues/1102)) ([b16da9c](https://github.com/rynfar/meridian/commit/b16da9cd5e0f07abb58916977b04b56ccd928dfb))
+
 ## [1.74.0](https://github.com/rynfar/meridian/compare/meridian-v1.73.0...meridian-v1.74.0) (2026-09-20)
 
 
