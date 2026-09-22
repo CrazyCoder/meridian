@@ -765,6 +765,79 @@ describe("session transcript lifecycle", () => {
     })).rejects.toBeInstanceOf(SessionLifecycleLockError)
     expect(readdirSync(storeDir)).not.toContain("session-gc.json")
   })
+
+  it("initialises one lock candidate per acquisition, not one per retry", async () => {
+    const lock = join(storeDir, "session-gc.json.lock")
+    writeFileSync(lock, "another-owner\n", { mode: 0o600 })
+    chmodSync(lock, 0o600)
+    const candidates = (): string[] =>
+      readdirSync(storeDir).filter((name) => name.includes(".candidate-"))
+
+    let settled = false
+    const outcome = prepareFork(locator("retrying"), {
+      ...options,
+      lockWaitMs: 120,
+      lockRetryMs: 10,
+    }).catch((error: unknown) => error).finally(() => { settled = true })
+
+    const names = new Set<string>()
+    const samples: number[] = []
+    while (!settled) {
+      const present = candidates()
+      for (const name of present) names.add(name)
+      // Sampling starts at the first sighting so the tick that races candidate
+      // creation is not counted against it.
+      if (names.size > 0) samples.push(present.length)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+
+    expect(await outcome).toBeInstanceOf(SessionLifecycleLockError)
+    // A candidate initialised per attempt is a different name each time and is
+    // absent for most of every retry interval, because each one pays its own
+    // fsync before the link and is unlinked straight after.
+    expect(samples.length).toBeGreaterThanOrEqual(5)
+    expect(samples.every((count) => count === 1)).toBe(true)
+    expect(names.size).toBe(1)
+    expect(candidates()).toEqual([])
+  })
+
+  it("grants the lock to one process's callers in arrival order", async () => {
+    const lock = join(storeDir, "session-gc.json.lock")
+    writeFileSync(lock, "another-owner\n", { mode: 0o600 })
+    chmodSync(lock, 0o600)
+    const order: string[] = []
+
+    // The earlier caller is asleep in a long retry interval when the holder
+    // leaves; a later caller polling fast would win a poll-only race.
+    const early = prepareFork(locator("early"), { ...options, lockRetryMs: 400 })
+      .then(() => { order.push("early") })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const late = prepareFork(locator("late"), { ...options, lockRetryMs: 5 })
+      .then(() => { order.push("late") })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    rmSync(lock, { force: true })
+
+    await Promise.all([early, late])
+    expect(order).toEqual(["early", "late"])
+  })
+
+  it("hands the turn on when a queued caller's budget expires", async () => {
+    const lock = join(storeDir, "session-gc.json.lock")
+    writeFileSync(lock, "another-owner\n", { mode: 0o600 })
+    chmodSync(lock, 0o600)
+
+    const first = prepareFork(locator("first"), options)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const impatient = prepareFork(locator("impatient"), { ...options, lockWaitMs: 50 })
+      .catch((error: unknown) => error)
+    const last = prepareFork(locator("last"), options)
+
+    expect(await impatient).toBeInstanceOf(SessionLifecycleLockError)
+    rmSync(lock, { force: true })
+    await Promise.all([first, last])
+    expect(Object.keys(readSidecar(storeDir).resources)).toHaveLength(2)
+  })
+
   it("never overlaps a second physical deleter with an uncertain first", async () => {
     const target = locator("lease-token")
     let now = 1_000

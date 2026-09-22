@@ -1149,8 +1149,37 @@ interface SidecarPaths {
   lock: string
 }
 
-async function publishInitializedSidecarLock(path: string, contents: string): Promise<boolean> {
+interface SidecarLockCandidate {
+  /** Become the lock. False means somebody else already holds it. */
+  publish: () => Promise<boolean>
+  /** Drop the staging name. A published candidate stays alive as the lock. */
+  discard: () => Promise<void>
+}
+
+/** Initialise one lock candidate for a whole acquisition, not one per attempt.
+ *
+ *  The fsync itself is load-bearing: a crash that leaves the lock linked to an
+ *  unwritten inode is unrecoverable, because stale-lock recovery only retires a
+ *  lock whose owner it can parse and prove dead. Paying it per attempt is what
+ *  does not follow. An fsync costs ~100ms on a busy filesystem, so a 2s budget
+ *  bought ~13 attempts rather than the ~80 a 25ms retry interval implies, and
+ *  each one wrote into the very directory the holder must fsync to publish the
+ *  sidecar, so waiters taxed the holder they were waiting for. One initialised
+ *  inode, re-linked, keeps the durability and drops the cost to a rename-class
+ *  metadata operation.
+ */
+async function createInitializedSidecarLockCandidate(
+  path: string,
+  contents: string,
+): Promise<SidecarLockCandidate> {
   const staging = `${path}.candidate-${process.pid}-${randomUUID()}`
+  const discard = async (): Promise<void> => {
+    await unlink(staging).catch((error) => {
+      if (!hasCode(error, "ENOENT")) {
+        console.error("[sessionLifecycle] lock staging cleanup failed:", errorMessage(error))
+      }
+    })
+  }
   let handle: Awaited<ReturnType<typeof open>> | undefined
   try {
     handle = await open(staging, "wx", 0o600)
@@ -1158,21 +1187,61 @@ async function publishInitializedSidecarLock(path: string, contents: string): Pr
     await handle.sync()
     await handle.close()
     handle = undefined
-    try {
-      await link(staging, path)
-      return true
-    } catch (error) {
-      if (hasCode(error, "EEXIST")) return false
-      throw error
-    }
-  } finally {
+  } catch (error) {
     await handle?.close().catch(() => undefined)
-    await unlink(staging).catch((error) => {
-      if (!hasCode(error, "ENOENT")) {
-        console.error("[sessionLifecycle] lock staging cleanup failed:", errorMessage(error))
-      }
-    })
+    await discard()
+    throw error
   }
+  return {
+    publish: async () => {
+      try {
+        await link(staging, path)
+        return true
+      } catch (error) {
+        if (hasCode(error, "EEXIST")) return false
+        throw error
+      }
+    },
+    discard,
+  }
+}
+
+/** Tail of each lock path's in-process queue: settles when its last entrant leaves. */
+const sidecarLockQueues = new Map<string, Promise<void>>()
+
+/**
+ * Take this process's turn at one lock path, in arrival order.
+ *
+ * The lock file arbitrates between processes, but it is a poll: a waiter that
+ * is asleep in its retry interval when the holder leaves loses to whoever
+ * arrives next, so under steady load an early waiter can be overtaken until its
+ * budget runs out while the p99 wait stays small. One process's own callers
+ * need no poll to agree on an order. Queueing them turns the budget into a
+ * bound on the work ahead instead of a lottery, and leaves the file contended
+ * only by other processes. An entrant whose budget expires in the queue leaves
+ * it at once and still hands the turn on.
+ */
+async function enterSidecarLockQueue(lockPath: string, deadline: number): Promise<() => void> {
+  const ahead = sidecarLockQueues.get(lockPath) ?? Promise.resolve()
+  let leave!: () => void
+  const turn = new Promise<void>((resolve) => { leave = resolve })
+  const tail = ahead.then(() => turn)
+  sidecarLockQueues.set(lockPath, tail)
+  void tail.then(() => {
+    if (sidecarLockQueues.get(lockPath) === tail) sidecarLockQueues.delete(lockPath)
+  })
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const expired = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(true), Math.max(0, deadline - Date.now()))
+  })
+  const timedOut = await Promise.race([ahead.then(() => false), expired])
+  clearTimeout(timer)
+  if (timedOut) {
+    leave()
+    throw new SessionLifecycleLockError(`timed out waiting for ${lockPath}`)
+  }
+  return leave
 }
 
 async function withSidecarLock<T>(
@@ -1189,18 +1258,33 @@ async function withSidecarLock<T>(
   const deadline = Date.now() + nonNegativeOption(options.lockWaitMs, DEFAULT_LOCK_WAIT_MS, "lockWaitMs")
   const retryMs = option(options.lockRetryMs, DEFAULT_LOCK_RETRY_MS, "lockRetryMs")
   const staleMs = option(options.lockStaleMs, DEFAULT_LOCK_STALE_MS, "lockStaleMs")
+  // Initialised before queueing, so its fsync overlaps the holds ahead instead
+  // of adding to them. The lock's mtime then dates the candidate rather than
+  // the winning link(); staleness is judged in minutes and an acquisition
+  // budget in seconds, so that skew stays far below the threshold.
+  const candidate = await createInitializedSidecarLockCandidate(
+    paths.lock,
+    `${token}\n${Date.now()}\n`,
+  )
   let acquired = false
+  let leaveQueue: (() => void) | undefined
 
-  while (!acquired) {
-    acquired = await publishInitializedSidecarLock(paths.lock, `${token}
-${Date.now()}
-`)
-    if (acquired) break
-    await recoverStaleLock(paths.lock, staleMs)
-    if (Date.now() >= deadline) {
-      throw new SessionLifecycleLockError(`timed out waiting for ${paths.lock}`)
+  try {
+    leaveQueue = await enterSidecarLockQueue(paths.lock, deadline)
+    while (!acquired) {
+      acquired = await candidate.publish()
+      if (acquired) break
+      await recoverStaleLock(paths.lock, staleMs)
+      if (Date.now() >= deadline) {
+        throw new SessionLifecycleLockError(`timed out waiting for ${paths.lock}`)
+      }
+      await delay(Math.min(retryMs, Math.max(1, deadline - Date.now())))
     }
-    await delay(Math.min(retryMs, Math.max(1, deadline - Date.now())))
+  } catch (error) {
+    leaveQueue?.()
+    throw error
+  } finally {
+    await candidate.discard()
   }
 
   try {
@@ -1215,6 +1299,7 @@ ${Date.now()}
         console.error("[sessionLifecycle] lock release failed:", errorMessage(error))
       }
     }
+    leaveQueue()
   }
 }
 
