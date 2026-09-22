@@ -6089,3 +6089,26 @@ without a new probe or model invocation for that retry. A direct HTTP regression
 holds the observer open and asserts SQLite remains open until the identified
 request releases its guard. Backend shutdown now joins those finalizers and
 rejects newly awakened retries once draining begins.
+
+## Opus 5.5 model availability
+
+Run `npm run build && node scripts/e2e-opus-55.mjs` with Claude Max
+authentication and Pi installed. This opt-in gate uses isolated proxy and client
+workdirs, config and session storage, and consumes subscription quota. It checks
+model discovery, explicit `claude-opus-5-5` and bare `opus` nonstreaming requests
+(including a client requesting disabled thinking), then actual Pi streaming
+read/write tools against a random receipt with an exact file-content assertion.
+
+Verified 2026-09-22 on macOS arm64, Node 22.22.3, Agent SDK 0.2.141,
+bundled Claude Code 2.1.280 and Pi 0.72.1. All checks passed. The unchanged
+model request first failed with bundled Claude Code 2.1.259: HTTP 400 explicitly
+required CLI 2.1.280 or newer. Updating the bundled CLI fixed that failure.
+The SDK/CLI handles the model's always-on adaptive thinking; Meridian does not
+promise to disable it. Older explicitly requested model versions retain their pins.
+
+Artifacts: failed-before `meridian-opus55-a998cL`, passed-after
+`meridian-opus55-hksToV` under the host temporary directory. Each contains a
+report and HTTP response artifacts; the passing run also contains `pi.log`.
+This validates macOS text and client tool use, not Windows/Linux runtime behavior.
+Model ID, capability and pricing source:
+https://platform.claude.com/docs/en/models/opus-5-5/overview .

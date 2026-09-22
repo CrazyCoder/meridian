@@ -1098,6 +1098,18 @@ export function buildModelList(extendedContextIncluded: boolean, now = Math.floo
       capabilities: FULL_CAPABILITIES,
     },
     {
+      id: "claude-opus-5-5",
+      object: "model",
+      created: now,
+      owned_by: "anthropic",
+      display_name: "Claude Opus 5.5",
+      context_window: extendedContextIncluded ? 1_000_000 : 200_000,
+      capabilities: {
+        ...FULL_CAPABILITIES,
+        thinking: { supported: true, types: { adaptive: { supported: true }, enabled: { supported: false } } },
+      },
+    },
+    {
       id: "claude-opus-5",
       object: "model",
       created: now,

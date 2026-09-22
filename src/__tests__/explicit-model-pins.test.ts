@@ -25,6 +25,7 @@ describe("explicitModelPin (#631)", () => {
   })
 
   it("pins fully-versioned opus and date-suffixed haiku ids", () => {
+    expect(explicitModelPin("claude-opus-5-5[1m]")).toEqual({ ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-5-5" })
     expect(explicitModelPin("claude-opus-5")).toEqual({ ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-5" })
     expect(explicitModelPin("claude-opus-4-7")).toEqual({ ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-7" })
     expect(explicitModelPin("claude-haiku-4-5-20251001")).toEqual({ ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5-20251001" })
@@ -58,7 +59,7 @@ describe("canonical sonnet pin (#631)", () => {
 
 describe("canonical opus pin", () => {
   it("bare opus means the current Opus", () => {
-    expect(CANONICAL_OPUS_MODEL).toBe("claude-opus-5")
+    expect(CANONICAL_OPUS_MODEL).toBe("claude-opus-5-5")
   })
 })
 
@@ -146,10 +147,10 @@ describe("explicit model pins reach the subprocess env (#631)", () => {
     expect(queryEnvs[0]!.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5")
   })
 
-  it("bare opus resolves via the canonical pin (now Opus 5)", async () => {
+  it("bare opus resolves via the canonical pin (now Opus 5.5)", async () => {
     const { app } = createProxyServer({ port: 0, host: "127.0.0.1" })
     const res = await post(app, "opus")
     expect(res.status).toBe(200)
-    expect(queryEnvs[0]!.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("claude-opus-5")
+    expect(queryEnvs[0]!.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("claude-opus-5-5")
   })
 })

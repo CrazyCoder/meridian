@@ -14,6 +14,14 @@ let
   inherit (lib.strings) removePrefix versionOlder;
   inherit (lib.trivial) importJSON;
   package = importJSON ../package.json;
+  # Opus 5.5 requires 2.1.280 before nixpkgs has packaged it. Reuse the
+  # nixpkgs derivation (patching, wrappers and version check), with Anthropic's
+  # immutable release manifest; automatically prefer nixpkgs once it catches up.
+  # Source: https://downloads.claude.ai/claude-code-releases/2.1.280/manifest.zst.json
+  claudeManifest = importJSON ./claude-code-manifest.json;
+  claudeCode = if versionOlder claude-code.version claudeManifest.version then
+    claude-code.override { manifest = claudeManifest; }
+  else claude-code;
 in
 stdenvNoCC.mkDerivation (finalAttrs: {
   inherit (package) version;
@@ -79,14 +87,14 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
     makeWrapper ${getExe nodejs_22} $out/bin/${finalAttrs.meta.mainProgram} \
       --add-flags "$out/lib/meridian/dist/cli.js" \
-      --set-default MERIDIAN_CLAUDE_PATH ${getExe claude-code}
+      --set-default MERIDIAN_CLAUDE_PATH ${getExe claudeCode}
 
     runHook postInstall
   '';
 
   meta = {
     inherit (package) description;
-    broken = versionOlder claude-code.version (
+    broken = versionOlder claudeCode.version (
       removePrefix "^" package.dependencies."@anthropic-ai/claude-code"
     );
     homepage = "https://github.com/rynfar/${finalAttrs.pname}";

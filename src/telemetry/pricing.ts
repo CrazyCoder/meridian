@@ -10,7 +10,8 @@
  * docs (platform.claude.com/docs/en/about-claude/pricing, snapshot 2026-07).
  * Users can override any rate, or add models missing from this table, via
  * the settings page (persisted by pricingStore.ts; overrides win in
- * resolveModelPricing). Cache rates are derived from the input rate:
+ * resolveModelPricing). Cache rates are derived from the input rate unless
+ * a model has an explicit exception (Opus 5.5 reads are 0.05×):
  *   - cache read  = 0.10× input
  *   - cache write = 1.25× input (5-minute TTL, the TTL the SDK uses, see
  *     MONITORING.md; 1-hour TTL writes bill at 2×, so if a client opted into
@@ -51,7 +52,9 @@ function rates(inputPerMTok: number, outputPerMTok: number): ModelPricing {
 }
 
 const FABLE = rates(10, 50)
-const OPUS = rates(5, 25) // Opus 4.5 and later
+const OPUS = rates(5, 25) // Opus 4.5 through 5
+// Opus 5.5 cache reads are 5% of input (official model specs, 2026-09-22).
+const OPUS_55: ModelPricing = { ...rates(4, 20), cacheReadPerMTok: 0.2 }
 const OPUS_LEGACY = rates(15, 75) // Opus 4.1 and earlier
 const SONNET = rates(3, 15) // every Sonnet generation to date, standard rate
 // Sonnet 5 introductory pricing runs through 2026-08-31; standard 3/15 applies
@@ -76,7 +79,8 @@ export const BUILTIN_MODEL_PRICING: Record<string, ModelPricing> = {
   "claude-fable-5": FABLE,
   "claude-mythos-5-1": FABLE,
   "claude-mythos-5": FABLE,
-  opus: OPUS,
+  opus: OPUS_55,
+  "claude-opus-5-5": OPUS_55,
   "claude-opus-5": OPUS,
   "claude-opus-4-8": OPUS,
   "claude-opus-4-7": OPUS,
