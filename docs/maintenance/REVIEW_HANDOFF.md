@@ -35,7 +35,8 @@ the queue is complete. This batch has one owner and no delegated agents.
   `9b149295→6446ad01`, `8059e07a→d7bcfaf0`, `fa18b475→d4eb5457`,
   `b1ce70aa→6b425810`, `6cbdae64→0fcf2137`. Maintainer marker
   `f8e197a8` is separate. Delivery [#1110](https://github.com/rynfar/meridian/pull/1110)
-  is open; source #1106 remains open until delivery is validated and merged.
+  merged as `73d98d14` with authored commits intact; source #1106 was rechecked
+  at the same head and closed without comment.
 - Focused tests 70/70, typecheck and build passed. First full `npm test` run
   failed two unrelated Polytoken concurrency/multimodal cases; both passed
   together in isolation (15/15), then the second full command passed. Treat
@@ -55,12 +56,34 @@ the queue is complete. This batch has one owner and no delegated agents.
   is documented as susceptible to load-order races (#917). A separate
   maintainer test correction removes those log-capture assertions and keeps
   the direct SDK decisions as the behavioral regression gate; no production
-  branch or telemetry call changed. Final-head CI is required after this fix.
-- Next: wait for #1110 final-head CI, verify source and delivery heads, merge
-  with contributor credit intact, then close source #1106. Review #1105 next;
-  its new `letta.ts` has prohibited `as any` casts that need a separate
-  maintainer correction. The release PR should remain open until the issue
-  pass and all affected-flow gates are complete.
+  branch or telemetry call changed. Corrected final head `6b355328` passed
+  local full tests, typecheck, build and all relevant CI jobs (CI run
+  `35828305778`, Docker `35828305721`, desktop `35828305756`).
+
+### #1105 and #1100 under review
+
+- #1105 source `5f2a9a9e` (Chris Wilson) was cherry-picked as ten authored
+  commits on `/tmp/meridian-letta-1105`, branch `codex/letta-identity-1105`.
+  Maintainer commits `23f01050` remove prohibited casts and guard malformed
+  Letta bodies; `91e6df4b` limits reminder extraction to a system reminder.
+  Focused 62 tests and typecheck passed before rebasing on #1110. Actual Letta
+  Code 0.32.18 local backend requests use `local-conv-*`, not the `conv-<uuid>`
+  reminder path being fixed. A real cloud-client acceptance gate remains
+  unavailable; do not claim #1105 complete from the wire-shape probe alone.
+- #1100 source `0823b361` (Guy Addadi) was cherry-picked to
+  `/tmp/meridian-cwd-1100`, branch `codex/cwd-no-client-1100`, and rebased onto
+  `73d98d14` as `72dbaab4` (author and AuthorDate intact). Maintainer test
+  commit `cad81819` proves an HTTP bare Pi request keeps the proxy fallback
+  out of the client CWD claim and moves a misplaced JSDoc to its function.
+  Current main's `buildCwdNote` returns an empty addendum for that case;
+  corrected focused 123/123 and typecheck/build pass. Live macOS/Bun 1.3.14,
+  SDK 0.2.141, Claude Code 2.1.280, Haiku 4.5 E2E passed Pi client-path
+  controls in both response modes and bare no-CWD Pi in both modes (real SDK
+  query observer and model response). Logs `/tmp/meridian-1100-e2e-pi.log` and
+  `/tmp/meridian-1100-e2e-no-cwd.log`. Full suite and E41 are running;
+  final-head CI and source-head recheck are still required before merge.
+- The Release Please PR remains open until the issue pass and all affected
+  flow gates are complete.
 
 ## Delivered: Review and Autonomous Processing Batch (2026-09-19)
 
