@@ -88,6 +88,7 @@ import { isClaudeCodeClient } from "./adapters/claudecode"
 import { openAiAdapter, deriveToolLoopSessionId, SYNTHESIZED_SESSION_HEADER } from "./adapters/openai"
 import { translateResponsesToAnthropic, translateAnthropicToResponses, createResponsesSseTranslator, reasoningRequested, buildResponsesToolAliases, resolveCodexThreadIdentity, type ResponsesRequest, type AnthropicSseEvent as ResponsesAnthropicSseEvent } from "./openaiResponses"
 import { flattenAssistantContent, normalizeStructuredUserContent, replayToolResultHeader, frameStructuredReplay, coalesceStructuredUserMessages } from "./replay"
+import { unstreamedAssistantBlockFrames } from "./unstreamedAssistant"
 import { extractAdvisorModel, extractSystemText, getLastUserMessage, stripAdvisorTools, stripNonStandardStreamFields, MULTIMODAL_TYPES, buildToolUseIndex, frameReplayTurns } from "./messages"
 import { requireAuth, authEnabled } from "./auth"
 import { detectAdapter } from "./adapters/detect"
@@ -4695,7 +4696,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             const unstreamedAssistants: Array<{
               id?: string
               model?: string
-              content?: Array<{ type: string; text?: string }>
+              content?: unknown[]
               stop_reason?: string | null
               usage?: TokenUsage
             }> = []
@@ -5251,7 +5252,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   }
                   if (message.type === "assistant" && !messageStartEmitted) {
                     const unstreamed = (message as { message?: (typeof unstreamedAssistants)[number] }).message
-                    if (unstreamed) unstreamedAssistants.push(unstreamed)
+                    if (unstreamed) {
+                      unstreamedAssistants.push(unstreamed)
+                      if (unstreamed.usage) lastUsage = { ...lastUsage, ...unstreamed.usage }
+                    }
                   }
                   if (message.type === "result") {
                     sawCanonicalResult = true
@@ -6201,14 +6205,22 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
               if (!streamClosed) {
                 // No stream event ever reached the client, but the SDK did answer:
-                // open the message here and forward the answer's text. In
+                // open the message here and forward its visible content. In
                 // passthrough only the first turn belongs to the client (later
                 // ones react to the denied tool call); its captured tool_use
                 // blocks follow through the ordinary path below.
                 let unstreamedStopReason: string | undefined
-                if (!messageStartEmitted && unstreamedAssistants.length > 0) {
+                const unseenToolUses = capturedToolUses.filter(tu => !streamedToolUseIds.has(tu.id))
+                const allowUnstreamedThinking =
+                  (!pipelineCtx.hidesInternalTools || sdkFeatures.thinkingPassthrough) &&
+                  (!passthrough || pipelineCtx.supportsThinking || sdkFeatures.thinkingPassthrough)
+                const visibleTurns = passthrough ? unstreamedAssistants.slice(0, 1) : unstreamedAssistants
+                const hasUnstreamedContent = visibleTurns.some(turn =>
+                  turn.content?.some(block => unstreamedAssistantBlockFrames(block, 0, allowUnstreamedThinking).length > 0))
+                if (!messageStartEmitted && unstreamedAssistants.length > 0 &&
+                    (hasUnstreamedContent || (passthrough && unseenToolUses.length > 0))) {
                   const first = unstreamedAssistants[0]!
-                  const turns = passthrough ? [first] : unstreamedAssistants
+                  const turns = visibleTurns
                   // No SDK message_delta was seen, so the terminal delta has to
                   // be built here; a tool_use stop is re-derived below from what
                   // was actually forwarded.
@@ -6224,30 +6236,24 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     })}\n\n`
                   ), "unstreamed_message_start")) {
                     messageStartEmitted = true
-                    clientAssistantContentExposed = true
                     eventsForwarded += 1
                   }
                   for (const turn of turns) {
                     for (const block of turn.content ?? []) {
-                      if (block.type !== "text" || !block.text) continue
-                      const blockIndex = nextClientBlockIndex++
-                      if (safeEnqueue(encoder.encode(
-                        `event: content_block_start\ndata: ${JSON.stringify({
-                          type: "content_block_start", index: blockIndex, content_block: { type: "text", text: "" },
-                        })}\n\n`
-                      ), "unstreamed_text_block_start")) {
-                        contentBlocksForwarded += 1
+                      const frames = unstreamedAssistantBlockFrames(block, nextClientBlockIndex, allowUnstreamedThinking)
+                      if (frames.length === 0) continue
+                      nextClientBlockIndex++
+                      for (const frame of frames) {
+                        if (!safeEnqueue(encoder.encode(
+                          `event: ${frame.event}\ndata: ${JSON.stringify(frame.data)}\n\n`
+                        ), `unstreamed_${frame.event}`)) continue
+                        eventsForwarded += 1
+                        if (frame.event === "content_block_start") contentBlocksForwarded += 1
+                        if (frame.textLength !== undefined) {
+                          textEventsForwarded += 1
+                          textCharsForwarded += frame.textLength
+                        }
                       }
-                      safeEnqueue(encoder.encode(
-                        `event: content_block_delta\ndata: ${JSON.stringify({
-                          type: "content_block_delta", index: blockIndex, delta: { type: "text_delta", text: block.text },
-                        })}\n\n`
-                      ), "unstreamed_text_delta")
-                      safeEnqueue(encoder.encode(
-                        `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: blockIndex })}\n\n`
-                      ), "unstreamed_text_block_stop")
-                      textEventsForwarded += 1
-                      textCharsForwarded += block.text.length
                     }
                   }
                   claudeLog("response.unstreamed_turn_forwarded", { model, turns: turns.length })
@@ -6255,7 +6261,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
 
                 // In passthrough mode, emit captured tool_use blocks as stream events
                 // Skip any that were already forwarded during the stream (dedup by ID)
-                const unseenToolUses = capturedToolUses.filter(tu => !streamedToolUseIds.has(tu.id))
                 if (passthrough && unseenToolUses.length > 0 && messageStartEmitted) {
                   for (let i = 0; i < unseenToolUses.length; i++) {
                     const tu = unseenToolUses[i]!

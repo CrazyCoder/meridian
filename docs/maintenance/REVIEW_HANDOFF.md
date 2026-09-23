@@ -155,10 +155,49 @@ the queue is complete. This batch has one owner and no delegated agents.
   `/tmp/meridian-1107-e41-*.log`; E60 logs are
   `/tmp/meridian-1107-e60-*.log`. The real E43 namespaced-tool control
   also passed in both response modes (`/tmp/meridian-1107-e43-*.log`).
-  Final-head full suite and CI remain.
-- #1099 and #1096 explicitly describe themselves as unvalidated illustration
-  drafts for issues #1098 and #1095. Do not merge them as-is; use the analysis
-  during the issue pass. #1050 is Antigravity research with no production
+  Full final-head `npm test` and all CI passed (`35832749521`, Docker
+  `35832749546`, desktop `35832749543`). Delivery
+  [#1120](https://github.com/rynfar/meridian/pull/1120) merged as
+  `253c0fcc`; issue #1107 closed automatically.
+
+### Issue #1101: client-side OpenCode scrub drops cwd
+
+- The exported scrub function in companion repository
+  `rynfar/meridian-plugin-opencode-scrub` removed the entire duplicate
+  `<env>` block before Meridian could extract the client's working directory.
+  On unchanged plugin code, three new regression assertions failed. PR
+  [#13](https://github.com/rynfar/meridian-plugin-opencode-scrub/pull/13)
+  retains a bare `Working directory` field without the duplicate preamble or
+  other fields; all 17 tests and build passed, as did final-head CI. A real
+  Meridian HTTP → SDK → Claude Max check using the built scrub package passed
+  both response modes with SDK `cwd` equal to the client project, distinct
+  from the proxy directory (`/tmp/meridian-1101-live.log`).
+- The plugin's Release Please [#7](https://github.com/rynfar/meridian-plugin-opencode-scrub/pull/7)
+  was updated to include the fix. Its duplicate merge-commit changelog entry
+  was removed in a separate maintainer commit; the exact release diff has
+  three distinct fixes, version `0.2.1`, and a passing build/test/pack gate.
+  The release workflow `35833345705` published the tagged GitHub release and
+  npm package with provenance. Registry `latest` and version are `0.2.1`,
+  integrity is `sha512-DOLXcZzuH0dXmL3i+2ENIc/x7WTLC0rmOJ757z5nZGIbxmNIVOhUWgmvamWK+ivklvDUPApqy1D+Emfc9/slTQ==`.
+  A fresh registry install executed the exported scrub and preserved the cwd.
+  Issue #1101 is closed.
+
+### Issue #1098: unstreamed SDK fallback under review
+
+- Source illustration [#1099](https://github.com/rynfar/meridian/pull/1099)
+  head `7043fa93` (Magnus Schmidt Rasmussen) is cherry-picked as authored
+  commit `7137eb71` onto `fix/unstreamed-fallback-1098`. The source explicitly
+  asks not to merge its draft as-is; maintainer corrections and gates are
+  separate. An actual SDK/CLI request with a local API fixture reproduced
+  unchanged main's HTTP 200 with no `message_start`, despite Claude Code's
+  successful nonstreaming retry (`/tmp/meridian-1098-e2e-before.log`). The
+  cherry-picked code plus corrections passed the same fixture's text, client
+  tool-call and normal-stream controls (`/tmp/meridian-1098-e2e-corrected.log`).
+  New HTTP tests exercise assistant-only turns; a pure helper and direct tests
+  preserve thinking blocks for clients that support them. Focused 14/14 and
+  typecheck pass. Full tests, build, related live gates and final CI remain.
+- #1096 explicitly describes itself as an unvalidated illustration draft for
+  issue #1095. Do not merge it as-is. #1050 is Antigravity research with no production
   behavior. #792 explicitly asks not to be reviewed or merged yet.
 - The Release Please PR remains open until the issue pass and all affected
   flow gates are complete.
