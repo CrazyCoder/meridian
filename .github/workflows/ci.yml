@@ -26,6 +26,7 @@ jobs:
       - run: bun scripts/e2e-implicit-attachments.mjs --run
       - run: bun scripts/e2e-rejected-tool-handoff.mjs --case=rejected
       - run: bun scripts/e2e-rejected-tool-handoff.mjs --case=registered
+      - run: bun scripts/e2e-capped-turns.mjs --case=client-refusal --stream
       - run: bun run build
 
   # Windows smoke test — catches platform-specific regressions in:
