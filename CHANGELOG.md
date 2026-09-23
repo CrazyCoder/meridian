@@ -7,7 +7,6 @@
 
 * preserve headerless grants across result suffixes ([af0a73a](https://github.com/rynfar/meridian/commit/af0a73a9c6cb1ad55dd2734bfcbe2a5c151040f8))
 * preserve rejected tool grants for headerless Pi ([b368d97](https://github.com/rynfar/meridian/commit/b368d97be15bc2943a806455d2c3f610edd92a7b))
-* retain recovered client tools in headerless Pi loops ([a9edc33](https://github.com/rynfar/meridian/commit/a9edc33571468eaec8404bb747c761e19b98f17c))
 
 ## [1.76.0](https://github.com/rynfar/meridian/compare/meridian-v1.75.0...meridian-v1.76.0) (2026-09-23)
 
