@@ -7,9 +7,9 @@
  * fall back to the (first user message, working directory) conversation
  * fingerprint, which is not unique: two conversations that open with the same
  * text in the same directory collide, and one resumes the other's session.
- * Such clients also never resume at all once the guard for headerless tool
- * loops trips, so their prompt cache decays to the static prefix and the whole
- * history is rewritten every turn.
+ * Such clients also skip resume for every tool round, because the guard for
+ * headerless tool loops trips whenever the request ends on a tool_result, so
+ * each round rewrites the whole history into the prompt cache.
  *
  * Such clients do describe the conversation in the system prompt, so the model
  * knows what it is working on, and that description is enough to key on with no

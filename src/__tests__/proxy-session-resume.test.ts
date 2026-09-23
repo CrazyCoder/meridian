@@ -351,128 +351,6 @@ describe("Session resume: fingerprint fallback", () => {
     expect(capturedQueryParams.options.resume).toBe(firstCallerSelectedSessionId)
   })
 
-  it("does not resume a headerless client tool loop when runtime context follows the tool result", async () => {
-    const app = createTestApp()
-
-    await (await post(app, {
-      model: "claude-sonnet-4-5",
-      max_tokens: 1024,
-      stream: false,
-      messages: [{ role: "user", content: "Run the tool" }],
-    })).json()
-
-    mockMessages = [
-      assistantMessage([{ type: "text", text: "The tool returned TOOLCHECK_OK." }]),
-    ]
-
-    await (await post(app, {
-      model: "claude-sonnet-4-5",
-      max_tokens: 1024,
-      stream: false,
-      messages: [
-        { role: "user", content: "Run the tool" },
-        {
-          role: "assistant",
-          content: [{ type: "tool_use", id: "toolu_client", name: "exec", input: { command: "date" } }],
-        },
-        {
-          role: "user",
-          content: [{ type: "tool_result", tool_use_id: "toolu_client", content: "TOOLCHECK_OK" }],
-        },
-        {
-          role: "user",
-          content: "Client runtime context for the immediately preceding user message.",
-        },
-      ],
-    })).json()
-
-    expect(capturedQueryParams.options.resume).toBeUndefined()
-    expect(capturedQueryParams.prompt).toContain("TOOLCHECK_OK")
-  })
-
-  it("resumes headerless history once the tool loop has closed", async () => {
-    // The isolation window is the unfinished turn. History is replayed in
-    // full, so treating "a tool_result appears anywhere" as an active loop
-    // pinned every such conversation to a fresh replay for the rest of its
-    // life, and the prompt cache with it.
-    const app = createTestApp()
-
-    await (await post(app, {
-      model: "claude-sonnet-4-5",
-      max_tokens: 1024,
-      stream: false,
-      messages: [{ role: "user", content: "Run the tool" }],
-    })).json()
-
-    mockMessages = [
-      assistantMessage([{ type: "text", text: "Here is the follow-up." }]),
-    ]
-
-    await (await post(app, {
-      model: "claude-sonnet-4-5",
-      max_tokens: 1024,
-      stream: false,
-      messages: [
-        { role: "user", content: "Run the tool" },
-        {
-          role: "assistant",
-          content: [{ type: "tool_use", id: "toolu_done", name: "exec", input: { command: "date" } }],
-        },
-        {
-          role: "user",
-          content: [{ type: "tool_result", tool_use_id: "toolu_done", content: "TOOLCHECK_OK" }],
-        },
-        { role: "assistant", content: [{ type: "text", text: "The tool succeeded." }] },
-        { role: "user", content: "Tell me more." },
-      ],
-    })).json()
-
-    expect(capturedQueryParams.options.resume).toBe(firstCallerSelectedSessionId)
-    // Only the delta is replayed — the opening turn stays in the SDK session.
-    expect(capturedQueryParams.prompt).toContain("Tell me more.")
-    expect(capturedQueryParams.prompt).not.toContain("Run the tool")
-    // The client ran the tool itself, so the resumed session never saw the
-    // result; it is summarised into the delta rather than dropped.
-    expect(capturedQueryParams.prompt).toContain("TOOLCHECK_OK")
-  })
-
-  it("keeps two concurrent in-flight tool loops off each other's session", async () => {
-    // Identical opener and no cwd: both loops share one fingerprint, which is
-    // the collision the guard exists for. Neither may adopt the other's
-    // session while its own turn is still unfinished.
-    const app = createTestApp()
-
-    const inFlight = (toolId: string) => [
-      { role: "user", content: "Run the tool" },
-      {
-        role: "assistant",
-        content: [{ type: "tool_use", id: toolId, name: "exec", input: { command: "date" } }],
-      },
-      {
-        role: "user",
-        content: [{ type: "tool_result", tool_use_id: toolId, content: `RESULT_${toolId}` }],
-      },
-    ]
-
-    await (await post(app, {
-      model: "claude-sonnet-4-5",
-      max_tokens: 1024,
-      stream: false,
-      messages: inFlight("toolu_run_a"),
-    })).json()
-
-    await (await post(app, {
-      model: "claude-sonnet-4-5",
-      max_tokens: 1024,
-      stream: false,
-      messages: inFlight("toolu_run_b"),
-    })).json()
-
-    expect(capturedQueryParams.options.resume).toBeUndefined()
-    expect(capturedQueryParams.prompt).toContain("RESULT_toolu_run_b")
-    expect(capturedQueryParams.prompt).not.toContain("RESULT_toolu_run_a")
-  })
-
   it("should NOT resume when first user message is different", async () => {
     const app = createTestApp()
 
@@ -611,14 +489,15 @@ describe("Session resume: only send last user message on resume", () => {
 // ============================================================
 
 /**
- * The guard above disables resume for headerless clients that drive their own
- * tool loop, because their (first user message, cwd) fingerprint is not unique
- * and one conversation can resume another's session.
+ * The client-driven-loop guard in server.ts disables resume for headerless
+ * clients while their own tool loop is in flight, because their (first user
+ * message, cwd) fingerprint is not unique and one conversation can resume
+ * another's session.
  *
  * A client that publishes a stable session identifier in its system prompt has
  * an exact key, so the collision the guard protects against cannot happen and
- * resume must stay enabled — otherwise every turn is fresh-replayed and the
- * prompt cache decays to the static prefix while the whole history is rewritten.
+ * resume must stay enabled — otherwise every tool round is fresh-replayed and
+ * the whole history is rewritten into the prompt cache.
  */
 describe("Session resume: embedded runtime session descriptor", () => {
   const SESSION_A = "Runtime: agent=main | session=agent:main:a | sessionId=11111111-1111-4111-8111-111111111111 | host=box"
@@ -729,7 +608,6 @@ describe("Session resume: embedded runtime session descriptor", () => {
           role: "user",
           content: [{ type: "tool_result", tool_use_id: "toolu_done", content: "TOOLCHECK_OK" }],
         },
-        { role: "user", content: "Tell me more." },
       ],
     })).json()
 

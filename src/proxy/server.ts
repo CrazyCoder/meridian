@@ -91,7 +91,6 @@ import { flattenAssistantContent, normalizeStructuredUserContent, replayToolResu
 import { unstreamedAssistantBlockFrames } from "./unstreamedAssistant"
 import { extractAdvisorModel, extractSystemText, getLastUserMessage, stripAdvisorTools, stripNonStandardStreamFields, MULTIMODAL_TYPES, buildToolUseIndex, frameReplayTurns } from "./messages"
 import { requireAuth, authEnabled } from "./auth"
-import { hasActiveToolLoop } from "./messages" // fork: client-driven-loop guard
 import { detectAdapter } from "./adapters/detect"
 import { buildQueryOptions, resolveQueryConfigDir, singleTurnCapLiftRaisesBudget, type QueryContext } from "./query"
 import { normalizeEffort } from "./effort"
@@ -2458,7 +2457,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // fingerprint keying a direct Claude Code request already gets, with
         // adapter selection untouched.
         const ownsToolLoopWithResume = adapterBase === "claude-code" || isClaudeCodeClient(c)
-        const isClientDrivenLoop = !ownsToolLoopWithResume && !agentSessionId && hasActiveToolLoop(body.messages)
+        const isClientDrivenLoop = !ownsToolLoopWithResume && !agentSessionId && lastIsToolResult
         const durableMappingKey = profileSessionId
           || getConversationFingerprint(lineageMessages, profileScopedCwd)
         // NOTE: A headerless Pi tool round must stay independent of the fingerprint's

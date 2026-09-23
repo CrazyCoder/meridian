@@ -307,7 +307,7 @@ describe("Fingerprint resume: different first messages", () => {
 })
 
 describe("Fingerprint resume: multi-turn with tool_use blocks", () => {
-  it("resumes correctly when history contains a closed tool_use/tool_result turn", async () => {
+  it("resumes correctly when history contains tool_use and tool_result", async () => {
     const app = createTestApp()
 
     // Turn 1
@@ -330,11 +330,7 @@ describe("Fingerprint resume: multi-turn with tool_use blocks", () => {
       { role: "user", content: "now read it back" },
     ], "sdk-tools", "System prompt v2 with updated file tree")
 
-    // MUST resume even though system changed and history has tool blocks.
-    // The isolation guard covers the unfinished turn only — this one closed
-    // with an assistant answer. The id is only asserted to exist: a caller-
-    // selected session may be resumed through a managed fork, so it is not
-    // necessarily the one this turn stored.
+    // MUST resume even though system changed and history has tool blocks
     expect(getCaptured()?.options?.resume).toBeDefined()
   })
 
