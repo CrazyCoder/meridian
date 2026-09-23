@@ -24,6 +24,8 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: bun scripts/e2e-implicit-attachments.mjs --run
+      - run: bun scripts/e2e-rejected-tool-handoff.mjs --case=rejected
+      - run: bun scripts/e2e-rejected-tool-handoff.mjs --case=registered
       - run: bun run build
 
   # Windows smoke test — catches platform-specific regressions in:
