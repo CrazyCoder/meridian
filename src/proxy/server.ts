@@ -84,7 +84,7 @@ import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
 import { normalizeJcodeSessionId } from "./adapters/jcode"
 import { isClaudeCodeClient } from "./adapters/claudecode"
-import { openAiAdapter } from "./adapters/openai"
+import { openAiAdapter, deriveToolLoopSessionId, SYNTHESIZED_SESSION_HEADER } from "./adapters/openai"
 import { translateResponsesToAnthropic, translateAnthropicToResponses, createResponsesSseTranslator, reasoningRequested, buildResponsesToolAliases, resolveCodexThreadIdentity, type ResponsesRequest, type AnthropicSseEvent as ResponsesAnthropicSseEvent } from "./openaiResponses"
 import { flattenAssistantContent, normalizeStructuredUserContent, replayToolResultHeader, frameStructuredReplay, coalesceStructuredUserMessages } from "./replay"
 import { extractAdvisorModel, extractSystemText, getLastUserMessage, stripAdvisorTools, stripNonStandardStreamFields, MULTIMODAL_TYPES, buildToolUseIndex, frameReplayTurns } from "./messages"
@@ -2516,9 +2516,26 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const declaresPerRequestConcurrentFlow =
           requestSource?.startsWith("fork-") === true
           || isSubagentRequest
+        // A synthesized key is Meridian's own inference, not a client contract.
+        // The client never asked for a session and cannot "retry with a
+        // distinct session ID" as the conflict message instructs, so a lost
+        // race must degrade to the replay it would have done anyway rather
+        // than refuse the turn.
+        //
+        // The marker alone is not proof: it is read off the ordinary
+        // client-facing request path, so any caller could send
+        // `x-meridian-synthesized-session: 1` and claim an exemption meant for
+        // the gateway's own hop. Require the per-instance internal-hop token as
+        // well — the same randomUUID that never leaves the process and already
+        // backs the draining exemption — so the marker cannot be spoofed from
+        // the wire.
+        const carriesSynthesizedSessionKey =
+          c.req.header("x-meridian-internal-hop") === internalHopToken
+          && c.req.header(SYNTHESIZED_SESSION_HEADER) === "1"
         const declaresConcurrentFlow =
           declaresPerRequestConcurrentFlow
           || protocolRunsConcurrentTurnsPerSessionKey
+          || carriesSynthesizedSessionKey
         // Exact pending tool IDs identify the batch, not the earlier history.
         // Rebinding a checkpoint must also preserve its complete stored prefix;
         // otherwise a revised user instruction would be silently discarded.
@@ -2648,10 +2665,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // exactly that shape. Replay its own body instead. A per-request fork
         // or subagent signal keeps its lineage: those callers name their own
         // session boundary, so an undo from them is deliberate.
+        //
+        // A synthesized key is Pi's shape reached a different way: the client
+        // sent no session at all and Meridian inferred one, so an undo against
+        // it is likewise an accident of arrival order rather than a boundary the
+        // client named. It is admitted as a concurrent flow above (no 400), so
+        // it must be reclassified here too — otherwise it degrades to the undo
+        // this guard exists to prevent.
         if (
           lostRaceWhileWaiting &&
           !declaresPerRequestConcurrentFlow &&
-          protocolRunsConcurrentTurnsPerSessionKey &&
+          (protocolRunsConcurrentTurnsPerSessionKey || carriesSynthesizedSessionKey) &&
           lineageResult.type === "undo"
         ) {
           lineageResult = { type: "diverged", reason: "concurrent-race" }
@@ -2888,6 +2912,28 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         )
         if (checkpointContinuation) {
           messagesToConvert = checkpointContinuation
+        } else if (carriesSynthesizedSessionKey) {
+          // The checkpoint is Meridian's own inference, not a client contract.
+          // A synthesized key means the client sent no session header and never
+          // agreed to echo the exact tool-call ids Meridian forwarded, so an
+          // unsettled checkpoint is a disagreement between Meridian's own
+          // inference and a continuation the session store does confirm — not
+          // evidence the resume is wrong. Prefer the continuation: drop the
+          // rewind marker so the ordinary resume delta is sent, instead of
+          // discarding a verified session and re-reading the whole prompt.
+          //
+          // Scope stays deliberately narrow. A client that supplies its own key
+          // (OpenCode, pylon, jcode, any header-keyed client) keeps today's
+          // exact behaviour: for it the key is a contract the client chose, so
+          // an unsettled checkpoint is a real mismatch worth replaying for.
+          claudeLog("passthrough.checkpoint_resume_preferred", {
+            expectedToolIds: passthroughToolCallIds?.length ?? 0,
+            reason: "synthesized_session_key",
+          })
+          passthroughToolCallAssistantUuid = undefined
+          // Keep isResume, resumeSessionId and the resume delta already in
+          // messagesToConvert; clearing the marker drops the resumeSessionAt
+          // rewind and the structured tool-result expectation.
         } else {
           // Partial, late, duplicate, or unknown results get one safe fresh
           // replay rather than an invalid SDK resume.
@@ -8240,7 +8286,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     // The key is forwarded on the internal hop below so the inner handler
     // resolves the same session. The forwarded headers are gated on a resolved
     // key below.
-    const openAiSessionId = isJcode ? undefined : openAiAdapter.getSessionId(c)
+    const openAiHeaderSessionId = isJcode ? undefined : openAiAdapter.getSessionId(c)
+    // NOTE: agent-specific (OpenAI). A client running its own tool loop and
+    // sending no header gets a key derived from the loop's first tool-call id
+    // (see deriveToolLoopSessionId).
+    // Without one every round of the loop is a fresh session: the request is
+    // packed, the headerless-tool-result guard skips lookup, and nothing is
+    // stored for the next round. The derived key is a fallback only — a client
+    // that sends its own key keeps it, and an ordinary chat derives none.
+    const toolLoopSessionId = isJcode || openAiHeaderSessionId !== undefined
+      ? undefined
+      : deriveToolLoopSessionId(rawBody)
+    const openAiSessionId = openAiHeaderSessionId ?? toolLoopSessionId
     const anthropicBody = translateOpenAiToAnthropic(rawBody, {
       preserveConversationHistory: isJcode || openAiSessionId !== undefined,
     })
@@ -8319,6 +8376,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       ]) {
         const value = c.req.header(name)
         if (value !== undefined) internalHeaders[name] = value
+      }
+      // A derived key has no header of its own to copy. Hand it to the inner
+      // hop through the affinity header the adapter already reads, and mark it
+      // as synthesized so the concurrency guard keeps its failure mode soft.
+      if (toolLoopSessionId !== undefined) {
+        internalHeaders["x-session-affinity"] = toolLoopSessionId
+        internalHeaders[SYNTHESIZED_SESSION_HEADER] = "1"
       }
     }
     const requestedProfile = c.req.header("x-meridian-profile")

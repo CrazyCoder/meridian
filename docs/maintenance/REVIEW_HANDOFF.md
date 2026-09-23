@@ -1,5 +1,67 @@
 # Upstream review handoff
 
+## Active review batch (2026-09-23)
+
+The owner asked for PR review first, newest issues next, author-preserving
+cherry-picks, validation before merge, and an authorized release after the
+autonomous queue is as far along as it can get. Refresh live GitHub state and
+`origin/main` before continuing; this section is a checkpoint, not a claim that
+the queue is complete. This batch has one owner and no delegated agents.
+
+### #1104 incorporated as #1108: Profiles page script
+
+- Source head `3af1a952` (Nowaker) became authored cherry-pick `7040f8e6`
+  (Author and AuthorDate preserved) on `fix/profile-page-script-1104`.
+  Delivery [#1108](https://github.com/rynfar/meridian/pull/1108) merged to main
+  as `6b25c5a1`; source #1104 was rechecked and closed without comment.
+- The fix closes the missing `renderSpentNote` brace, repairs the nested quote
+  escaping, and adds a five-page inline-script parse test. The new test passed
+  5/5; typecheck, build, full `npm test` and final-head CI `test` passed.
+  CI: `https://github.com/rynfar/meridian/actions/runs/35825319080`.
+- Live shared-browser check on macOS served `/profiles` from an isolated local
+  proxy: the page reached the "No profiles configured" state rather than
+  staying blank. With a sample profile rendered through the page's own script,
+  the Rename button opened a focused input with Save/Cancel controls; Cancel
+  restored the card. This exercises the repaired inline script and markup,
+  but does not claim a backend profile rename or OAuth flow was exercised.
+
+### #1106 accepted with a maintainer comment as #1110: OpenAI tool-loop identity
+
+- Source head `6cbdae64` (Chris Wilson), base main `6b25c5a1`. All ten source
+  commits were cherry-picked with Author and AuthorDate preserved onto
+  `fix/openai-tool-loop-1106`. Source-to-incorporated abbreviated SHA mapping,
+  in order: `208ce890→1b0892f7`, `9be41c40→2ac19c6a`,
+  `d91447bd→8a80c0b1`, `7ec5024f→5b975c0c`, `992dce3a→01d1de99`,
+  `9b149295→6446ad01`, `8059e07a→d7bcfaf0`, `fa18b475→d4eb5457`,
+  `b1ce70aa→6b425810`, `6cbdae64→0fcf2137`. Maintainer marker
+  `f8e197a8` is separate. Delivery [#1110](https://github.com/rynfar/meridian/pull/1110)
+  is open; source #1106 remains open until delivery is validated and merged.
+- Focused tests 70/70, typecheck and build passed. First full `npm test` run
+  failed two unrelated Polytoken concurrency/multimodal cases; both passed
+  together in isolation (15/15), then the second full command passed. Treat
+  the initial run as unresolved suite instability under #933/#917, not a fix.
+- Live E58 on macOS, Bun 1.3.14, Agent SDK 0.2.141, Claude Code 2.1.280,
+  Haiku 4.5 passed after unsetting this shell's local `MERIDIAN_API_KEY` only
+  for the isolated probe. Turns 3–5 resumed with 96/97/99% cached input and
+  two unsettled checkpoints preferred continuation; the unkeyed control had
+  no cache reads. The first attempt returned 401 at the local auth gate and
+  supplied no model evidence. Live E41 with Sonnet 5 passed all four
+  sequential/parallel × stream/non-stream modes, including exact results,
+  durable forks and cache continuity. Local logs:
+  `/tmp/meridian-1106-e58-authless.log` and `/tmp/meridian-1106-e41-*.log`.
+- The first delivery CI `test` run (`35827093158`) failed two assertions that
+  captured debug events through the process-global logger mock, even though
+  the same tests' direct SDK resume/replay assertions passed. The logger mock
+  is documented as susceptible to load-order races (#917). A separate
+  maintainer test correction removes those log-capture assertions and keeps
+  the direct SDK decisions as the behavioral regression gate; no production
+  branch or telemetry call changed. Final-head CI is required after this fix.
+- Next: wait for #1110 final-head CI, verify source and delivery heads, merge
+  with contributor credit intact, then close source #1106. Review #1105 next;
+  its new `letta.ts` has prohibited `as any` casts that need a separate
+  maintainer correction. The release PR should remain open until the issue
+  pass and all affected-flow gates are complete.
+
 ## Delivered: Review and Autonomous Processing Batch (2026-09-19)
 
 ### PR #1060 (Issue #1027): OpenCode V2 beta-19271 Qualification

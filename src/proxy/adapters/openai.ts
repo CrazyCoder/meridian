@@ -19,10 +19,98 @@
  * adapter; do not fork behaviour here.
  */
 
+import { createHash } from "node:crypto"
 import type { AgentAdapter } from "../adapter"
 import { openCodeAdapter } from "./opencode"
 
 export const openAiAdapter: AgentAdapter = {
   ...openCodeAdapter,
   name: "openai",
+}
+
+/**
+ * Marks an internal hop whose session key Meridian synthesized rather than
+ * received from the client (see deriveToolLoopSessionId).
+ *
+ * The inner handler treats such a key as a declared concurrent flow. A client
+ * that never asked for a session key must not be able to earn a 400
+ * `session_turn_conflict` from one Meridian invented on its behalf: the worst
+ * outcome for a synthesized key stays what it is today, a fresh replay.
+ */
+export const SYNTHESIZED_SESSION_HEADER = "x-meridian-synthesized-session"
+
+/**
+ * Narrow an unknown value to a plain object, the same guard `opencode.ts`
+ * carries; adapters stay self-contained
+ * rather than reaching into another adapter's module.
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/** Flatten OpenAI message content to text; array content keeps text parts. */
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  const parts: string[] = []
+  for (const part of content) {
+    if (isRecord(part) && part.type === "text" && typeof part.text === "string") {
+      parts.push(part.text)
+    }
+  }
+  return parts.join("\n")
+}
+
+/**
+ * Derive a stable session key for a client-driven tool loop that sends none.
+ *
+ * A generic OpenAI client running its own tool loop resends the whole growing
+ * conversation each round, ending in the `tool` message it just produced. With
+ * no session key those rounds take the headerless-tool-result bypass: no
+ * resume, no cache write, a fresh SDK session every round. The bypass is not a
+ * mistake — the conversation fingerprint is (first user message, cwd), so two
+ * runs of one workflow started from the same prompt in the same directory hash
+ * to a single key, and one would resume the other's session (premature
+ * end_turn, dropped tool calls).
+ *
+ * The loop's own first tool-call id closes that hole. It is issued per
+ * generation, so concurrent runs of the same script never share one; it stays
+ * in the history for the life of the conversation, so every later round of
+ * that run derives the same key; and it exists exactly when this path is
+ * reached, since a tool loop has by definition called a tool. Hashing it
+ * together with the opening user message means a collision now needs both the
+ * same prompt and the same id.
+ *
+ * Returns undefined for a body with no tool call, which is every ordinary
+ * chat: those keep today's packed, unkeyed behaviour untouched.
+ */
+export function deriveToolLoopSessionId(body: unknown): string | undefined {
+  if (!isRecord(body)) return undefined
+  const messages = body.messages
+  if (!Array.isArray(messages)) return undefined
+  let anchorId: string | undefined
+  let seedText: string | undefined
+  for (const message of messages) {
+    if (!isRecord(message)) continue
+    if (anchorId === undefined) {
+      const calls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+      for (const call of calls) {
+        if (isRecord(call) && typeof call.id === "string" && call.id.length > 0) {
+          anchorId = call.id
+          break
+        }
+      }
+      if (anchorId === undefined && message.role === "tool" && typeof message.tool_call_id === "string" && message.tool_call_id.length > 0) {
+        anchorId = message.tool_call_id
+      }
+    }
+    if (seedText === undefined && message.role === "user") {
+      const text = messageText(message.content)
+      if (text) seedText = text
+    }
+    if (anchorId !== undefined && seedText !== undefined) break
+  }
+  if (anchorId === undefined) return undefined
+  const seed = `${(seedText ?? "").slice(0, 2000)}\n${anchorId}`
+  return `tool-loop:${createHash("sha256").update(seed).digest("hex").slice(0, 16)}`
 }
