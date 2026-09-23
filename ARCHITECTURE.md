@@ -189,7 +189,6 @@ src/
 │   ├── adapter.ts             ← AgentAdapter interface (extensibility point for multi-agent support)
 │   ├── adapters/
 │   │   ├── opencode.ts        ← OpenCode adapter (session headers, CWD extraction, tool config)
-│   │   ├── custom.ts          ← Custom adapter (headerless clients keyed by a system-prompt session descriptor)
 │   │   └── forgecode.ts       ← ForgeCode adapter (fingerprint sessions, XML CWD, passthrough)
 │   ├── query.ts               ← SDK query options builder (shared between stream/non-stream paths)
 │   ├── errors.ts              ← Error classification (SDK errors → HTTP responses)
@@ -250,8 +249,6 @@ server.ts (HTTP layer)
     │
     ├── adapter.ts (interface)
     ├── adapters/opencode.ts ──► messages.ts, session/fingerprint.ts, tools.ts
-    ├── adapters/custom.ts ──► adapters/opencode.ts, session/fingerprint.ts
-    ├── adapters/detect.ts ──► every adapter (incl. custom.ts, for its session key)
     ├── query.ts ──► adapter.ts, mcpTools.ts, passthroughTools.ts
     ├── errors.ts
     ├── retryAfter.ts
@@ -298,45 +295,7 @@ Agent-specific behavior is isolated behind the `AgentAdapter` interface (`adapte
 ### Current Adapters
 
 - **`adapters/opencode.ts`** — OpenCode agent (session headers, `<env>` block parsing, tool mappings, and recognized transient hook envelopes for lineage)
-- **`adapters/custom.ts`** — Headerless clients that describe their conversation in the system prompt. Behavior is OpenCode's (via `baseName`); only session identification differs. Selected by the last rule in `adapters/detect.ts`, which needs the parsed body — see below.
 - **`adapters/forgecode.ts`** — ForgeCode agent (fingerprint sessions, `<current_working_directory>` parsing, `patch`/`shell` tool mappings)
-
-### Session identification and the conversation fingerprint
-
-Clients without a session header fall back to `getConversationFingerprint` —
-`sha256(workingDirectory + first 2000 chars of the first user message)`. That key is
-not unique: two conversations that open with the same text in the same directory
-collide, and one resumes the other's Claude SDK session.
-
-For clients that drive their own tool loop and replay full history, the proxy
-therefore refuses to resume once any `tool_result` is present
-(`isClientDrivenLoop` in `server.ts`). That is safe but expensive — every turn is
-fresh-replayed, so the prompt cache decays to the static prefix while the whole
-history is rewritten each turn.
-
-Two pure extractors in `session/fingerprint.ts` resolve this without a client
-change, by keying on what the client already tells the model about its
-conversation. `adapters/custom.ts` tries them in order of selectivity:
-
-1. **`extractEmbeddedSessionId`** — a stable identifier the client publishes for
-   the conversation itself. An exact key cannot collide, so resume stays enabled
-   and only the delta is replayed.
-2. **`extractSessionContextKey`** — a hash of the identity lines (`Source`,
-   `User`, `User ID`, `Session type`) of a `Current Session Context` block, for
-   clients that describe *where* a conversation happens but publish no
-   identifier for it. Lines that describe capability rather than identity
-   (connectivity, delivery targets) are excluded, so they can change without
-   throwing the key away.
-
-The second key is chat-scoped, not session-scoped: consecutive conversations in
-one chat share it. That is safe because `verifyLineage` still has to accept the
-history before anything resumes — a successor conversation shares no prefix,
-diverges, and starts a fresh session.
-
-Both are read from the **system prompt only**, never from message content, so
-conversation text cannot spoof a session key. Derived keys are namespaced
-(`custom:`, `custom:ctx:`) so they cannot collide with header-supplied ids in the
-shared, disk-backed session store.
 
 ### Adding a New Agent
 
