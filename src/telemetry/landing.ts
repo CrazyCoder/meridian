@@ -292,8 +292,8 @@ function introSection(h){
   meta.push(h.mode||'internal');
   meta.push('port '+location.port);
   return '<div class="intro">'
-    +'<h2>Harness Claude, your way.</h2>'
-    +'<p>Meridian bridges any Anthropic-API agent to your Claude subscription — point the agent’s <code>ANTHROPIC_BASE_URL</code> at <code>http://'+esc(location.host)+'</code> and every request routes through the active account below. Setup guides for each agent live in the <a href="https://github.com/rynfar/meridian/blob/main/docs/agents.md">Agent Setup guide</a>.</p>'
+    +'<h2>Claude &amp; Antigravity, in your tools.</h2>'
+    +'<p>This page manages Claude accounts. Use <a href="/providers">Providers</a> to connect Claude or Antigravity. For Claude, point your supported client’s <code>ANTHROPIC_BASE_URL</code> at <code>http://'+esc(location.host)+'</code> and every request routes through the active account below. Setup guides for each agent live in the <a href="https://github.com/rynfar/meridian/blob/main/docs/agents.md">Agent Setup guide</a>.</p>'
     +'<div class="intro-meta">'+meta.join(' · ')+'</div>'
     +'</div>';
 }

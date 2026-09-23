@@ -1,5 +1,8 @@
 # Agent Setup
 
+This guide covers Claude client setup. For the Antigravity preview, use the
+[Pi/OpenCode setup guide](antigravity.md) and [support matrix](antigravity-support.md).
+
 [← Back to README](../README.md)
 
 Client configurations and existing verification notes. Examples use a local proxy with authentication disabled; replace placeholder keys with your `MERIDIAN_API_KEY` when enabled. Model lists are examples, not account entitlements: inspect `GET /v1/models` and match the client context window to the proxy's configured window.

@@ -29,15 +29,21 @@ function makeMetric(overrides: Partial<RequestMetric> = {}): RequestMetric {
 }
 
 describe("resolveModelPricing", () => {
+  it("prices Opus 5.5 including its reduced cache-read rate", () => {
+    expect(resolveModelPricing("claude-opus-5-5[1m]")).toEqual({
+      inputPerMTok: 4, outputPerMTok: 20, cacheReadPerMTok: 0.2, cacheWritePerMTok: 5,
+    })
+    expect(resolveModelPricing("claude-opus-5")?.inputPerMTok).toBe(5)
+  })
   it("resolves SDK aliases meridian uses", () => {
-    expect(resolveModelPricing("opus")).toMatchObject({ inputPerMTok: 5, outputPerMTok: 25 })
+    expect(resolveModelPricing("opus")).toMatchObject({ inputPerMTok: 4, outputPerMTok: 20 })
     expect(resolveModelPricing("sonnet")).toMatchObject({ inputPerMTok: 3, outputPerMTok: 15 })
     expect(resolveModelPricing("haiku")).toMatchObject({ inputPerMTok: 1, outputPerMTok: 5 })
     expect(resolveModelPricing("fable")).toMatchObject({ inputPerMTok: 10, outputPerMTok: 50 })
   })
 
   it("strips the [1m] extended-context suffix", () => {
-    expect(resolveModelPricing("opus[1m]")).toMatchObject({ inputPerMTok: 5 })
+    expect(resolveModelPricing("opus[1m]")).toMatchObject({ inputPerMTok: 4 })
     expect(resolveModelPricing("sonnet[1m]")).toMatchObject({ inputPerMTok: 3 })
     expect(resolveModelPricing("fable[1m]")).toMatchObject({ inputPerMTok: 10 })
   })
@@ -65,7 +71,7 @@ describe("resolveModelPricing", () => {
   })
 
   it("derives cache rates from the input rate", () => {
-    const opus = resolveModelPricing("opus")!
+    const opus = resolveModelPricing("claude-opus-5")!
     expect(opus.cacheReadPerMTok).toBeCloseTo(0.5, 10)
     expect(opus.cacheWritePerMTok).toBeCloseTo(6.25, 10)
   })
@@ -96,7 +102,7 @@ describe("resolveModelPricing", () => {
 
 describe("estimateRequestCostUsd", () => {
   it("computes cost from all four token buckets", () => {
-    const pricing = resolveModelPricing("opus")!
+    const pricing = resolveModelPricing("claude-opus-5")!
     const metric = makeMetric({
       inputTokens: 1_000_000,
       outputTokens: 1_000_000,
@@ -108,7 +114,7 @@ describe("estimateRequestCostUsd", () => {
   })
 
   it("treats missing token fields as zero", () => {
-    const pricing = resolveModelPricing("opus")!
+    const pricing = resolveModelPricing("claude-opus-5")!
     expect(estimateRequestCostUsd(makeMetric(), pricing)).toBe(0)
   })
 })
@@ -158,8 +164,8 @@ describe("computeCostEstimate", () => {
 
     const estimate = computeCostEstimate(metrics)
     expect(estimate.byModel["claude-opus-4-8"]!.estimatedUsd).toBeCloseTo(5, 6)
-    expect(estimate.byModel["opus"]!.estimatedUsd).toBeCloseTo(5, 6)
-    expect(estimate.totalUsd).toBeCloseTo(10, 6)
+    expect(estimate.byModel["opus"]!.estimatedUsd).toBeCloseTo(4, 6)
+    expect(estimate.totalUsd).toBeCloseTo(9, 6)
   })
 
   it("flags unrecognized models instead of pricing them at $0", () => {

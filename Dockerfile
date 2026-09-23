@@ -17,12 +17,15 @@ COPY tsconfig.json* ./
 COPY bin/ ./bin/
 COPY plugin/ ./plugin/
 COPY src/ ./src/
+COPY examples/pi-extension/antigravity-retry.js ./antigravity-clients/pi.js
+COPY examples/opencode-plugin/antigravity-retry.js ./antigravity-clients/opencode.js
 # Run bun build directly (not "bun run build") to skip postbuild hook,
 # which calls "node --check" — unavailable in oven/bun image
 RUN rm -rf dist \
     && bun build bin/cli.ts src/proxy/server.ts plugin/meridian-v2.ts --outdir dist --target node --splitting --external @anthropic-ai/claude-agent-sdk --external libsql --external jsonc-parser --entry-naming '[name].js' \
     && bun build plugin/meridian-v2/index.js --outdir dist/meridian-v2 --target node --splitting --external @anthropic-ai/claude-agent-sdk --external libsql --external jsonc-parser --entry-naming '[name].js' \
-    && cp plugin/meridian-v2/package.json dist/meridian-v2/package.json
+    && cp plugin/meridian-v2/package.json dist/meridian-v2/package.json \
+    && cp -r antigravity-clients dist/antigravity-clients
 
 # ---- Runtime stage ----
 FROM node:22-alpine

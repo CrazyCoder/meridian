@@ -6,6 +6,517 @@ Live tests against the real proxy + Claude Max SDK. These verify the full reques
 
 > **Droid tests (D1–D10)** additionally require `droid` installed (`droid --version` ≥ 0.89.0) and a Factory AI account for BYOK configuration. Tests D1–D10 cover internal mode (the default). Passthrough mode for Droid is opt-in via `MERIDIAN_PASSTHROUGH=1` and requires `droid` ≥ 0.109 — see "Droid passthrough mode" below.
 
+## Antigravity subscription CLI backend
+
+```sh
+npm run build
+node scripts/e2e-antigravity.mjs
+```
+
+Requires an account-authenticated official `agy` CLI, Node 22+, and Pi. This
+opt-in gate consumes account quota. `E2E_AGY_MODEL` selects an actual account
+model slug; `MERIDIAN_AGY_PATH` and `E2E_PI_BIN` select installed binaries.
+It never uses a Gemini API key or the Python SDK.
+
+The built Node server runs on an ephemeral loopback port with the
+Antigravity tool bridge explicitly enabled. The gate checks live text, a random
+HTTP client tool receipt, completed-history replay, then actual Pi streaming
+read/write tool rounds. Pi configuration, context discovery and files are
+isolated. The real CLI retains its existing account authentication. A recording
+relay requires the secret file value to enter through Pi's own `tool_result`;
+the copied file must exactly match the source, and the final answer must contain
+the receipt. CLI versions before and after the gate must match.
+
+The bridge currently uses per-process auto-approval plus a restrictive hook;
+see [the permission and capability limits](docs/antigravity.md). The Node
+entrypoint and macOS flow are the live target. Mocked CLI integration tests do
+not establish Linux or Windows compatibility, arbitrary clients, native resume,
+images or recovery of a pending call after process death.
+
+The gate writes a versioned report and client logs to a temporary artifact
+directory, printed at startup, and closes the public server, MCP listener and
+owned subprocesses. The CLI's own account conversation/project records persist.
+
+**Verified 2026-09-18:** macOS arm64, Node 22.22.3, official `agy` 1.2.7,
+`gemini-3.8-flash-low`, Pi 0.72.1. All four live checks passed. Pi made three
+HTTP requests for the read/write loop, copied the random client-only file
+exactly, and returned its value. The CLI version was unchanged across the run;
+server and subprocess shutdown completed successfully.
+
+The extended native gate runs the actual macOS app with disposable app data and
+an app-managed combined service:
+
+```sh
+npm run build
+npm ci --prefix apps/desktop
+npm run build --prefix apps/desktop
+env -u ELECTRON_RUN_AS_NODE apps/desktop/node_modules/.bin/electron \
+  scripts/e2e-antigravity-desktop.cjs
+```
+
+It verifies the provider navigation and managed setting, executes the same Pi
+file-copy flow through `/antigravity`, sends a real `claude-haiku-4-5` request
+through the ordinary route, checks both providers' activity and menu-bar quota
+presentation, and stops the owned service. It saves screenshots and state.
+`E2E_MERIDIAN_URL` can target an already-running Antigravity URL (including the
+`/antigravity` prefix); the standalone gate never stops an external service.
+
+Retained hardening failures: `meridian-agy-e2e-mbAvPv` caught CLI timestamps
+being copied into file content. Explicit `meridian_client_result` JSON boundaries
+fixed that exact-byte failure; subsequent actual Pi runs passed. The desktop
+`Movmeo` artifact caught `Providers: TimeoutError` while live quota reads blocked
+the eight-second desktop API deadline. Provider snapshots now return current
+local activity immediately and refresh quota facts in the background. Direct
+regression tests cover stalled quota reads and retaining stale desktop data;
+the native gate waits for the asynchronously refreshed provider snapshot without
+repeating any model or tool operation.
+
+**Verified 2026-09-18 (extended gate):** actual macOS arm64 Electron 44.3.0
+app, bundled Node 22.23.2, official agy 1.2.7, Gemini 3.8 Flash Low, Pi 0.72.1,
+and Claude Agent SDK / `claude-haiku-4-5`. The final native artifact is
+`meridian-agy-desktop-DvFSo0`; the nested live client artifact is
+`meridian-agy-e2e-E1r1RV`. All native checks passed, including separate routes,
+exact Pi copy, fresh activity from both providers, menu-bar quotas and shutdown.
+The same app-owned service's provider endpoint responded in 2 ms during live
+browser inspection. Web provider navigation was inspected at desktop and 390px
+phone widths; the final phone layout had no horizontal page overflow. This
+establishes the macOS text/tool path, not Linux, Windows or full Claude parity.
+
+### Antigravity coding-tool acceptance gate
+
+```sh
+npm run build
+node scripts/e2e-antigravity-tools.mjs
+```
+
+This gate prioritizes actual client tools: Pi must recover from a deliberately
+missing file, read a Unicode-named source file, edit it, execute it with `bash`,
+and write its exact output (including the trailing newline) with `write`.
+The relay verifies streaming, tool identities, correlated results and the
+missing-file `is_error` response. Both the modified source and output file are
+compared byte-for-byte. It uses an isolated workspace and Pi configuration,
+consumes subscription quota, records requests/logs/report, and stops owned
+processes. It never automatically reruns a failed model attempt.
+
+**Verified 2026-09-18:** macOS arm64, Node 22.22.3, official agy 1.2.7,
+Gemini 3.8 Flash Low, Pi 0.72.1. Artifact `meridian-agy-tools-zQKqd6` passed
+all five acceptance checks over seven streaming HTTP requests. The tool trace
+was read (expected missing-file error), read, edit (schema validation error),
+edit, bash, write. The first edit used `old_text`/`new_text`; Pi required
+`oldText`/`newText`. That error reached the model, which corrected its arguments
+within the same live conversation. No model rerun was used to obtain the pass.
+
+A deterministic transport regression separately reproduced corruption when an
+emoji in a tool argument spanned MCP HTTP chunks (`🧪` became replacement
+characters). The runtime now bounds and joins raw bytes before UTF-8 decoding;
+the test fails before the fix and passes after it. The live gate verifies actual
+Unicode paths/content, while the regression forces the otherwise nondeterministic
+network split. This evidence covers this model/client/platform, not every client
+or pending-tool recovery after process death.
+
+### Pi and OpenCode client/session acceptance
+
+```sh
+npm run build
+E2E_CLIENT=pi node scripts/e2e-antigravity-clients.mjs
+E2E_CLIENT=opencode E2E_AGY_EFFORT_MODEL=gemini-3.8-flash-high node scripts/e2e-antigravity-clients.mjs
+node scripts/e2e-antigravity-opencode-session.mjs
+```
+
+These gates use actual installed clients with isolated client configuration and
+saved sessions. They exercise client-owned tools against the real account-backed
+CLI, not fixture model responses. The coding task requires read-error recovery,
+an exact source edit, execution, a Unicode output file, and client-side byte
+verification/repair before the external byte-for-byte assertion. Both clients
+then continue and fork saved sessions and use their search tools. OpenCode also
+uses its `task` tool to invoke a real client-owned subagent; the high-effort probe
+uses the matching Gemini high variant. Pi's RPC mode checks steering while a
+bash tool runs, compaction, cancellation and the next prompt. A separate actual
+OpenCode server checks undo, compaction, cancellation and continued prompting.
+
+**Verified 2026-09-18:** macOS arm64, Node 22.22.3, agy 1.2.7,
+Pi 0.72.1, OpenCode 1.18.31; Gemini 3.8 Flash Low plus Gemini 3.8 Flash High
+for the OpenCode effort probe.
+
+| Artifact | Live outcome |
+| --- | --- |
+| `meridian-agy-pi-kqrZWn` | All 11 checks passed over 22 HTTP requests: coding, errors, exact bytes, streaming, saved continuation/fork, ls/find/grep, steering, compaction and abort/recovery. |
+| `meridian-agy-opencode-qyKT50` | All 9 checks passed over 18 HTTP requests: coding, errors, exact bytes, streaming, saved continuation/fork, glob/grep/task and native high effort. |
+| `meridian-agy-opencode-session-kolHLi` | Actual OpenCode server passed undo/continuation, saved compaction/recall, and cancellation/next-prompt recovery. |
+
+Pi steering must advance exactly one completed agy process and leave no pending
+process; the obsolete write must not exist. Regression tests separately cover
+steering in the same tool-result message and in a following user message, and
+reject an edited prefix before delivering either. Ordinary session continuation,
+fork, undo and compaction still replay client history rather than using native
+agy persistent resume.
+
+Retained failures and limits:
+
+- `meridian-agy-opencode-uiSPX9` caught a model writing literal backslash-n instead
+  of a newline. Runtime prompt guidance now distinguishes decoded bytes from JSON
+  escaping. The coding gate asks the client to verify bytes and repair failed
+  writes, then independently compares the final source/output. This does not
+  claim that model-generated arguments can never be wrong.
+- `meridian-agy-pi-ff38vU` passed coding/search/session checks but the optional
+  Claude Sonnet high-effort probe failed: the official CLI rejects that model's
+  effort override. Mismatching/unsupported model suffixes now fail before launch;
+  the supported native effort gate uses a matching Gemini high model. Pi should
+  select Gemini effort through model slugs, with numeric thinking controls off.
+- Official stream-json CLI input only supports text blocks. The additional gate
+  below verifies images through exact supplied attachment files instead. Native hard
+  token/thinking budgets, arbitrary plugins/extensions, native agy resume and
+  pending-tool recovery across process death are not established by these gates.
+
+The gates record the actual requests, client logs, versions and per-check report.
+They do not automatically repeat a failed model attempt. Client validation errors
+may be corrected by the model inside the same conversation, as in normal use.
+
+### Antigravity images, schemas and response controls
+
+```sh
+npm run build
+node scripts/e2e-antigravity-capabilities.mjs
+E2E_SESSION_CAPABILITIES=1 node scripts/e2e-antigravity-opencode-session.mjs
+```
+
+The first gate checks a multi-megabyte PNG through production Node and actual
+CLI vision, native JSON-schema output in JSON and SSE responses,
+text stops in both modes (including process cleanup), forced any/named client
+tools, and a named-tool continuation that finishes with native structured output.
+The second uses actual Pi/OpenCode attachments and each client's image read
+result, then OpenCode's own `StructuredOutput` workflow. Images contain newly
+randomized six-character codes absent from prompts and filenames. The image
+fixture generator needs Python Pillow and macOS Menlo. Configurations and client
+files are isolated, and all model traffic uses the official subscription CLI.
+OpenCode's deny-all fixture policy explicitly permits `read` and
+`StructuredOutput`. `E2E_IMAGE_CLIENT=opencode` or `structured` narrows diagnostic
+runs; `E2E_AGY_TRACE=1` records only fixture model stdin/stdout, never auth probes.
+
+**Verified 2026-09-18:** macOS arm64, Node 22.22.3, agy 1.2.7,
+Gemini 3.8 Flash Low, Pi 0.72.1 and OpenCode 1.18.31. All six response-control
+checks passed in `meridian-agy-capabilities-VXKid6`. All five actual-client checks
+passed in `meridian-agy-opencode-session-c4THXr`, including exact visual codes
+and exact structured object fields. The native schema result is independently
+validated; intermediate native finish metadata is never delivered as JSON.
+
+A 4 MiB raw image exposed a V8 stack overflow in the repeated-group base64
+regex. The replacement uses a flat character check plus canonical decoding.
+The production-Node regression test and live `meridian-agy-capabilities-UFHQLs`
+passed with a request exceeding 5 MiB and an exact random visual code on
+2026-09-19. `E2E_CAPABILITIES_LARGE_IMAGE_ONLY=1` isolates this check.
+
+Retained evidence and corrections:
+
+- `agy-image-probe-539I9h`: native MCP image results were offloaded into a CLI
+  private file, whose read the policy denied. `agy-image-probe-HqyUNq` proved
+  exact reads of supplied workspace images, leading to the attachment bridge.
+  Arbitrary host reads remain denied; other accepted image formats have signature
+  and transport validation, but only PNG vision was live-tested here.
+- `meridian-agy-capabilities-akVsTU`: Gemini rejected a numeric enum in a schema.
+  This native limitation remains an explicit invalid-argument error; the schema
+  is never silently weakened. `voyJLC` exposed a missing structured result while
+  the policy blocked native `finish`; schema requests now permit that operation.
+- `meridian-agy-opencode-session-FYJYKA`: the visual answers were correct, but the
+  test checked only the final assistant message for `read`. The corrected gate
+  checks saved tool history and verifies that the result contains an image.
+- `7iXEGN` timed out because the fixture's deny-all policy hid `StructuredOutput`.
+  Diagnostic trace `oHwzGQ` established the missing tool and blocked private-schema
+  reads. `yTlSGq` exposed a guessed, extra `output` argument wrapper. The fixture
+  now permits the requested tool; Meridian includes exact supplied schemas in its
+  prompt and rejects invalid arguments before delivery so the model can correct
+  them. Final `c4THXr` passed without relaxing its exact-object assertion.
+
+**Regression verification 2026-09-19:** the expanded schema/image boundary also
+passed the full actual Pi coding/session gate (`meridian-agy-pi-27Cpz6`, 11 checks,
+21 requests) and OpenCode coding/session/delegation/high-effort gate
+(`meridian-agy-opencode-lTc0nn`, 9 checks, 18 requests). The actual macOS app
+gate also passed all 9 checks in `meridian-agy-desktop-OOFlYO` (nested client
+artifact `meridian-agy-e2e-vQxLZf`): both live provider routes, Pi exact copy,
+provider/request/tray UI, clean activity with no data errors, standalone mode
+and owned-service shutdown.
+
+Text stops are enforced at the response boundary, including split-chunk prefixes;
+they are not native token caps and early-stop usage can be incomplete. Hard token
+caps, numeric reasoning budgets, sampling controls, arbitrary extensions, native
+agy persistent resume, Linux and Windows are not established by these gates.
+
+### Antigravity tool-result recovery and main integration
+
+```sh
+npm run build
+node scripts/e2e-antigravity-recovery.mjs
+E2E_AGY_RECOVERY=1 E2E_CLIENT=pi node scripts/e2e-antigravity-clients.mjs
+E2E_AGY_RECOVERY=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-clients.mjs
+```
+
+The direct lifecycle gate expires a waiting process and separately reclaims one
+at a single-process capacity limit, then supplies the completed result and
+requires the exact random receipt without another tool call. Client recovery
+mode replaces the backend after a successful client tool has executed but before
+forwarding its result. It verifies that completed call is not repeated, exact
+file edits/output survive, and subsequent coding and saved-session flows work.
+This is explicit completed-history replay, not native process restoration or
+durable exactly-once execution. Failed active requests are not automatically
+retried.
+
+**Verified 2026-09-19:** after integrating main through `1ff2c678`, actual Pi
+0.72.1 passed 12 checks/21 requests in `meridian-agy-pi-acHx6U`; actual OpenCode
+1.18.31 passed 9 checks/16 requests in `meridian-agy-opencode-gugWII`. Both
+recovered the completed read without repeating it, then completed read/edit/bash/
+write, exact Unicode output, session resume/fork and search. Pi also passed
+steering, compaction and abort; OpenCode passed client-owned task delegation.
+Both used macOS arm64, Node 22.22.3, official agy 1.2.7 and Gemini 3.8 Flash Low.
+
+The direct expiry/capacity gate passed both cases in
+`meridian-agy-recovery-jY5StQ` with the same CLI/model/Node/platform. It returned
+the exact newly generated receipt after each original process had exited.
+
+The merged native macOS app passed all 9 checks in
+`meridian-agy-desktop-MIvv87` (nested client `meridian-agy-e2e-IpdsU7`): managed
+combined service, both actual provider routes, exact Pi copy, shared activity,
+separate quotas, provider/request/tray navigation, standalone mode and shutdown.
+
+Further integration included main through `dacc1b1b` (authentication diagnostics
+and profile following). The actual app passed all 9 checks in
+`meridian-agy-desktop-TOWjo8`, with nested Pi flow `meridian-agy-e2e-KQar9e`.
+An earlier run, `meridian-agy-desktop-0EaaSM` / `meridian-agy-e2e-uBAZTT`, failed
+before any model call because `/antigravity/health` returned a body without
+`backend`. That gate did not retain its HTTP status/body, so the cause remains
+unclassified. Three subsequent read-only combined health probes returned 200,
+and the instrumented native gate passed; neither establishes the first failure's
+cause or a production fix. Health status/body and desktop failure state are now
+saved by the gates. Preserve this open diagnostic rather than treating a green
+repeat as proof of resolution.
+
+Linux CI also exposed process-global SDK mock contamination from the newly
+merged `follow-active-integration.test.ts`: unrelated tests received its
+`session-${Date.now()}` identity instead of their own mocked session. `npm test`
+now runs that file in its own process, retaining all of its assertions alongside
+the other isolated groups. This changes test isolation, not runtime SDK behavior.
+
+### Antigravity expanded CLI capabilities
+
+**Verified 2026-09-19, macOS arm64, official agy 1.2.7, Node 22.22.3,
+Gemini 3.8 Flash Low:**
+
+| Gate | Result and retained artifact directory |
+| --- | --- |
+| `e2e-antigravity-expansion.mjs` | Six checks: same-process random-receipt recall, both OpenAI routes as JSON/SSE, one response with two real client actions and reversed results. `meridian-agy-expansion-u07uzW`. |
+| `e2e-antigravity-openai-tools.mjs` | Both routes return forced function calls, consume correlated random receipts and stream the exact result. `meridian-agy-openai-tools-h0C87G`. |
+| `e2e-antigravity-media.mjs` | Five checks: random PDF content, public HTTPS image, local speech transcript, sampled video receipt, numeric-enum schema with a nonmatching stop. `meridian-agy-media-9e5X4P`. |
+| `e2e-antigravity-native-tools.mjs` | Four checks: native self subagent arithmetic, isolated browser retrieves a random local-page heading, child hook denies a disposable non-attachment file, cancellation after child invocation releases active CLI process. `meridian-agy-native-tools-XMQrEz`. Earlier production browser/guard gate: `meridian-agy-native-tools-CnTWSG`. |
+| Actual Pi 0.72.1 | Coding/error recovery, exact Unicode output, saved resume/fork, search, steering, compaction, abort/recovery; 21 HTTP requests. `meridian-agy-pi-XHdxN7`. |
+| Actual OpenCode 1.18.31 | Coding/error recovery, exact Unicode output, saved resume/fork, glob/grep and client-owned task delegation; 16 requests. `meridian-agy-opencode-NjAsOQ`. |
+| Native Electron 44.3.0 app | Nine existing flows plus new capability disclosure and separate disabled-while-running native settings. Both actual subscription routes, requests/quotas/tray, standalone restart and owned shutdown. `meridian-agy-desktop-1qiLRK`, nested `meridian-agy-e2e-b1n5y8`. |
+
+Artifacts are in the local OS temporary directory; they are not committed.
+The native browser gate used installed Chrome DevTools MCP **1.9.0** through
+`MERIDIAN_AGY_BROWSER_MCP_PATH`, with headless isolated Chrome. It did not reuse
+personal Chrome state. Media used local Poppler, ffmpeg/ffprobe, whisper.cpp 1.9.4,
+a local ggml-base model and Python 3.11 with ReportLab/Pillow. These gates consume
+the signed-in subscription; they do not use an API-key/SDK fallback.
+
+The new Windows transport CI initially failed because its test harness applied
+C-runtime argument escaping to a `cmd.exe` command string, passing literal
+backslash-quoted executable names. The harness now supplies the outer `/s /c`
+quotes and `windowsVerbatimArguments`; the hook command itself is unchanged.
+Authenticated Windows CLI behavior is still unverified.
+
+Retained failures explain the changes rather than disappearing behind reruns:
+
+- `meridian-agy-expansion-j54zOe`: direct native calls arrived serially. Added an
+  explicit atomic `meridian_parallel` MCP tool; the succeeding gate requires a
+  two-call response. `xgKAm5` failed a test assertion that searched raw SSE for
+  contiguous text; the gate now assembles deltas before comparing receipts.
+- `meridian-agy-media-5v527G`: fixture setup selected a Python without ReportLab,
+  before a model call. `E2E_PYTHON` selects the fixture interpreter explicitly.
+- `meridian-agy-native-tools-9EnS8A`: native browsing reached Chrome DevTools but
+  default personal Chrome had no DevToolsActivePort. A workspace MCP override
+  with isolated Chrome passed (`20e2YO`), then the actual adapter implementation
+  passed in `CnTWSG` and `XMQrEz`. Earlier native probes also established the
+  actual child MCP tool names and that completed invocation events use the
+  `subagent` category; the policy and telemetry parser were corrected accordingly.
+- `meridian-agy-pi-ewtigM`: an old assertion treated all retained processes as
+  abandoned tools. Health now distinguishes idle, active and pending-tool work;
+  the Pi gate requires zero active/pending work while allowing warm conversations.
+
+Collaborative-browser inspection at 1280px and 390px found a missing closing
+brace in shared `profileBarCss` from the integrated main change `dacc1b1b`.
+It incorrectly nested all following page styles. The brace is restored; actual
+browser checks confirm the provider grid, foreground color, filter, expanded
+capability details and no horizontal overflow at either width. The macOS native
+renderer uses its own shared style assembly. A painted-settings/capabilities
+check (`meridian-agy-desktop-FSEVET`, no model calls) also exposed inherited
+desktop definition-list styling; the shared capability section now overrides
+that layout so descriptions stay below their labels. The corrected native UI
+passed and was visually inspected in `meridian-agy-desktop-eZy7f8`.
+Local validation passed 4,627 tests across 15 isolated groups, typecheck, server
+build and desktop build; the final presentation adjustment also passed all six
+provider presentation tests.
+
+This evidence establishes the listed flows. It does not establish authenticated
+Linux/Windows support, native PDF/audio/video semantics, exact token counts,
+signed reasoning, arbitrary OpenAI clients, provider-independent Claude SDK
+plugins, or durable native restoration after restart. The native cancellation
+gate observes the owned CLI lifecycle, not a proof about undocumented remote
+provider work cancellation. Preserve the earlier unclassified health failure
+above; these newer successes do not identify its cause.
+
+### Completed-answer transport-loss gate
+
+```sh
+E2E_AGY_LOST_ANSWER=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_LOST_ANSWER=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+Unlike the interrupted-continuation gate, this relay consumes the entire upstream
+answer through `message_stop`, then closes the connection without delivering it.
+Both clients must automatically retry and receive a response marked
+`x-meridian-response-replayed: true` with identical message ID, text, stop fields
+and usage. The client action audit must still contain one execution; every HTTP
+error fails the gate. The saved-answer path returns before CLI selection and
+usage accounting; direct tests also disable CLI preflight during restart recovery
+and require no repeated response hooks or usage records.
+
+**Verified 2026-09-19:** actual macOS arm64, Node 22.22.3, agy 1.2.7,
+Gemini 3.8 Flash Low, Pi 0.72.1 and OpenCode 1.18.31. Pi artifact
+`meridian-agy-pi-extensions-Q7EbtX` passed eight checks / 15 requests; OpenCode
+`meridian-agy-opencode-extensions-PLXAET` passed eight / 13. Both recorded zero
+HTTP errors and exited successfully after owned-process cleanup. Pi encountered
+a natural first-attempt configuration timeout (21,014 ms including force-kill
+join, SIGKILL, zero output bytes); the existing bounded read-only retry recovered
+it. This does not establish the underlying agy stall's cause.
+
+Initial direct restart checks passed assertions but logged `Workspace retention
+failed: Antigravity state is closed`. Exited runs were removed from admission maps
+before asynchronous cleanup finished, allowing shutdown to close SQLite early.
+Runtime shutdown now also joins those cleanup promises. Corrected direct tests
+run without that warning; the subsequent OpenCode gate used the rebuilt cleanup
+fix. New regression coverage includes exact identity/credential isolation,
+JSON/SSE and Unicode reconstruction, count/byte/expiry bounds, durable restart,
+no duplicate hooks/usage, state-close ordering and OpenAI `store: false` exclusion.
+The final local suite passed 4,693 tests with zero failures across 15 isolated
+groups; typecheck and the Node server build passed.
+
+This gate covers saved terminal text answers to Anthropic tool-result turns.
+Responses issuing another tool call, native browser/subagent grants, ordinary
+prompt retries and expired/evicted/oversized snapshots remain outside this path.
+
+### Identified tool-call delivery recovery
+
+```sh
+E2E_AGY_LOST_TOOL=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_LOST_TOOL=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+This mode loads the repository's actual provider-scoped retry extension/plugin,
+consumes a complete tool-call response at the relay, and drops it before delivery.
+It requires a client-supplied identity, automatic retry through the saved-response
+header, unchanged request/message/tool IDs, one approved client execution, and
+zero HTTP errors. It continues the ordinary denial, questions, dynamic Pi tool and
+delayed-approval checks. The bridge uses only the official subscription CLI.
+
+**Verified 2026-09-19:** macOS arm64, Node 22.22.3, agy 1.2.7, Gemini 3.8
+Flash Low. Pi 0.72.1 artifact `meridian-agy-pi-extensions-Hudt9x` passed seven
+checks / 15 requests. OpenCode 1.18.31 artifact
+`meridian-agy-opencode-extensions-wzsnMB` passed seven / 13. Both recorded zero
+HTTP errors. A subsequent Pi run against the updated build,
+`meridian-agy-pi-extensions-OuGSHW`, also passed seven checks / 15 requests with
+zero HTTP errors; one 20,144 ms first-attempt configuration timeout recovered.
+The earlier Pi run encountered two first-attempt configuration timeouts, each
+recovered by the bounded official read-only retry (21,015 ms/SIGKILL/zero bytes;
+20,098 ms/exit 1/244 bytes). No configuration contents were retained in diagnostics.
+
+Retained OpenCode failure `meridian-agy-opencode-extensions-6NiiC4`: the first
+plugin generated a random ID in `chat.headers`. OpenCode invoked that hook again
+on retry, so it generated a second model answer rather than retrieving the saved
+one. Ordinary client checks passed, but the mandatory saved-response assertion
+failed. The correction reads the active assistant-message identity from OpenCode's
+public session API, skips missing/ambiguous steps, and changes IDs for subsequent
+assistant steps. The corrected gate proves that exact failure is fixed. Source
+references: [public plugin hooks](https://github.com/anomalyco/opencode/blob/v1.18.31/packages/plugin/src/index.ts),
+[assistant creation before processing](https://github.com/anomalyco/opencode/blob/v1.18.31/packages/opencode/src/session/prompt.ts),
+and [processor retry lifecycle](https://github.com/anomalyco/opencode/blob/v1.18.31/packages/opencode/src/session/processor.ts).
+
+Direct regression coverage includes partial SSE delivery followed by owner death,
+parallel-batch replay, persisted tool responses after restart without CLI access,
+consumed-result rejection, identity conflicts, concurrent coalescing and waiter
+cancellation/bounds, shared snapshot limits, Unicode argument reconstruction,
+native-grant refusal and both real plugin entrypoints. Existing completed-answer
+snapshots remain readable. The live gate establishes recovery before downstream
+response delivery; it does not establish automatic client retry after partial
+stream delivery or exactly-once actions by arbitrary custom GUIs.
+
+An additional `E2E_AGY_CANCEL_TOOL=1` mode cancels the upstream stream after a
+tool block arrives while a deliberately delayed telemetry observer is active,
+then drops downstream delivery. This exercises CLI cancellation/join before
+returning a saved batch and subsequent completed-result recovery. The observer's
+expected cancellation diagnostic is retained. The normal context-switch telemetry
+assertion only applies without this deliberate owner termination.
+
+A direct regression first reproduced the cleanup race: an exact retry returned
+while the cancelled CLI was still alive when cancellation arrived during telemetry.
+Tracking cancellation independently of the otherwise successful response status
+makes identified retries wait for `run.settled`; the regression now passes.
+Initial cancellation-gate artifact `meridian-agy-opencode-extensions-5FenCH`
+completed the action/result, denial, question and delayed-approval checks, then
+failed a harness assertion expecting `client-context-replay` from the intentionally
+terminated owner. That assertion remains mandatory in the normal gate and is
+excluded only in cancellation mode, which still requires exact saved-response
+identity, one execution and zero HTTP errors. The corrected OpenCode cancellation
+gate, `meridian-agy-opencode-extensions-Unschd`, passed eight checks / 13 requests,
+including exact saved-call recovery and zero HTTP errors. The matching Pi
+cancellation gate, `meridian-agy-pi-extensions-A9s75q`, passed eight checks / 15
+requests with zero HTTP errors. Both used the rebuilt cancellation-join fix. The final local suite passed 4,706
+tests with zero failures across 15 isolated groups; typecheck and Node build passed.
+
+## Client-visible partial tool response recovery
+
+```sh
+E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+This distinct fault sends the complete tool blocks to the actual client, waits
+250 ms, records the execution audit, and severs delivery before `message_delta`
+and `message_stop`. It enables Pi's ordinary automatic retry (two attempts),
+loads the example retry extension, and requires identical saved request/message/
+tool IDs, zero executions before disconnect, one execution after approval, and
+zero HTTP errors. It also runs denial, questions/cancellation, dynamic tools and
+delayed approval. Do not combine it with the upstream cancellation flag.
+
+**Verified 2026-09-19:** macOS arm64, Node 22.22.3, `agy` 1.2.7,
+`gemini-3.8-flash-low`, Pi 0.72.1. Initial artifact
+`meridian-agy-pi-extensions-LaMWHl` passed seven existing checks/15 requests,
+with zero executions before disconnect. Final gate artifact
+`meridian-agy-pi-extensions-9UDOi4` passed all eight checks / 15 requests,
+including the explicit zero-execution assertion, with zero HTTP errors.
+The extension now retains a request
+hash and ID across an exact failed-turn retry; new prompts, session operations,
+changed requests and successful/aborted turns clear it.
+
+**Retained failure:** OpenCode 1.18.31 artifact
+`meridian-agy-opencode-extensions-LMfDyw` executed the approved receipt once before
+the disconnect. Its fixture plugin then changed system instructions from awaiting
+a receipt to having observed one; the next request reused the active assistant ID
+with those changed instructions. Meridian correctly returned 409 (four observed
+attempts), and the client turn failed. The audit and public client session showed
+the completed action. That pre-buffer run is not a passing OpenCode recovery gate. Changing the
+request ID or weakening fingerprint checks would risk repeating the action.
+The corrected OpenCode integration buffers delivery in its public provider fetch
+configuration before the client can execute a tool. Initial passing artifact
+`meridian-agy-opencode-extensions-PUmuHx` passed eight checks / 13 requests,
+including zero executions before disconnect, saved-response identity, approval,
+denial, questions and delayed approval, with zero HTTP errors. It uses the same
+fault that failed above; no fingerprint or permission checks were relaxed.
+The final implementation adds cancellation, a five-minute deadline and a 4 MiB
+buffer cap. Final artifact `meridian-agy-opencode-extensions-4poBIb`
+passed all eight checks / 13 requests with zero HTTP errors and zero executions
+before disconnect on the final implementation (OpenCode 1.18.31, agy 1.2.7,
+Gemini 3.8 Flash low, macOS arm64, Node 22.22.3).
+Focused tests cover withheld delivery, broken/truncated streams,
+oversize cancellation, caller abort, and HTTP/nonstreaming pass-through.
+
 ## Quick Start
 
 ```bash
@@ -98,6 +609,35 @@ hidden drain can overlap a follow-up; auxiliary CLI requests are excluded.
 Run all four live Claude Max E41 modes alongside these controls, plus the #925
 `--fixture --stream --drop-stop` control when changing stream recovery.
 
+The explicit CLI-refusal control uses a declared client tool whose **bare**
+name is emitted by a local Anthropic response fixture. The real CLI rejects
+that name before PreToolUse; Meridian must complete the Pi streaming handoff
+and accept a subsequent tool-result request with `tools` omitted, using a fresh
+SDK session and only the tool set from that recovered turn:
+
+```bash
+bun scripts/e2e-capped-turns.mjs --case=client-refusal --stream
+bun scripts/e2e-capped-turns.mjs --case=client-refusal --stream --headerless
+```
+
+The second command omits Pi's optional session-affinity header and metadata
+identity, exercising the default fingerprint-scoped, one-shot result handoff
+without resuming another anonymous SDK session. Both commands use real CLI/SDK
+dispatch with a fixture upstream, not a claim that the real Claude model chose
+a bare name. Keep the affected-model Pi live gate alongside them when accepting
+passthrough changes.
+
+For the affected model and Pi adapter on Linux, also run the live
+multi-turn control (real Claude Team account, not the fixture upstream):
+
+```bash
+PROBE_ADAPTER=pi PROBE_MODEL=claude-opus-5-5 PROBE_PARALLEL=1 bun scripts/e2e-passthrough-turns.mjs --stream
+```
+
+This verifies Pi tool execution and continuation on the real model; the
+CLI-refusal fixture above separately forces the otherwise nondeterministic
+bare-name dispatch error.
+
 ### Passthrough argument repair (#925)
 
 ```bash
@@ -169,6 +709,30 @@ to verify the Claude Code preset remains optional. Meridian
 state is isolated in a temporary directory while the existing SDK auth is kept.
 Also run all four E41 modes to validate normal checkpoint resumes after changes.
 
+### Implicit SDK file mentions in passthrough
+
+```bash
+bun scripts/e2e-implicit-attachments.mjs --run
+# Negative control: must fail on the passthrough canary assertion.
+bun scripts/e2e-implicit-attachments.mjs --run --regression-control
+```
+
+This credential-free probe runs the installed Claude executable against an
+ephemeral loopback Anthropic fixture. Isolated `app` and `config` directories
+contain random filename canaries. Native SDK mode expands Ruby `@app`/`@config`
+into directory attachments; passthrough must preserve the original source while
+keeping those canaries out of the captured model request. Fresh, resumed and
+forked turns are covered, along with exact image/document data preservation and
+an explicit inherited environment override. It cleans up its SDK home and fixture directories.
+
+Passthrough sets the internal CLI switch `CLAUDE_CODE_DISABLE_ATTACHMENTS=1` to
+prevent implicit SDK context enrichment, including automatic file mentions and
+MCP resource attachments. Explicit client media is unaffected; native SDK mode
+keeps its existing behavior. See [configuration](docs/configuration.md) for
+`MERIDIAN_SUPPRESS_IMPLICIT_ATTACHMENTS=0` and inherited CLI override semantics.
+Existing attachments already stored in resumed history are not removed.
+Re-run this probe when updating Claude Code, since the switch is internal.
+
 ### Pi concurrent callers (#870 / #922)
 
 ```bash
@@ -201,7 +765,7 @@ UI. Both fixtures isolate Meridian state and work only in temporary directories.
 | E3 | [Tool Use Loop](#e3-tool-use-loop) | MCP tools (read/write/bash) execute through SDK | 2026-03-24 |
 | E4 | [Session Continuation](#e4-session-continuation) | Same session header → `lineage=continuation`, SDK session reused | 2026-03-24 |
 | E5 | [Undo with Rollback](#e5-undo-with-rollback) | Shorter/diverged suffix → `lineage=undo`, rollback UUID emitted | 2026-03-24 |
-| E6 | [Compaction](#e6-compaction) | Summarized prefix + preserved suffix → `lineage=compaction` | 2026-03-24 |
+| E6 | [Compaction](#e6-compaction) | Shortened summary head + preserved suffix → fresh replay with the supplied summary; equal-length pruning still resumes | 2026-09-23 |
 | E7 | [Diverged Detection](#e7-diverged-detection) | Completely unrelated messages → `lineage=new`, fresh session | 2026-03-24 |
 | E8 | [Cross-Proxy Resume](#e8-cross-proxy-resume) | Kill proxy → restart → session resumes from file store | 2026-03-24 |
 | E9 | [Fingerprint Fallback](#e9-fingerprint-fallback) | No session header → fingerprint-based session lookup works | 2026-03-24 |
@@ -280,6 +844,13 @@ UI. Both fixtures isolate Meridian state and work only in temporary directories.
 | E54 | [Lineage divergence reason](#e54-lineage-divergence-reason) | **Automated**: `bun scripts/e2e-lineage-divergence-reason.mjs` — real proxy + SDK, A/B. Drives a headerless pi tool loop and the same loop with `x-session-affinity`. Asserts no divergence is silent, that the headerless bypass names itself, that the advice is printed once per process, and that the named remedy actually restores resume and prompt-cache reuse. **Run before releases touching lineage classification, the independence guards, or the request log line** | 2026-09-09 |
 | E55 | [Gateway-fronted Claude Code](#e55-gateway-fronted-claude-code) | **Automated, needs the `claude` CLI** (skips cleanly without it): `bun scripts/e2e-passthrough-claude-code-session.mjs` — real proxy + SDK, and the REAL Claude Code CLI as the client. Asserts a gateway-fronted Claude Code session keeps the tool-loop exemption it has on a direct connection, that its following turn resumes, and that the CLI's auxiliary requests do not collide with the conversation. **Run before releases touching the independence guards, adapter detection, or passthrough session identity** | 2026-09-09 |
 | E56 | [Namespaced tool-round resume](#e56-namespaced-tool-round-resume) | **Automated**: `bun scripts/e2e-passthrough-namespace-resume.mjs` — real proxy + SDK, three adapters. Drives an identical keyed tool loop on `pi`, `passthrough` and `opencode` and asserts every keyed tool round resumes on all of them, so an adapter-specific client-tool namespace cannot silently take the resume checkpoint away. **Run before releases touching the passthrough namespace, the early-stop tracker, or checkpoint storage** | 2026-09-09 |
+| E58 | [Headerless OpenAI tool-loop identity](#e58-headerless-openai-tool-loop-identity) | **Automated**: `bun scripts/e2e-tool-loop-identity.mjs` — real proxy + SDK, A/B. Drives a headerless OpenAI `/v1/chat/completions` tool loop with the client's own stable first tool-call id, and a no-tool control. Asserts the derived `tool-loop:<hash>` resumes and every turn from the second reads ≥90% of the previous prompt from cache with only the new-turn delta written, that no round takes the headerless-tool-result bypass, and that the packed control reads nothing and rewrites everything; also observes the `synthesized-session-key` checkpoint rescue. **Run before releases touching OpenAI session identity, the derived tool-loop key, the passthrough early-stop checkpoint, or the headerless-tool-result bypass** | 2026-09-22 |
+| E59 | [Node socket activation and idle exit](#e59-node-socket-activation-and-idle-exit) | **Automated, Node on macOS or Linux**: `python3 scripts/e2e-socket-activation.py`; add `--live` for a real Claude Max model turn. Passes a listening fd 3 with matching `LISTEN_PID`, verifies health, resets the idle window with a short model-route request, shows health polls do not reset it, then verifies clean exit and reactivation on the same listener. **Run before releases touching socket activation, CLI port preflight, or idle shutdown** | 2026-09-23 |
+| E60 | [Fresh replay tool names](#e60-fresh-replay-tool-names) | **Automated, real SDK and model**: `bun scripts/e2e-replay-tool-names.mjs [--stream]`. Replays twelve completed Pi client `bash` calls on a fresh request, requires the SDK prompt to name the registered `mcp__oc__bash` tool each time, and requires a real new tool call delivered to the client as `bash`. **Run both modes before releases touching fresh replay, passthrough tool aliases, or tool registration** | 2026-09-23 |
+| E61 | [SDK nonstreaming fallback delivery](#e61-sdk-nonstreaming-fallback-delivery) | **Automated, real SDK/CLI with a local API fixture**: `bun scripts/e2e-unstreamed-fallback.mjs`. An upstream stream refusal makes Claude Code retry without streaming; the proxy must deliver one complete SSE envelope for text and for a captured client tool call. A normal streamed response is the control. **Run before releases touching streaming close, SDK retry behavior, or passthrough tool delivery** | 2026-09-23 |
+| E62 | [Legacy single-step tool handoff](#e62-legacy-single-step-tool-handoff) | **Automated, real SDK/CLI with a local API fixture**: `bun scripts/e2e-single-step-abort.mjs --case=repeat`, then `--case=single`. With early stop disabled, require complete client tool blocks, a single terminal `tool_use` envelope, and no error. The normal-completion self-abort regression is separately pinned by the HTTP test because the live fixture does not force that timing. **Run before releases touching single-step abort or captured-tool recovery** | 2026-09-23 |
+| E63 | [CLI-rejected client tool handoff](#e63-cli-rejected-client-tool-handoff) | **Automated in Linux CI, real SDK/CLI with a local API fixture**: `bun scripts/e2e-rejected-tool-handoff.mjs --case=rejected`, then `--case=registered`. The model emits bare `read` although the CLI registered `mcp__oc__read`; the client must receive one complete `read` tool handoff and no error. The namespaced call is a normal-dispatch control. **Run before releases touching uncaptured tool recovery or passthrough tool aliases** | 2026-09-23 |
+| E64 | [Client compaction summary replay](#e64-client-compaction-summary-replay) | **Automated in Linux CI, real SDK/CLI with a local API fixture**: `bun scripts/e2e-compaction-summary.mjs`, then `--legacy`. A shortened head must send its summary to the model in a fresh session without the removed head; the opt-in control keeps the old resume. **Run before releases touching lineage, compaction, or SDK session replay** | 2026-09-23 |
 
 | P1 | [Profile: List & Auth Status](#p1-profile-list--auth-status) | `/profiles/list` returns profiles with emails, login status, auth timestamps | - |
 | P2 | [Profile: Switch via API](#p2-profile-switch-via-api) | `POST /profiles/active` switches profile; health endpoint reflects new email | - |
@@ -491,7 +1062,7 @@ curl -s http://127.0.0.1:3456/v1/messages \
 
 ## E6: Compaction
 
-**Verifies:** When the agent summarizes early messages but preserves recent ones, proxy detects compaction and resumes.
+**Verifies:** When the agent replaces a long head with a short summary and preserves recent messages, the proxy starts a fresh SDK session from the supplied history. Resuming the stored suffix would discard the summary and retain the context the client removed.
 
 ```bash
 # Step 1: Seed a 7-message conversation (≥6 required for compaction detection)
@@ -536,9 +1107,10 @@ curl -s http://127.0.0.1:3456/v1/messages \
 ```
 
 **Pass criteria:**
-- Step 2 proxy log: `lineage=compaction session=<same-id>` (not `new`)
-- `Compaction detected` message in proxy stderr
-- Response is valid (session was resumed, not restarted)
+- Step 2 proxy log: `lineage=diverged` with `reason=compaction`.
+- `Client compaction detected` message in proxy stderr.
+- Response is valid and the SDK prompt includes `[Summary of earlier conversation]`.
+- With `MERIDIAN_COMPACTION_SURVIVAL=1`, the legacy `lineage=compaction` resume remains available. An equal-length pruned head also keeps its checkpoint.
 
 **Key constants:** `MIN_SUFFIX_FOR_COMPACTION = 2`, `MIN_STORED_FOR_COMPACTION = 6` (in `session/lineage.ts`)
 
@@ -4631,6 +5203,148 @@ visible as an asymmetry rather than as an absolute.
 `opencode` report `continuation` on all three tool rounds and `passthrough`
 reports `new` on all three. After, all three agree.
 
+## E58: Headerless OpenAI tool-loop identity
+
+**What it proves:** a generic OpenAI client running its own tool loop — sending
+no session header of any kind — keeps one SDK session and reads its prompt
+prefix back from cache on every round after the first, instead of taking the
+headerless-tool-result bypass and re-writing it. The control sends the same
+shape with no tool call at all and stays on the packed path, reading nothing
+back.
+
+A client's own tool loop resends the whole growing conversation every round,
+ending in the `tool` message it just produced. With no identity those rounds
+took the bypass: no session lookup, no cache write, and a fresh SDK session per
+round — #820 measured 35k-56k cache-write tokens per turn against 46-53 on a
+direct connection. The conversation fingerprint cannot stand in: it is
+`(first user message, cwd)`, so two runs of one workflow started from one prompt
+in one directory hash to a single key. Meridian instead derives
+`tool-loop:<hash>` from the loop's own **first tool-call id** — issued per
+generation, retained in the replayed history, so every later round derives the
+same key and no two concurrent runs collide. A body with no tool call derives
+nothing, so an ordinary chat is untouched.
+
+The second half is why the first survives. A derived key is Meridian's own
+inference, not a contract the client agreed to: a generic OpenAI client echoes
+its **own** tool-call ids, not the ids Meridian forwarded, so the passthrough
+tool checkpoint cannot always be settled. When it cannot, the continuation the
+session store does confirm must win — it resumes and records the debug event
+`passthrough.checkpoint_resume_preferred` — rather
+than discarding the verified session and rebuilding. A client that supplies its
+own key keeps today's replay-on-mismatch behaviour, so the exemption stays
+scoped to the synthesized key.
+
+```bash
+bun scripts/e2e-tool-loop-identity.mjs
+```
+
+Two arms, no session header on either. The loop arm's first request is the
+client's opening message, before any tool call (cold, no derived key); each
+later turn appends the client's own `assistant.tool_calls` plus its `role:"tool"`
+result, with the **first call id stable** for the life of the loop — the anchor
+the derived key hashes. The control appends plain text turns and declares no
+tools, so no key is ever derived and the packed path is the only one left.
+
+The script starts its own proxy in-process on a spare port, with all state
+relocated and credentials marked read-only (the `MERIDIAN_*` path overrides at the top of the script), so it
+can run beside a live instance. It disables auto-defer
+(`MERIDIAN_DEFER_TOOL_THRESHOLD=0`): with auto-defer on, the 23-tool set defers
+every non-core tool, which flips `ENABLE_TOOL_SEARCH` and adds the billed digest
+turn — a second SDK query inside one request whose usage the OpenAI response
+reports, so the first turn read a cache it had just written and every prompt
+looked roughly doubled. Deferral is E45/E53's subject, not this gate's.
+
+**Prerequisites:**
+
+- A proxy with a Claude Max login. The measured run used
+  `claude-haiku-4-5-20251001` (`PROBE_MODEL` overrides).
+- Loopback needs no `MERIDIAN_API_KEY`; no `Authorization` header is sent.
+- Every execution gives the tools block and the system prefix a fresh random
+  nonce. An upstream prompt-cache entry outlives a run, and tools render at
+  position 0, so without a per-run tool nonce turn 1 reads the previous run's
+  identical tools back from cache (measured: 5,661 tokens) and never starts
+  cold.
+
+**Pass criteria** (asserted, non-zero exit on any):
+
+- Both arms complete every turn with HTTP 200.
+- Loop turn 1 is cold: `cached_tokens = 0` and `cache_write_tokens` ≈ the whole
+  prompt.
+- **Every loop turn from the second reads ≥90% of the previous turn's prompt
+  back from cache** — the derived continuation is real.
+- Loop continuations write only the new-turn delta (measured 1-6% of the
+  prompt).
+- Every loop turn after the first tool round is `lineage=continuation`, and **no
+  loop turn takes the `headerless-tool-result` bypass**.
+- The control stays `lineage=new` and packed on every turn, with
+  `cached_tokens = 0` and a full-prompt `cache_write_tokens` each turn.
+
+The unsettled-checkpoint rescue is model-dependent — it needs the model to emit
+a forwarded tool call under the derived key — so the debug event
+(`passthrough.checkpoint_resume_preferred`; the script turns on debug logging for
+its own instance) is printed as evidence rather than asserted.
+
+**Verified:** 2026-09-22 against the code at `8059e07`, before the rebase onto
+1.75.0 and on a branch that also carried an unrelated adapter; the tool-loop code
+is identical, including the synthesized-key loser reclassification fix. Model
+`claude-haiku-4-5-20251001`, `stream:false`, `max_tokens:512`, no session header
+on either arm. Loop arm: 5 turns, 23 tools, 22 filler tools to clear the
+minimum cacheable prefix. That run predates moving the checkpoint decision to the
+debug log, so turns 3 and 4 show the normal-level line it printed then; the
+script now reports the equivalent `passthrough.checkpoint_resume_preferred`
+event:
+
+| Turn | lineage | prompt_tokens | cached_tokens | cache_write_tokens | Proxy log |
+|---|---|---|---|---|---|
+| 1 | new | 15806 | 0 | 15796 | `adapter=openai lineage=new session=new` |
+| 2 | new | 16000 | 15042 (94%, 95% of prev) | 948 | `adapter=openai lineage=new session=new` |
+| 3 | continuation | 16447 | 15990 (97%, 100% of prev) | 447 | `resume=continued checkpoint=unsettled reason=synthesized-session-key` |
+| 4 | continuation | 16765 | 16437 (98%, 100% of prev) | 318 | `resume=continued checkpoint=unsettled reason=synthesized-session-key` |
+| 5 | continuation | 16946 | 16755 (99%, 100% of prev) | 181 | `lineage=continuation` |
+
+Turn 2 is the first turn under the derived key, so `lineage=new` there is
+expected; every turn after the first tool round resumes. The two
+`synthesized-session-key` lines are the second claim: the model forwarded a tool
+call under the derived key, the client's echoed id could not settle that
+checkpoint, and the continuation was preferred over a rebuild. Control arm, no
+tools, same shape:
+
+| Turn | lineage | prompt_tokens | cached_tokens | cache_write_tokens |
+|---|---|---|---|---|
+| 1 | new | 9002 | 0 | 8992 |
+| 2 | new | 9047 | 0 | 9037 |
+| 3 | new | 9065 | 0 | 9055 |
+| 4 | new | 9083 | 0 | 9073 |
+| 5 | new | 9101 | 0 | 9091 |
+
+The control reads nothing back and rewrites essentially its whole prompt every
+turn, which is what the loop arm would cost on the bypass. The script exits 0,
+closes its proxy, removes its scratch state directory and the SDK transcripts it
+created (`~/.claude/projects/<scratch-cwd>`), and leaves the port free.
+
+## E59: Node socket activation and idle exit
+
+Build first with `npm run build`, then run `python3 scripts/e2e-socket-activation.py --live` on a host with Claude Max authentication. The probe launches the built CLI under Node with the systemd `LISTEN_FDS=1`/`LISTEN_PID` contract and an inherited fd 3; the parent keeps the socket open as a `.socket` unit would. It confirms a real model response, that a short model-route request restarts the two-second idle period, that `/health` polling does not, and that the proxy exits cleanly and can be reactivated on the same listener. Without `--live`, it verifies the process behavior without an authenticated model call, suitable for Linux containers. Use isolated config, sessions, workdir, and port; the resulting log path is printed by the probe.
+
+## E60: Fresh replay tool names
+
+Build first, then run `bun scripts/e2e-replay-tool-names.mjs` and again with `--stream` using Claude Max authentication. The probe sends a fresh Pi passthrough request containing twelve completed historical `bash` tool calls and one new user request. It observes the real SDK query while delegating to the real SDK, requires all twelve model-facing replay records to use the registered `mcp__oc__bash` name, and requires the model to make a new tool call that Meridian returns under the client's `bash` name. The probe fails on an SDK error, missing tool call, bare replay name, or incomplete stream envelope. It uses isolated config, sessions, and working directory; it does not assert that a model will always choose a tool on arbitrary prompts.
+
+## E61: SDK nonstreaming fallback delivery
+
+Run `bun scripts/e2e-unstreamed-fallback.mjs`. This starts the real Agent SDK and Claude Code CLI behind an isolated proxy with a local Anthropic API fixture. The fixture refuses each upstream streaming request before `message_start` with the reported `rate_limit_error` shape and answers Claude Code's nonstreaming retry. The text case requires one downstream `message_start`, the answer, `end_turn`, and one `message_stop`; the tool case requires the captured client tool and `tool_use` stop. A successful upstream streaming response must still pass unchanged. The tool case uses `MERIDIAN_PASSTHROUGH_MAX_TURNS=4` in its isolated environment so the CLI can complete its internal denied-tool turn. The fixture proves SDK/CLI fallback and proxy delivery, not that a live Anthropic burst will occur on demand. `--case=text`, `--case=tool`, and `--case=control` select individual cases for before/after comparison; `E2E_MERIDIAN_ROOT` selects another checkout.
+
+## E62: Legacy single-step tool handoff
+
+Run `bun scripts/e2e-single-step-abort.mjs --case=repeat` and again with `--case=single`. The local API fixture drives the real SDK/CLI with `MERIDIAN_PASSTHROUGH_EARLY_STOP=0`: one response emits two calls to the same client tool, and the control emits one. Both must deliver complete tool blocks and one `tool_use` terminal envelope without a client error. The fixture currently passes on unchanged main as well as the fix, so it is a regression control for the real SDK path, not a reproduction of #1095's alternate timing. The HTTP regression in `proxy-passthrough-deny-abort.test.ts` makes the SDK iterator complete normally after Meridian's self-abort; that case fails on unchanged main and passes with the cause-aware recovery correction. `E2E_MERIDIAN_ROOT` selects another checkout.
+
+## E63: CLI-rejected client tool handoff
+
+Run `bun scripts/e2e-rejected-tool-handoff.mjs --case=rejected` and then `--case=registered`. The credential-free local API fixture sends a bare `read` tool call while the real SDK/CLI has registered only `mcp__oc__read`. The CLI refuses dispatch before PreToolUse; Meridian must close the SSE envelope with exactly one client `read` call, `stop_reason: tool_use`, and no error. The registered-name control must also pass. `E2E_MERIDIAN_ROOT` selects another checkout for before/after comparison. On unchanged main after #1095, the rejected case emitted `max_tokens` followed by an SSE API error; it passes with #1116's recovery.
+## E64: Client compaction summary replay
+
+Run `bun scripts/e2e-compaction-summary.mjs` and again with `--legacy`. The local API fixture sends an OpenCode-shaped nine-message request to the real SDK/CLI, then a shorter summarized head with a preserved tail and a new turn. The default run requires the model-bound input to include the new summary and exclude the removed opening message. `--legacy` sets `MERIDIAN_COMPACTION_SURVIVAL=1` and requires the former resume behavior. `E2E_MERIDIAN_ROOT` selects another checkout: the default case fails on unchanged #1124 main because its model request lacks the summary, while both cases pass with #1089's fix.
+
 ## Concurrent transcript publication
 
 Run `bun scripts/e2e-publication-lifetime.mjs` and again with `--stream` after lifecycle or publication changes. This gate uses real Claude Max queries and two concurrent HTTP conversations, each with a fresh and resumed turn. A timing hook pauses each request after its real SDK writer lease is released, promotes its request pin as the owning proxy would, and runs a separate collector process before publication. The collector uses zero grace periods and the supported SDK deleter, exercising the destructive race in an isolated session store and disposable project.
@@ -4661,13 +5375,15 @@ Run `bun scripts/e2e-duplicate-checkpoint.mjs` in both modes. The real model mus
 Run `bun scripts/e2e-settlement-proof.mjs` in both modes to verify revised history following a completed real tool checkpoint. Require the supplied decision in the SDK input and answer, unchanged source history, and a resumed ordinary follow-up. Keeping old completed checkpoints must not force future turns to replay.
 
 
-## Claude Code trailing system reminders
+## Claude Code and Oh My Pi trailing system reminders
 
 Run `bun scripts/e2e-claude-code-system-delta.mjs` in both modes (`--stream`); repeat with `E2E_MODEL=claude-sonnet-4-6` and the `--image` flag to validate a native image tool result followed by a reminder. Require the actual tool result, reminder identifier and optional image color in the answer, checkpoint resume, no reminder promoted into the SDK system prompt, and unchanged source history through supported `getSessionMessages`.
 
 Repeat the direct gate with `--revise-history` and separately with `--insert-history` in text/image and streaming/non-streaming modes. Edited or inserted user history must replay fresh and deliver its revised or inserted identifier, with no removed identifier, no assistant attribution on the reminder, and the replay history boundary preserved. Matching pending tool IDs alone must never discard earlier edits.
 
 Run the direct gate with `--blank-reminder` in both response modes, with and without `--image`. Whitespace-only text does not qualify for the narrow reminder exception: require fresh replay, the correct tool value/context and optional image color, and unchanged source history.
+
+Repeat every case above with `--agent pi`. Oh My Pi upgrades developer-origin notes (advisor, async results, todo nudges) to a mid-conversation `system` turn after tool results, producing the same tail. The gate sends `x-meridian-agent: pi` and additionally requires telemetry to record `adapter=pi`, so a pass cannot come from Claude Code detection.
 
 Run `bun scripts/e2e-claude-code-client.mjs` for the full installed Claude Code 2.1.259 → Meridian → real SDK loop. `E2E_CLAUDE_CLIENT` can name that exact client binary. The fixture isolates the outer client's settings and enables its `CLAUDE_CODE_FORCE_MID_CONVERSATION_SYSTEM` flag; `--bare` suppresses the shape and is unsuitable. The real CLI reads a disposable fixture, sends its native `<total_tokens>` system reminder, then resumes for an ordinary follow-up. Require both proxy continuations to resume, delivery of both reminders to SDK user history, correct answers, and unchanged source history.
 
@@ -4685,6 +5401,8 @@ Run the same old binary with `E2E_MODEL=claude-haiku-4-5-20251001`, omitting `--
 Build first, then run `bun scripts/e2e-client-cwd.mjs` on macOS or Linux with Claude Max authentication. This uses real HTTP and SDK/model queries, isolated Meridian config, and a query observer that delegates every SDK call. Client instructions are disabled; a marker assertion proves they are absent while the independent CWD note remains.
 
 Both response modes must preserve OpenCode-shaped Windows client paths, execute client read/result loops, and execute proxy-managed reads in the proxy directory. Pi cases use actual POSIX directories with a literal trailing backslash and a symlink followed by `..`; the latter must have a different inode from the proxy directory. Client receipts differ from the proxy decoy. The fixture explicitly specifies literal path joining: this validates context delivery and tool execution under that instruction, not arbitrary model interpretation of unusual filenames. `--pi-only` and `--parent-only` isolate the two path regressions; `E2E_MERIDIAN_ROOT` selects a separately built before/after checkout.
+
+`bun scripts/e2e-client-cwd.mjs --no-cwd-only` sends bare Pi requests without a system prompt in both response modes. It requires a real SDK/model response and checks the observed SDK prompt says the client directory and repository are unknown, without relabeling the proxy workdir as a client `<env>` directory. The model's prose is recorded, not asserted.
 
 Also run the E42 actual OpenCode gate with `--live --extended --separate-proxy-cwd` and the pinned `E2E_OPENCODE_BIN`. The harness isolates the client HOME/PWD as well as XDG state, while the proxy retains its normal Claude authentication. It asserts the client directory from actual request bodies and stable client system prompts before comparing cache reuse. The manually invoked hidden-summary probe runs in a disposable client fork: this checks stripped headers without switching the primary client agent or injecting its tool-catalog update into primary history. A marker assertion rejects any leak into primary requests. This keeps the client project and configured SDK workdir distinct through tool use, restart, undo, fork, compaction and concurrent children. Run all four E41 modes after CWD/session-identity changes.
 
@@ -4964,3 +5682,640 @@ The refined panel was rechecked in the signed Mac package: active account first,
 colored usage bars, content-sized stopped state, restart, persisted snooze after
 relaunch, Resume alerts and Escape dismissal all worked. Disabling dashboard at
 launch left no visible app window; explicit Finder activation reopened it.
+
+### Antigravity stored Responses acceptance
+
+`node scripts/e2e-antigravity-responses-state.mjs` runs after `npm run build`
+against the real signed-in CLI. On 2026-09-19, macOS arm64 / agy 1.2.7 /
+Gemini 3.8 Flash Low passed five checks in
+`meridian-agy-responses-state-UQyJug`: JSON retrieval, streamed ID continuation
+with observed warm-process reuse, an independent fork with replacement
+instructions and `store: false`, a streamed function call completed by ID with a
+random client result, and deletion with surviving completed descendants.
+Artifacts include exact request/response bodies and a report in the OS temporary
+directory. This proves process-local API state, not durable native CLI recovery.
+The focused tests additionally cover credential scope, expiry, entry/byte limits,
+expanded-history admission, original image URL retention, cancellation and
+incomplete/failed streams.
+
+The updated storage disclosure was checked in the collaborative web preview
+(no horizontal overflow at 1280px) and the actual Electron provider page in
+`meridian-agy-desktop-OQj6ib`. The native check asserts the new response-ID text
+and captures the expanded capabilities. Its first harness launch inherited
+`ELECTRON_RUN_AS_NODE` and failed before app startup; running Electron with that
+variable unset exercised the actual app successfully.
+
+### Antigravity durable state and expanded clients (2026-09-19)
+
+After building, run the additional official subscription-CLI gate:
+
+```sh
+MERIDIAN_AGY_GRAMMAR_PYTHON=/path/to/python-with-lark \
+  node scripts/e2e-antigravity-gap-closure.mjs
+node scripts/e2e-antigravity-codex.mjs
+E2E_OPENAI_MEDIA=1 E2E_PYTHON=/path/to/python-with-reportlab \
+  MERIDIAN_AGY_WHISPER_MODEL=/path/to/ggml-base.bin \
+  node scripts/e2e-antigravity-media.mjs
+```
+
+On macOS arm64, Node 22.22.3, official agy 1.2.7, Gemini 3.8 Flash Low:
+
+- `meridian-agy-gap-closure-BROC6X` passed nine checks: durable response IDs and
+  telemetry, exact completed-session native restoration, resumed native file
+  denial, provider extension callbacks, background streaming/pagination/cursors,
+  active CLI cancellation, regex and Lark custom-tool/result round trips, and
+  namespaced function/freeform calls. Lark 1.3.1 ran locally in an isolated Python
+  3.11 environment. The resumed canary never exposed the forbidden file content.
+- `meridian-agy-codex-QZlo7o` passed actual Codex 0.155.1 shell, patch, readback and
+  final receipt. The gate disables Codex web search because its hosted OpenAI
+  tool is not provided by this backend. Codex reports unknown Gemini model
+  metadata and uses fallback metadata; this gate does not prove all Codex modes.
+  Its patch ran through the shell; the separate custom-tool gate proves freeform
+  wire handling.
+- `meridian-agy-media-6AujnN` passed the five media/schema cases through the actual
+  OpenAI Responses route, using local Poppler, Whisper and ffmpeg preprocessing.
+- `meridian-agy-desktop-A0q2rg` used the actual Electron app and a disposable
+  managed combined service. The history checkbox is disabled while running,
+  saves while stopped, creates private persistent state on restart and updates
+  the provider capability disclosure. The visible Settings screenshot was
+  inspected; the service was stopped afterward.
+- `meridian-agy-pi-sIhKIY` passed the complete actual Pi 0.72.1 coding, exact
+  Unicode, saved/forked session, search, steering, compaction and abort gates
+  (23 HTTP requests). Two CLI configuration preflights returned 503 during this
+  run; the client gate recovered, but that does not establish their cause.
+
+Retained failures: `meridian-agy-gap-closure-dIMW42` found the macOS `/var` versus
+`/private/var` workspace mismatch, fixed by canonicalizing the workspace root.
+`hwdO4e` exercised the denial correctly but checked the audit before the warm
+process had joined; the revised gate checks persisted audit after close/reopen.
+Codex probes `ytgbkO` and `Rni9pz` exposed unsupported hosted web search and
+missing input-item metadata handling; web search remains explicitly disabled,
+and the supported metadata shape was added. Desktop `Q983KQ` requested a health
+route not exposed under the combined provider prefix; the corrected harness
+checks the actual provider-status contract. `NggF3V` passed functionality but
+captured a stale occluded frame; the final harness brings Settings forward before
+capturing it.
+
+Regression probe `meridian-agy-expansion-3jb6jI` passed warm reuse, both Chat
+Completions modes and Responses JSON, then received HTTP 503 from the official
+`agy -p /config --output-format json` preflight. A separate read-only probe later
+completed in 2.751 seconds with default subscription authentication, no custom
+providers and paid overage disabled. The original failure lacks exit/signal
+metadata; its cause is unclassified. Successful later gates must not erase it.
+
+The expanded API/parallel rerun `meridian-agy-expansion-YXfmUa` passed all six
+checks, including a real two-call parallel batch with reversed results. This does
+not classify the earlier `/config` failure. Metadata-check errors now include
+exit code, signal and killed status without dumping configuration contents.
+OpenCode 1.18.31 `meridian-agy-opencode-KEQAos` also passed all coding/session/
+client-delegation checks (16 requests).
+
+Focused failure-path tests additionally verify that failed startup releases the
+exclusive state owner and that background cancellation retains a monotonic
+terminal cursor without retaining a potentially oversized duplicate event log.
+
+After the failure-path corrections, `meridian-agy-gap-closure-hdTkwy` repeated all
+nine live checks successfully. The focused gap suite now has 19 passing tests,
+including response input estimates without CLI execution and disabled-reuse
+capability reporting. The complete suite before these final corrections passed
+4,650 tests in 15 isolated groups; final-head full-suite/CI results are recorded
+in the PR.
+
+Windows smoke on `45f9d5cd` reached the new state assertions but failed fixture
+removal with `EBUSY` after SQLite close. The tests now collect unused native
+statement wrappers and use bounded asynchronous removal retries; they still fail
+if the fixture cannot be removed. This is cleanup handling, not authenticated
+Windows model evidence.
+
+The first cleanup-only change did not resolve `EBUSY` on Windows. Inspection of
+[libsql 0.5.29 close](https://github.com/tursodatabase/libsql-js/blob/v0.5.29/src/database.rs)
+showed that native database/statement wrappers can outlive connection close.
+`AgState.close()` now releases its database and guard-closure references as well
+as closing them. Fixture cleanup explicitly yields for finalization and retries
+bounded transient Windows deletion errors; exhaustion still fails the test.
+
+After releasing database wrappers, five Windows cleanup failures passed; only the
+fixture that placed a regular file at the workspace-directory path remained.
+Per-entry diagnostics could remove every child, narrowing this to root cleanup
+after recursive directory-creation failure. Workspace initialization now checks
+that an existing root is a real directory before attempting recursive mkdir; the
+same failed-startup cleanup assertion remains enabled.
+
+### Antigravity client thinking-budget adaptation
+
+After building, run the actual-client gates with numeric thinking enabled:
+
+```sh
+E2E_AGY_THINKING_BUDGETS=1 E2E_CLIENT=pi node scripts/e2e-antigravity-clients.mjs
+E2E_AGY_THINKING_BUDGETS=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-clients.mjs
+```
+
+The gates select Gemini 3.8 Flash Low in client configuration, send numeric
+medium budgets, and require the bridge's response headers to report the actual
+Gemini medium variant. They retain the coding, client-tool, saved-session and
+fork checks; Pi additionally exercises steering, compaction and cancellation.
+A final Pi thinking-level / OpenCode variant selection must request 16384 and
+select the official high variant. `thinking-adaptations.json` records the
+observed budgets and effective model/effort alongside the existing wire logs.
+No reasoning text or exact upstream budget enforcement is claimed.
+
+Retained failure: `meridian-agy-pi-krbuJG` failed before generation because Pi
+0.72.1 sends `thinking.display: "summarized"` with numeric thinking. Validation
+now accepts the documented display choices while still emitting no fabricated
+reasoning blocks; a direct regression covers display preservation. The captured
+request also showed Pi clamping its 8192 budget to 3072 when configured with
+`maxTokens: 4096`. The opt-in gate and setup instructions now use 32768 for Pi,
+so medium and high selections reach the bridge without that client-side clamp.
+OpenCode's preliminary `meridian-agy-opencode-XB0eBO` gate passed all existing
+client checks plus medium adaptation (16 requests), before adding the explicit
+high-selection check.
+
+**Verified 2026-09-19:** macOS arm64, Node 22.22.3, official agy 1.2.7:
+
+- Pi 0.72.1 `meridian-agy-pi-BfpU2S`: all 12 checks passed, 22 HTTP requests.
+  The live trace contains 8192 → `gemini-3.8-flash-medium` and 16384 →
+  `gemini-3.8-flash-high`, including the client coding loop, exact Unicode,
+  error recovery, saved/forked history, search, steering, compaction and abort.
+- OpenCode 1.18.31 `meridian-agy-opencode-dSbwYd`: all 9 checks passed, 18
+  requests, with the same medium/high mappings, actual coding tools,
+  saved/forked sessions, search and a client-owned `task` subagent.
+
+Both gates use the official CLI's existing subscription authentication, retain
+client tool ownership and close their owned servers/processes. The CLI version
+was unchanged. These are macOS client results, not Windows/Linux acceptance.
+
+### Antigravity client extensions, approvals and questions
+
+```sh
+npm run build
+E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+The gate loads an actual Pi extension or OpenCode V1 plugin from
+`scripts/fixtures/`, through each client's normal loader. Pi uses its public RPC
+extension-dialog protocol; OpenCode uses its authenticated local server API.
+Configuration, fixture files and audit records are disposable. No global client
+plugins or credentials are changed. The fixture receipts exist only in the client
+environment and must return through client `tool_result`; execution counts are
+checked independently. Generation uses the signed-in official agy CLI.
+
+Pi covers confirmation, argument rewriting, denial without execution, selected
+and cancelled questions, dynamically registering a tool for the next user turn,
+and delayed approval after the CLI wait expires. OpenCode covers custom plugin
+tools, before/after hooks, permission approval/rejection, system-context changes
+between tool calls, answered/dismissed questions and delayed approval. The gate
+uses the production 60-second pending-tool timeout and waits for expiry before
+the delayed approval. Its health observation allows the official probe deadlines. Both gates reject any recorded
+HTTP error, even if a client eventually recovers through retries. OpenCode also
+requires `client-context-replay` telemetry for its changed-context continuation.
+
+Retained findings and corrections:
+
+- `meridian-agy-pi-extensions-a1KQDd`: the initial harness selected `--no-tools`,
+  which also disables extension tools. The corrected gate uses the installed
+  Pi's `--no-builtin-tools` option.
+- `meridian-agy-pi-extensions-7FsCmS`: approvals, denial and questions passed.
+  A tool registered during execution was absent from the next request's catalog;
+  the native deny hook correctly refused its use. The final gate verifies
+  availability on the next user turn, when Pi actually advertises the tool.
+- `meridian-agy-opencode-extensions-4EETdW`: the harness waited for another
+  model response after permission rejection. OpenCode intentionally ended the
+  turn with an errored tool. The gate now detects idle state and sends a new user
+  turn to verify the denied result reaches the model.
+- `meridian-agy-opencode-extensions-T4qfkG`: a real plugin's system transform
+  changed instructions after its tool executed. Meridian returned repeated HTTP
+  409 until the old owner expired and ordinary replay recovered. That eventual
+  success did not fix the bug. The bridge now claims completed results, joins
+  the old process and starts a fresh official CLI with the changed context.
+  Direct tests cover changed instructions/catalogs, duplicate races, failed
+  preflight retry and continued rejection of changed model/history/session/budget.
+- `meridian-agy-opencode-extensions-nZLJSq`: the stricter final harness reached
+  question cancellation but expected "rejected" instead of the client's actual
+  structured error, "The user dismissed this question". The corrected assertion
+  checks the errored question tool explicitly, then verifies a subsequent user
+  turn carries cancellation back to the model.
+
+The first post-fix runs `meridian-agy-pi-extensions-L87IRv` and
+`meridian-agy-opencode-extensions-AH93LU` passed six checks each. The final harness
+additionally checks the assistant's final reply rather than matching tokens in
+the originating user prompt. Its Pi run `meridian-agy-pi-extensions-gt1dOg`
+passed all six checks with 14 requests, no HTTP errors, Pi 0.72.1, official agy
+1.2.7, Gemini 3.8 Flash Low, Node 22.22.3 and macOS arm64.
+
+**Final OpenCode verification:** `meridian-agy-opencode-extensions-WuUVSA`
+passed all six checks with 12 requests and no HTTP errors, using OpenCode 1.18.31
+on the same macOS/Node/agy/Gemini versions. Its changed-context request used the
+new replay path directly, without 409 retries or waiting for the old owner to
+expire. The permission and question cancellations were confirmed in structured
+client tool errors and then acknowledged by the model on subsequent user turns.
+
+### Antigravity shared response-storage budget verification
+
+The response store now shares its entry/serialized-byte budget between volatile
+background snapshots and completed SQLite records. Startup rebuilds an ordered
+metadata ledger without loading persisted response bodies. Direct tests cover
+mixed-store eviction, UTF-8 byte accounting, replacement, expiry, deletion and
+restart; a volatile failure removes an older durable success for the same ID.
+
+Live rerun `meridian-agy-gap-closure-Dg4lXs` passed all nine existing durability,
+native restoration/denial, provider extension, background streaming/cancellation,
+regex/Lark and namespaced tool-result checks using official agy 1.2.7, Gemini
+3.8 Flash Low, Node 22.22.3 and macOS arm64. The HTTP Responses client used
+`scripts/e2e-antigravity-gap-closure.mjs`; the bounded-capacity edge cases are
+covered directly with SQLite and small test limits rather than hundreds of
+subscription model calls.
+
+Retained initial run `meridian-agy-gap-closure-IR9RjM` passed the first six checks
+but stopped with HTTP 400 because the selected Python lacked Lark. The successful
+rerun supplied `MERIDIAN_AGY_GRAMMAR_PYTHON` pointing to an isolated Python
+environment with Lark installed. No application change or relaxed assertion was
+used to resolve that prerequisite. These runs do not classify the previously
+recorded intermittent CLI configuration preflight 503s.
+
+### Antigravity disconnect after accepted tool results
+
+```sh
+E2E_AGY_DISCONNECT=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_DISCONNECT=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+This mode uses the actual extension/plugin clients and private persistent state.
+The relay observes the completed client tool result, waits for the backend to
+accept it and begin SSE, then drops the connection before delivering a frame to
+the client. The final gate requires automatic client recovery, the private
+receipt in the final assistant response, exactly one audited execution for the
+interrupted action, and no HTTP errors. It then runs the existing extension
+approval/denial/question/cancellation/delayed-approval cases. No user follow-up
+prompt supplies the receipt or requests recovery.
+
+Retained failures:
+
+- Pi `meridian-agy-pi-extensions-ve4mFB`: direct retries received consumed-result
+  409s. An explicit new user prompt eventually recovered the receipt, but the
+  run also observed a configuration-preflight 503 (exit=1, signal=null,
+  killed=true), so it is not a passing run or a fix for that preflight issue.
+- OpenCode `meridian-agy-opencode-extensions-f8zFlE`: repeated 409s blocked both
+  automatic retry and explicit continuation, because the client combined the
+  new prompt with the consumed result in one user message.
+- Pi `meridian-agy-pi-extensions-yTCl0H`: initial exact-retry implementation
+  recovered automatically but exposed one 409 while the old CLI was joining.
+  The final implementation makes matching retries wait for that join instead
+  of rejecting them during cleanup.
+
+Direct tests cover exact cancelled-result recovery, changed-contract rejection,
+preflight failure without losing retry eligibility, waiting for cleanup,
+concurrent retry claims, continued successful-duplicate rejection, no recovery
+after another client tool is emitted, exclusion of native grants, and persisted
+fingerprint removal across restart. This does not establish in-flight crash
+resumption or exactly-once execution after arbitrary response loss.
+
+Final live verification: Pi `meridian-agy-pi-extensions-9qSKyO` passed seven
+checks over 15 HTTP requests; OpenCode
+`meridian-agy-opencode-extensions-AFmjMK` passed seven over 13 requests. Both
+recorded zero HTTP errors and one client execution for the interrupted action.
+Versions: Pi 0.72.1, OpenCode 1.18.31, official agy 1.2.7, Gemini 3.8 Flash Low,
+Node 22.22.3, macOS arm64. Other platforms remain unverified by these live gates.
+
+### Antigravity bounded configuration-timeout recovery
+
+```sh
+E2E_AGY_PREFLIGHT_TIMEOUT=1 E2E_AGY_DISCONNECT=1 E2E_CLIENT=pi node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_PREFLIGHT_TIMEOUT=1 E2E_AGY_DISCONNECT=1 E2E_CLIENT=opencode node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+The earlier read-only two-worker `/config` experiment observed two 20-second
+timeouts in twelve attempts; ten completed with valid configuration envelopes.
+This establishes a timeout failure mode consistent with the production deadline,
+not the internal CLI cause or the cause of every previous preflight 503.
+
+The new live mode uses a disposable executable wrapper that invokes the actual
+official CLI, withholds its first configuration response until the production
+20-second deadline, and forwards subsequent commands normally. Its audit records
+only command categories, PID, time and exit status, never configuration contents.
+The gate requires a fresh successful official `/config` result before any model
+invocation, then exercises the accepted-result disconnect and extension loop.
+Both final runs logged exactly the injected first-attempt timeout, joined its
+process, recovered on retry, and recorded no client HTTP errors:
+
+- Pi `meridian-agy-pi-extensions-4TRoKa`: eight checks, 15 HTTP requests, Pi 0.72.1.
+- OpenCode `meridian-agy-opencode-extensions-DDg66R`: eight checks, 13 HTTP requests,
+  OpenCode 1.18.31.
+
+Both used official agy 1.2.7, Gemini 3.8 Flash Low, Node 22.22.3 and macOS arm64.
+These are injected-timeout recovery tests with real CLI/client generation; they
+do not claim the CLI's underlying intermittent stall is fixed.
+
+Fourteen direct probe tests cover successful timeout retry after join, forced
+termination of an uncooperative process, exhaustion, output bounds/privacy,
+cancellation and shutdown, missing executables, concurrent check sharing and
+fresh later checks, and immediate refusal of unsupported versions, malformed
+configuration, custom providers and paid overage. The first cancellation test
+failed because its fixed delay could expire before fixture startup; the final
+test waits for the fixture's explicit start marker before cancelling.
+
+### CI validation note: OpenCode response buffering
+
+The first buffer commit (`6303bf52`) passed all 4,711 local tests and the actual
+OpenCode partial-stream gate. CI run `35496412050` failed the existing graceful
+shutdown test at its 100-iteration, 1 ms cleanup wait (in-flight count still 1).
+The test observes asynchronous teardown after stream cancellation; it has no
+100 ms product latency requirement. The correction uses a bounded two-second
+wall-clock wait and retains both zero in-flight and revoked-publication assertions.
+This test-only correction does not change production shutdown behavior.
+
+## Incremental OpenCode text with protected tool delivery
+
+```sh
+E2E_CLIENT=opencode E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 \
+E2E_AGY_TEXT_STREAM=1 node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+The plugin forwards text before completion, holds tool/terminal events, and uses
+one cache-only JSON recovery after broken delivery. The existing partial-tool
+fault remains enabled. An additional real-model text turn sends only a text
+prefix to OpenCode, holds completion until the client's public UI event feed emits
+`message.part.delta`, then disconnects the response. The final client text must
+exactly match the requested unique marker, with no repeated prefix.
+
+Retained harness correction: `meridian-agy-opencode-extensions-rZsib5` passed tool
+recovery but polled persisted message text for the streaming assertion. OpenCode
+publishes text deltas over `/event` before persisting the finished text, so the
+gate now observes that public UI feed while the assistant is still incomplete.
+This changes the observation point, not the streaming implementation.
+
+Unit tests cover immediate text, tools held through EOF, Unicode/rechunked saved
+answers, clean truncated EOF, mismatched prefixes, missing snapshots, cancellation,
+limits and pass-through. The server cache-only test requires 404 without generation
+on a miss and retains changed-request 409 protection. An initial focused run also
+hit the old bad-exit test's 200 ms timeout (504 instead of 502); bad-exit validation
+now has its own two-second fixture, while the lingering-process test retains its
+200 ms timeout. The focused corrected exit test passes.
+
+**Verified 2026-09-20:** `meridian-agy-opencode-extensions-GF2xl7` passed all
+nine checks / 17 requests with zero HTTP errors on OpenCode 1.18.31, official
+agy 1.2.7, Gemini 3.8 Flash low, macOS arm64 and Node 22.22.3. The report records
+`incrementalTextVisible: true`, `cacheOnlyRecovery: true`, and zero tool executions
+before the disconnect. Final text exactly matched the unique marker.
+
+## Installed Antigravity client setup
+
+```sh
+npm run build
+E2E_AGY_SETUP=1 E2E_CLIENT=pi E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 node scripts/e2e-antigravity-client-extensions.mjs
+E2E_AGY_SETUP=1 E2E_CLIENT=opencode E2E_AGY_LOST_TOOL=1 E2E_AGY_PARTIAL_TOOL=1 E2E_AGY_TEXT_STREAM=1 node scripts/e2e-antigravity-client-extensions.mjs
+```
+
+This removes the fixture provider, invokes the built `meridian setup --antigravity`
+CLI, and relies on the client's normal extension/plugin discovery. Pi does not get
+an explicit retry `-e` argument and OpenCode does not receive a fixture-copied retry
+plugin. The existing client tool/approval/question/delivery recovery gates then run.
+`E2E_MERIDIAN_CLI` can select an extracted npm package's `dist/cli.js`, verifying
+that the installer resolves bundled integrations without an `examples` directory.
+The local package fixture uses the extracted npm payload with a symlink to the
+existing dependency installation; it does not claim a fresh registry install.
+
+**Verified setup, 2026-09-20:** Pi artifact
+`meridian-agy-pi-extensions-3FHEe4` passed nine checks / 15 requests; OpenCode
+`meridian-agy-opencode-extensions-bxoeu9` passed ten / 17. Both used normal client
+discovery of the installed integrations with zero HTTP errors. Pi's first
+configuration probe timed out at 21,012 ms (SIGKILL, zero output); OpenCode's
+at 20,103 ms (exit 1, 244 bytes). The existing bounded read-only retries recovered.
+No configuration contents were retained and the underlying CLI cause is unknown.
+
+The extracted npm package (no `examples` directory) also passed OpenCode's ten
+checks / 17 requests in `meridian-agy-opencode-extensions-h0Hflx`, including
+streaming and cache-only recovery. The first extracted-package Pi attempt,
+`meridian-agy-pi-extensions-xEZLru`, failed before setup during server startup:
+`agy models` exceeded its 20-second deadline (`killed: true`, exit 1, empty stdout;
+stderr only “Fetching available models...”). This is retained as a separate
+model-discovery failure, not a failed client configuration or passing setup gate.
+
+Model discovery now uses the same bounded official-probe helper as configuration:
+one timeout-only retry, joined termination, cancellation and output-free diagnostic
+metadata. Nineteen focused probe tests pass, including new discovery timeout,
+forced-kill, cancellation, no-retry exit and runtime coalescing cases. Set
+`E2E_AGY_MODELS_TIMEOUT=1` to withhold the first official model-list response until
+the production deadline, then require a fresh successful list before generation.
+`E2E_MERIDIAN_SERVER` selects an extracted package's server entry as well as its CLI.
+
+**Extracted package verification, 2026-09-20:** Pi
+`meridian-agy-pi-extensions-Mcl37F` passed ten checks / 15 requests with
+zero HTTP errors using both the packaged CLI and packaged server. The first
+official model-list response was withheld until the 20-second production
+deadline; a fresh successful probe preceded generation. Normal extension
+discovery, partial-tool recovery, approval/denial, questions, dynamic tools and
+delayed approval all passed.
+
+The corresponding OpenCode package run
+`meridian-agy-opencode-extensions-F2biN0` completed setup, then failed before its
+first permission prompt. Its first configuration probe timed out at 21,013 ms
+(SIGKILL, 2,173 output bytes); the bounded second attempt exited 1 at 12,460 ms
+(386 bytes), producing HTTP 503 with no model request sent for that attempt.
+Further configuration timeouts preceded the harness timeout. Output contents
+were not retained; the CLI cause remains unclassified. This run overlapped the
+Pi gate and full local suite. A separate OpenCode run tests the same extracted
+package without another live client; success there cannot establish a fix for
+this CLI failure.
+
+The serial extracted-package OpenCode run `meridian-agy-opencode-extensions-PejFUy`
+passed eight setup/client checks with zero HTTP errors, including incremental
+text, cache-only partial-tool recovery and delayed approval, but failed the
+separate `client-context-replay` telemetry assertion. Persisted telemetry showed
+new/live/tool-result continuations rather than that label. This does not count
+as a complete gate pass. The fixture's five-second tool deadline can expire
+while the real client initializes or recovers a deliberately interrupted stream.
+The harness now uses the production 60-second wait and requires a live pending
+owner immediately before the first approval. Its later delayed approval waits for the tool deadline and checks
+actual expiry, retaining the separate expiry-recovery assertion; the
+context-replay assertion remains required. Telemetry is saved for inspection.
+
+The production-wait rerun `meridian-agy-opencode-extensions-3n3Kmq` did
+record `client-context-replay` and passed its first installed-client tool/approval
+flow. It also encountered exhausted configuration probes and a model eligibility
+503 reporting that the upstream service was unavailable; those remain failures.
+Its text assertion then failed because the real upstream answer included the
+previous receipt before the requested marker. The saved completed-answer snapshot
+contained that same text, so this was not evidence of duplication by recovery.
+The streaming gate now compares recovered client text against the actual captured
+upstream text, still requires the unique marker exactly once, and preserves the
+zero-HTTP-errors assertion. This run is not counted as a complete pass.
+
+## Provider-screen client setup
+
+After both builds, attach the real macOS app to an owned live service:
+
+```sh
+env -u ELECTRON_RUN_AS_NODE E2E_MERIDIAN_URL=http://127.0.0.1:3457 \
+  E2E_AGY_SETUP_UI_CLIENTS=1 apps/desktop/node_modules/.bin/electron \
+  scripts/e2e-antigravity-setup-ui.cjs
+```
+
+The gate uses disposable desktop/client settings, selects each client and an
+actual account model, checks the native clipboard, executes the copied setup
+command with a temporary configuration directory, and launches the actual Pi and
+OpenCode clients through that service. It also checks opt-in defaults, environment
+references, invalid input and choices surviving refresh. Omit
+`E2E_AGY_SETUP_UI_CLIENTS` only for a UI/configuration check; that is not live model
+acceptance. The generated commands require Meridian on the user's terminal PATH;
+the fixture supplies a shim to the built CLI and does not execute a global install.
+
+The first launch inherited `ELECTRON_RUN_AS_NODE` and failed before app startup;
+the command above removes it. Early attached-app fixtures raced initial navigation;
+they now wait for the controls. `meridian-agy-setup-ui-1Esd9N` then reproduced
+Electron denying browser clipboard permission. The desktop now uses a trusted
+IPC action that rebuilds the command from its service/model state and validated
+choices, then awaits the native clipboard write. General browser permissions
+remain denied. The Electron 44 fixture also now awaits its asynchronous clipboard
+read; the original Promise-versus-string assertion is retained in `LX3nt6`.
+
+The collaborative browser verified the actual service's 14 account models, client
+selection, command copying, opt-in defaults, environment-name validation and
+refresh preservation at 1280×800 and 390×844. No horizontal overflow or browser
+console errors were observed. The initial temporary preview launcher read its
+port before listening; it was corrected to await the listening event before
+browser verification. Phone-width screenshot:
+`browser-screenshot-localhost-mu9k4tsm-3935d2d9.png`.
+
+`meridian-agy-setup-ui-Bsoznb` passed native copying and Pi configuration,
+then the host's Volta shim recursively relaunched under the fixture's isolated
+HOME before any request reached Meridian. All owned fixture process groups were
+terminated. The fixture preserves `VOLTA_HOME`, accepts `E2E_PI_BIN` and
+`E2E_OPENCODE_BIN` for resolved executables, and runs clients in separate bounded
+process groups so timeout cleanup cannot leave descendants behind. The next run
+uses the paths returned by `volta which pi` and `volta which opencode`; this
+environment failure is not a provider/client compatibility failure or a pass.
+
+The first resolved-executable run `meridian-agy-setup-ui-np3lth` passed native
+copy/configuration for both clients and an actual Pi response. `volta which
+opencode` selected an older 1.2.15 installation rather than the PATH-selected
+1.18.31 used by the other gates; that older client sent unsupported `top_p` and
+was rejected with HTTP 400. This is a retained older-client compatibility limit.
+The fixture now records each actual client version and the next run uses
+`/Users/rynfar/.opencode/bin/opencode` (1.18.31). It does not strip or silently
+pretend to honor sampling controls.
+
+**Verified provider setup, 2026-09-20:**
+`meridian-agy-setup-ui-zHi0BF` passed all five desktop/setup/live-client checks.
+Both copied commands configured their disposable client directories; actual
+Pi 0.72.1 and OpenCode 1.18.31 returned their requested markers through the
+official agy-backed service using Gemini 3.8 Flash low. Native clipboard contents
+matched the displayed commands, choices survived refresh and invalid environment
+input disabled copying. Desktop/client Node was the app's 22.23.2; the live service
+used Node 22.22.3, agy 1.2.7 and macOS arm64. Screenshot: `desktop-setup.png`.
+The desktop build/typecheck and thirteen focused provider/command tests pass.
+
+Visual review caught the desktop's global full-width input rule stretching the
+new default checkbox. The shared setup style now fixes that checkbox's dimensions
+and flex basis. `meridian-agy-setup-ui-NXbi4h` passes all three configuration/UI
+checks on the rebuilt actual app; its screenshot confirms the corrected alignment.
+The model/client flow remains the successful `zHi0BF` run above; this layout-only
+follow-up did not rerun generation. All 4,733 tests passed across 15 groups before
+the final checkbox style correction; typecheck and both builds pass after it.
+
+The final packaged OpenCode gate `meridian-agy-opencode-extensions-fIjLBY`
+passed setup, protected tool delivery, incremental-text/prefix recovery, denial,
+plugin rejection and both question outcomes with no client HTTP errors. Its
+delayed-approval health observation exceeded the fixture's 20-second fetch timeout.
+Health performs a fresh official version/configuration check, so that timeout
+could cut off a legitimate bounded retry. The gate now waits the production tool
+deadline plus termination grace, then makes one health observation with a
+70-second deadline (version plus two configuration probes), instead of polling
+readiness repeatedly. Actual expiry and the zero-client-errors requirement remain
+assertions; the timed-out run is not counted as a full pass.
+
+**Final packaged-client acceptance, 2026-09-20:**
+`meridian-agy-opencode-extensions-0vIaSR` passed all ten checks / 17 requests with
+zero client HTTP errors, using the extracted npm CLI and server, OpenCode
+1.18.31, agy 1.2.7 and Gemini 3.8 Flash low on macOS arm64. Normal plugin
+discovery, approvals/denials, plugin hooks, questions/cancellation, direct
+context replay and expired-owner recovery passed. The public UI received text
+before completion; a severed prefix recovered exactly to the original upstream
+answer. Tool executions before the injected disconnect were zero, saved IDs
+matched and the approved action executed once. The report records
+`cacheOnlyRecovery: true` and `incrementalTextVisible: true`. Earlier CLI/service
+failures remain unresolved; this successful run does not establish their cause
+or guarantee upstream availability.
+
+The final production code passes all **4,733 tests across 15 isolated groups**,
+with zero failures (`/tmp/agy-provider-setup-final3-tests.log`), root typecheck,
+Node build and desktop typecheck/build. The subsequent health-gate correction
+affects only the live harness, and this final entry only updates documentation.
+
+
+## Antigravity recovery and media provenance hardening (2026-09-20)
+
+The new `node scripts/e2e-antigravity-interruption.mjs` gate uses a real official
+CLI behind an audited wrapper and a separate Node service process. It injects
+one read-only configuration exit, checks 503/Retry-After and no new probes during
+the five-second cooldown, then requires fresh successful official validation.
+It kills the service during visible real-model text, joins its owned CLI groups,
+restarts with the same SQLite file and checks that an exact identified retry gets
+409 before any probe/generation. A deliberately new turn then succeeds. This is
+uncertain-outcome protection, not native active-process restoration or durable
+exactly-once client tool execution. The final successful artifact is
+`meridian-agy-interruption-CsBNUk` (three checks), repeating the earlier
+`meridian-agy-interruption-I4njOB` acceptance after tightening fixture cleanup.
+
+Actual Pi 0.72.1 gate `meridian-agy-pi-extensions-LDRYAi` passes seven checks and
+15 requests: approvals, argument transformation, denial, answered/cancelled
+questions, dynamic tools, delayed approval after CLI expiry and a lost complete
+tool response recovered with original IDs and one execution. This run uses the
+existing explicit extension-loading path; it is not new Pi setup acceptance.
+
+Actual OpenCode V1 1.18.31 gate `meridian-agy-opencode-extensions-01Xkb0` passes
+ten checks / 17 requests with zero HTTP errors, using the built setup CLI and
+normal bundled plugin discovery. It verifies incremental text and cache-only
+prefix recovery, approvals/denials/questions, delayed approval, stable tool IDs
+and zero executions before a severed partial tool stream is recovered.
+
+The strengthened media gate passes PDF, public URL image, timestamped speech,
+a 12-second video with source times 0.000 and 10.000, and numeric-enum schema
+checks through OpenAI Responses. Artifact: `meridian-agy-media-EHqKPS`. Local
+Whisper uses the base model, and ffmpeg records the selected frames' actual
+presentation times. The model returns both timestamps as requested. Audio and
+video remain local adaptations, with no native citation or continuous-video
+claim. An actual `/config` timeout occurred on this run; the existing bounded
+read-only retry recovered, and the run completed without a client HTTP error.
+
+All these live gates use macOS arm64, Node 22.22.3, official agy 1.2.7 and Gemini
+3.8 Flash Low. They do not establish Linux/Windows acceptance. A preliminary
+interruption fixture incorrectly injected the configuration failure before
+service startup (`meridian-agy-interruption-WAY0uX`); startup correctly refused it.
+The fixture now starts the service before injecting the readiness fault. The
+first local cooldown unit check also hit Bun's default five-second test deadline;
+it now allows 15 seconds for its intentional five-second cooldown. Neither
+fixture failure is counted as product acceptance.
+
+
+Final shutdown acceptance: `meridian-agy-interruption-QltEfA` passes four checks
+on the same actual Node/CLI/model/platform. It additionally starts graceful
+shutdown while a real request's telemetry observer is running, verifies the
+answer completes, restarts again and retrieves the identical saved answer
+without a new probe or model invocation for that retry. A direct HTTP regression
+holds the observer open and asserts SQLite remains open until the identified
+request releases its guard. Backend shutdown now joins those finalizers and
+rejects newly awakened retries once draining begins.
+
+## Opus 5.5 model availability
+
+Run `npm run build && node scripts/e2e-opus-55.mjs` with Claude Max
+authentication and Pi installed. This opt-in gate uses isolated proxy and client
+workdirs, config and session storage, and consumes subscription quota. It checks
+model discovery, explicit `claude-opus-5-5` and bare `opus` nonstreaming requests
+(including a client requesting disabled thinking), then actual Pi streaming
+read/write tools against a random receipt with an exact file-content assertion.
+
+Verified 2026-09-22 on macOS arm64, Node 22.22.3, Agent SDK 0.2.141,
+bundled Claude Code 2.1.280 and Pi 0.72.1. All checks passed. The unchanged
+model request first failed with bundled Claude Code 2.1.259: HTTP 400 explicitly
+required CLI 2.1.280 or newer. Updating the bundled CLI fixed that failure.
+The SDK/CLI handles the model's always-on adaptive thinking; Meridian does not
+promise to disable it. Older explicitly requested model versions retain their pins.
+
+Artifacts: failed-before `meridian-opus55-a998cL`, passed-after
+`meridian-opus55-hksToV` under the host temporary directory. Each contains a
+report and HTTP response artifacts; the passing run also contains `pi.log`.
+This validates macOS text and client tool use, not Windows/Linux runtime behavior.
+Model ID, capability and pricing source:
+https://platform.claude.com/docs/en/models/opus-5-5/overview .

@@ -99,6 +99,8 @@ export interface OpenAiChatRequest {
 export interface OpenAiTranslationOptions {
   /** Keep append-only turns intact so Meridian can verify and resume lineage. */
   preserveConversationHistory?: boolean
+  /** Providers without native reasoning blocks must retain literal markup. */
+  preserveThinkingText?: boolean
 }
 
 export interface AnthropicTextBlock {
@@ -561,7 +563,7 @@ export function translateOpenAiToAnthropic(
       const endOfThink = firstBlock?.type === "text" && firstBlock.text.startsWith("<think>")
         ? firstBlock.text.indexOf("</think>")
         : -1
-      if (firstBlock?.type === "text" && firstBlock.text.startsWith("<think>") && endOfThink !== -1) {
+      if (!options.preserveThinkingText && firstBlock?.type === "text" && firstBlock.text.startsWith("<think>") && endOfThink !== -1) {
         // Extract <think>...</think> to thinking block. Skip a single optional
         // trailing newline after </think> for readability, but tolerate its
         // absence rather than dropping the first character of the answer.
@@ -1094,6 +1096,18 @@ export function buildModelList(extendedContextIncluded: boolean, now = Math.floo
       display_name: "Claude Sonnet 4.6",
       context_window: 200_000,
       capabilities: FULL_CAPABILITIES,
+    },
+    {
+      id: "claude-opus-5-5",
+      object: "model",
+      created: now,
+      owned_by: "anthropic",
+      display_name: "Claude Opus 5.5",
+      context_window: extendedContextIncluded ? 1_000_000 : 200_000,
+      capabilities: {
+        ...FULL_CAPABILITIES,
+        thinking: { supported: true, types: { adaptive: { supported: true }, enabled: { supported: false } } },
+      },
     },
     {
       id: "claude-opus-5",

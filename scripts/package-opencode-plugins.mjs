@@ -12,3 +12,8 @@ for (const name of plugins) {
   mkdirSync(target, { recursive: true })
   cpSync(source, `${target}/package.json`)
 }
+
+// Self-contained client integrations must be available in installed packages.
+mkdirSync('dist/antigravity-clients', { recursive: true })
+cpSync('examples/opencode-plugin/antigravity-retry.js', 'dist/antigravity-clients/opencode.js')
+cpSync('examples/pi-extension/antigravity-retry.js', 'dist/antigravity-clients/pi.js')

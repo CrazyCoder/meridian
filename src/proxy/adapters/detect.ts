@@ -147,6 +147,15 @@ function makeInstanceAdapter(name: string, def: AdapterInstanceDef): AgentAdapte
   }
 }
 
+// Fork patch: `body` feeds the last rule, detectCustomAdapter, which keys
+// headerless clients by a session descriptor carried in the system prompt.
+// Every server.ts call site that has the parsed body must pass it. A
+// header-only call resolves the wrong adapter for those clients, so
+// getSessionId returns nothing: they lose the turn lease and the arrival
+// revision snapshot, and the cross-process check then reads "a durable mapping
+// exists" as "the session advanced" and refuses every new conversation that
+// reuses a chat-scoped key with HTTP 400. Upstream's signature has no body, so
+// its header-only calls are correct there; this is not an upstream defect.
 export function detectAdapter(c: Context, body?: unknown): AgentAdapter {
   const agentOverride = c.req.header("x-meridian-agent")?.toLowerCase()
   if (agentOverride && ADAPTER_MAP[agentOverride]) {

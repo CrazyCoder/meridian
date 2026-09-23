@@ -1,6 +1,6 @@
 # Meridian
 
-Meridian bridges Anthropic-compatible clients to Claude Max through the Agent SDK.
+Meridian bridges supported coding clients to Claude through the Agent SDK and to Antigravity through the official agy CLI.
 
 ## Working scope
 

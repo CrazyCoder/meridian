@@ -219,6 +219,34 @@ describe("Working directory", () => {
     }
   })
 
+  it("keeps the proxy fallback out of a bare Pi request's client-cwd claim", async () => {
+    const originalProxy = process.env.CLAUDE_PROXY_WORKDIR
+    const originalMeridian = process.env.MERIDIAN_WORKDIR
+    const proxyPath = tmpdir()
+    delete process.env.CLAUDE_PROXY_WORKDIR
+    process.env.MERIDIAN_WORKDIR = proxyPath
+
+    try {
+      const app = createTestApp()
+      const response = await post(app, {
+        model: "claude-haiku-4-5", max_tokens: 64, stream: false,
+        messages: [{ role: "user", content: "What project am I in?" }],
+      }, { "x-meridian-agent": "pi", "x-session-affinity": "ses_pi_no_cwd" })
+      await response.json()
+
+      expect(response.status).toBe(200)
+      expect(capturedQueryParams.options.cwd).toBe(proxyPath)
+      expect(clientCwdFromAppend(capturedQueryParams)).toBeUndefined()
+      expect(systemPromptAppend(capturedQueryParams)).toContain("client's project location and repository state are unknown")
+      expect(systemPromptAppend(capturedQueryParams)).toContain("not evidence about the client's project")
+    } finally {
+      if (originalProxy === undefined) delete process.env.CLAUDE_PROXY_WORKDIR
+      else process.env.CLAUDE_PROXY_WORKDIR = originalProxy
+      if (originalMeridian === undefined) delete process.env.MERIDIAN_WORKDIR
+      else process.env.MERIDIAN_WORKDIR = originalMeridian
+    }
+  })
+
   it.skipIf(process.platform === "win32")("keeps a distinct Pi POSIX directory ending in a literal backslash", async () => {
     const originalProxy = process.env.CLAUDE_PROXY_WORKDIR
     const originalMeridian = process.env.MERIDIAN_WORKDIR
@@ -323,9 +351,9 @@ describe("Working directory", () => {
         "user-agent": "opencode/1.18.22",
         "x-opencode-session": "ses_equal_path",
       })
-      await response.json()
+      const responseBody = await response.json()
 
-      expect(response.status).toBe(200)
+      expect(response.status, JSON.stringify(responseBody)).toBe(200)
       expect(capturedQueryParams.options.cwd).toBe(sharedText)
       expect(clientCwdFromAppend(capturedQueryParams)).toBe(sharedText)
       expect(systemPromptAppend(capturedQueryParams)).toContain("may not describe the client environment")

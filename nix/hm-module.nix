@@ -155,7 +155,7 @@ in
 
   config = mkIf cfg.enable {
     systemd.user.services.meridian = {
-      Unit.Description = "Meridian - Local Anthropic API proxy";
+      Unit.Description = "Meridian - Claude and Antigravity bridge";
 
       Service = {
         Type = "exec";

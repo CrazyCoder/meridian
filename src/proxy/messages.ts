@@ -167,8 +167,16 @@ export function getLastUserMessage(messages: Array<{ role: string; content: any 
  * replayed on every request, so "this history contains a tool_result anywhere"
  * stays true forever once a client calls a single tool, which is not the
  * property the caller wants.
+ *
+ * Fork patch: server.ts reads this in place of upstream's `lastIsToolResult`
+ * for the client-driven-loop guard. It is a superset of that check — it also
+ * sees a tool_result that trailing user text (a reminder, queued input) has
+ * pushed off the last slot, for every adapter rather than only Pi. Keep the
+ * server.ts side to that one expression so upstream edits to the surrounding
+ * block merge clean. Accepts `unknown` so the caller can pass `body.messages`
+ * unguarded.
  */
-export function hasActiveToolLoop(messages: Array<{ role: string; content: any }>): boolean {
+export function hasActiveToolLoop(messages: unknown): boolean {
   if (!Array.isArray(messages)) return false
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]

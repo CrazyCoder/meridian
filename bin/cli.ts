@@ -19,18 +19,25 @@ if (args.includes("--version") || args.includes("-v")) {
 if (args.includes("--help") || args.includes("-h")) {
   console.log(`meridian v${version}
 
-Local Anthropic API powered by your Claude Max subscription.
+Local API bridge for Claude and Antigravity subscriptions.
 
 Usage: meridian [command] [options]
 
 Commands:
   (default)        Start the proxy server
   status           Show what a running instance is doing (the / page, in the terminal)
-  setup            Configure the OpenCode plugin (run once after install)
+  setup            Configure client integrations (run once after install)
   profile          Manage Claude account profiles (add, list, switch, remove)
   refresh-token    Refresh the Claude Code OAuth token
 
 Setup options:
+  --antigravity                Configure Pi or OpenCode V1 for Antigravity
+  --client <pi|opencode>       Client to configure with --antigravity
+  --url <base URL>             Antigravity URL (include /antigravity in combined mode)
+  --model <account slug>      Account model to add
+  --config-dir <directory>    Optional client configuration directory
+  --api-key-env <variable>    Reference a local Meridian API key from the environment
+  --set-default              Also select Antigravity for the client
   --v1                         Install the OpenCode V1 plugin
   --v2                         Install the pinned OpenCode V2 beta plugin
   --opencode-bin <executable>  Probe this OpenCode executable
@@ -42,8 +49,22 @@ Options:
 Environment variables:
   MERIDIAN_PORT                     Port to listen on (default: 3456)
   MERIDIAN_HOST                     Host to bind to (default: 127.0.0.1)
+  MERIDIAN_BACKEND                  claude (default), antigravity, or combined
+  MERIDIAN_AGY_STATE_PATH           Optional bounded persistent state file
+  MERIDIAN_AGY_TURN_TIMEOUT_MS      Active CLI turn deadline (default: 300000)
+  MERIDIAN_AGY_TOOL_TIMEOUT_MS      Idle client-tool wait (default: 60000)
+  MERIDIAN_AGY_MAX_CONCURRENT       Maximum CLI processes (default: 4)
+  MERIDIAN_AGY_PLUGIN_PATHS         JSON array of Antigravity plugin modules
+  MERIDIAN_AGY_GRAMMAR_PYTHON       Local Python with Lark for custom grammars
+  MERIDIAN_AGY_PATH                 Official agy executable (default: agy)
+  MERIDIAN_AGY_ALLOW_TOOL_BRIDGE     Opt into Antigravity client-owned tools (1)
+  MERIDIAN_AGY_ADAPT_THINKING_BUDGETS Map numeric budgets to Gemini effort (1)
+  MERIDIAN_AGY_ALLOW_NATIVE_BROWSER  Opt into native browser actions (1)
+  MERIDIAN_AGY_BROWSER_MCP_PATH    Installed chrome-devtools-mcp 1.9.0 executable
+  MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS Opt into native subagents (1)
   MERIDIAN_PASSTHROUGH              Enable passthrough mode (tools forwarded to client)
   MERIDIAN_IDLE_TIMEOUT_SECONDS     Idle timeout in seconds (default: 120)
+  MERIDIAN_IDLE_EXIT_SECONDS        Exit after this many seconds without a model request (opt-in)
   MERIDIAN_PLUGIN_DIR               Plugin auto-discovery directory (default: ~/.config/meridian/plugins)
   MERIDIAN_PLUGIN_CONFIG            Plugin manifest path (default: ~/.config/meridian/plugins.json)
 
@@ -73,6 +94,22 @@ if (args[0] === "profile") {
   else if (subcommand === "login" && profileId) await profileLogin(profileId, { headless })
   else profileHelp()
   process.exit(0)
+}
+
+if (args[0] === "setup" && args.includes("--antigravity")) {
+  const { parseAntigravitySetupArgs, setupAntigravityClient } = await import("../src/proxy/antigravitySetup")
+  try {
+    const result = setupAntigravityClient(parseAntigravitySetupArgs(args.slice(1)), import.meta.url)
+    console.log(`${result.changed.length ? "Configured" : "Already configured"} ${result.client} for Antigravity`)
+    console.log(`  Config: ${result.configPath}`)
+    console.log(`  Integration: ${result.integrationPath}`)
+    for (const backup of result.backups) console.log(`  Backup: ${backup}`)
+    console.log(`Restart ${result.client}, then select meridian-agy/${result.model}. Tool permissions remain in the client.`)
+    process.exit(0)
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  }
 }
 
 if (args[0] === "setup") {
@@ -265,41 +302,43 @@ export async function runCli(
     return execFile(claudePath, ["auth", "status"], { timeout: 5000 })
   }
 ) {
-  // Plugin check — warn if OpenCode config exists but meridian plugin is missing
-  try {
-    const { findOpencodeConfigPath, checkPluginConfigured, findPluginPath } = await import("../src/proxy/setup")
-    const configPath = findOpencodeConfigPath()
-    const { existsSync } = await import("fs")
-    if (existsSync(configPath) && !checkPluginConfigured(configPath)) {
-      const pluginPath = findPluginPath(import.meta.url)
-      console.error("\x1b[33m⚠ Meridian plugin not found in OpenCode config.\x1b[0m")
-      console.error("  Session tracking and subagent model selection won\'t work.")
-      console.error(`  Fix: meridian setup`)
-      console.error("")
-    }
-  } catch { /* non-fatal */ }
+  if (process.env.MERIDIAN_BACKEND !== "antigravity") {
+    // Plugin check — warn if OpenCode config exists but meridian plugin is missing
+    try {
+      const { findOpencodeConfigPath, checkPluginConfigured, findPluginPath } = await import("../src/proxy/setup")
+      const configPath = findOpencodeConfigPath()
+      const { existsSync } = await import("fs")
+      if (existsSync(configPath) && !checkPluginConfigured(configPath)) {
+        const pluginPath = findPluginPath(import.meta.url)
+        console.error("\x1b[33m⚠ Meridian plugin not found in OpenCode config.\x1b[0m")
+        console.error("  Session tracking and subagent model selection won\'t work.")
+        console.error(`  Fix: meridian setup`)
+        console.error("")
+      }
+    } catch { /* non-fatal */ }
 
-  // Pre-flight auth check — runs the resolved Claude binary's auth-status
-  // subcommand. Independent of whether `claude` is on PATH (#478).
-  try {
-    const { stdout } = await runAuthCheck()
-    const auth = JSON.parse(stdout)
-    if (!auth.loggedIn) {
-      console.error("\x1b[31m✗ Not logged in to Claude.\x1b[0m Run: claude login")
-      process.exit(1)
+    // Pre-flight auth check — runs the resolved Claude binary's auth-status
+    // subcommand. Independent of whether `claude` is on PATH (#478).
+    try {
+      const { stdout } = await runAuthCheck()
+      const auth = JSON.parse(stdout)
+      if (!auth.loggedIn) {
+        console.error("\x1b[31m✗ Not logged in to Claude.\x1b[0m Run: claude login")
+        process.exit(1)
+      }
+      if (auth.subscriptionType !== "max") {
+        console.error(`\x1b[33m⚠ Claude subscription: ${auth.subscriptionType || "unknown"} (Max recommended)\x1b[0m`)
+      }
+    } catch {
+      console.error("\x1b[33m⚠ Could not verify Claude auth status. If requests fail, run: claude login\x1b[0m")
     }
-    if (auth.subscriptionType !== "max") {
-      console.error(`\x1b[33m⚠ Claude subscription: ${auth.subscriptionType || "unknown"} (Max recommended)\x1b[0m`)
-    }
-  } catch {
-    console.error("\x1b[33m⚠ Could not verify Claude auth status. If requests fail, run: claude login\x1b[0m")
-  }
 
-  // Enable disk auto-discovery when no MERIDIAN_PROFILES env var is set.
-  // This lets `meridian profile add` work without restarting the server.
-  if (!profiles) {
-    const { enableDiskProfileDiscovery } = await import("../src/proxy/profiles")
-    enableDiskProfileDiscovery()
+    // Enable disk auto-discovery when no MERIDIAN_PROFILES env var is set.
+    // This lets `meridian profile add` work without restarting the server.
+    if (!profiles) {
+      const { enableDiskProfileDiscovery } = await import("../src/proxy/profiles")
+      enableDiskProfileDiscovery()
+    }
   }
 
   const { enableOrganizationLookup } = await import("../src/proxy/organizationName")
@@ -349,8 +388,13 @@ if (import.meta.main) {
   // by accident. Checking here rather than from the EADDRINUSE handler keeps
   // the dashboard as the whole output: by the time a bind fails, the
   // pre-flight auth check and the plugin loader have already printed.
+  // Under systemd socket activation the port is intentionally held by the
+  // .socket unit's inherited fd — the proxy adopts it instead of binding, so
+  // the availability probe is meaningless (and self-deadlocking: probing the
+  // port is what triggers the activation in the first place). Skip it.
+  const { socketActivationFd } = await import("../src/proxy/socketActivation")
   const { isPortAvailable } = await import("../src/proxy/statusProbe")
-  if (!(await isPortAvailable(host, port))) {
+  if (socketActivationFd() === undefined && !(await isPortAvailable(host, port))) {
     const result = await printRunningInstance()
     if (result.kind === "meridian") process.exit(0)
     const { formatConflictMessage } = await import("../src/proxy/statusProbe")

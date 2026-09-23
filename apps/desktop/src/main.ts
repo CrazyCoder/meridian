@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, Menu, safeStorage, nativeTheme, Tray, nativeImage, Notification, dialog, shell, screen } from 'electron'
+import { clientSetupClipboardCommand } from './clientSetup'
+import { app, BrowserWindow, ipcMain, Menu, safeStorage, nativeTheme, Tray, nativeImage, Notification, dialog, shell, screen, clipboard } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Manager } from './manager'
@@ -109,6 +110,7 @@ else {
     ipcMain.handle('meridian:action', async (event, action: unknown, value: unknown) => {
       trusted(event)
       if (action === 'open-desktop') show()
+      else if (action === 'copy-client-setup') await clipboard.writeText(clientSetupClipboardCommand(manager.snapshot(), value))
       else if (action === 'close-panel') panel?.hide()
       else if (action === 'resize-panel') {
         if (!panel || event.sender !== panel.webContents || typeof value !== 'number' || !Number.isFinite(value)) throw new Error('Invalid panel size.')

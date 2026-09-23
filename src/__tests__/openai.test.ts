@@ -1449,9 +1449,18 @@ describe("createSseTranslator", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildModelList", () => {
-  it("returns 9 models", () => {
-    expect(buildModelList(true).length).toBe(9)
-    expect(buildModelList(false).length).toBe(9)
+  it("advertises Opus 5.5 adaptive thinking and plan-appropriate context", () => {
+    for (const extended of [false, true]) {
+      const model = buildModelList(extended).find(m => m.id === "claude-opus-5-5")!
+      expect(model.display_name).toBe("Claude Opus 5.5")
+      expect(model.context_window).toBe(extended ? 1_000_000 : 200_000)
+      expect(model.capabilities!.thinking.types.adaptive.supported).toBe(true)
+      expect(model.capabilities!.thinking.types.enabled.supported).toBe(false)
+    }
+  })
+  it("returns 10 models", () => {
+    expect(buildModelList(true).length).toBe(10)
+    expect(buildModelList(false).length).toBe(10)
   })
 
   it("includes current and legacy Fable plus the supported Sonnet and Opus models for UI pickers", () => {
@@ -1459,6 +1468,7 @@ describe("buildModelList", () => {
     expect(ids).toContain("claude-sonnet-5")
     expect(ids).toContain("claude-fable-5-1")
     expect(ids).toContain("claude-fable-5")
+    expect(ids).toContain("claude-opus-5-5")
     expect(ids).toContain("claude-opus-5")
     expect(ids).toContain("claude-opus-4-6")
     expect(ids).toContain("claude-opus-4-7")
