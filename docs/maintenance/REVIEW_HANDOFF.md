@@ -80,8 +80,12 @@ the queue is complete. This batch has one owner and no delegated agents.
   SDK 0.2.141, Claude Code 2.1.280, Haiku 4.5 E2E passed Pi client-path
   controls in both response modes and bare no-CWD Pi in both modes (real SDK
   query observer and model response). Logs `/tmp/meridian-1100-e2e-pi.log` and
-  `/tmp/meridian-1100-e2e-no-cwd.log`. Full suite and E41 are running;
-  final-head CI and source-head recheck are still required before merge.
+  `/tmp/meridian-1100-e2e-no-cwd.log`. Full `npm test` exited 0; all four
+  distinct E41 modes passed, including an explicit parallel+stream rerun after
+  a shell argument grouping mistake. Logs `/tmp/meridian-1100-e41-*.log`.
+  OpenCode V2 `0.0.0-beta-19271` passed the extended live E42 gate with a
+  separate proxy CWD; log `/tmp/meridian-1100-e42.log`. Final-head CI and
+  source-head recheck are still required before merge.
 - The Release Please PR remains open until the issue pass and all affected
   flow gates are complete.
 
