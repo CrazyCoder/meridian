@@ -183,5 +183,10 @@ describe("profile switch during an in-flight turn", () => {
     // Keys are scoped by profile, so the work profile can never resume it;
     // wiping it only forced a full replay when the account came back.
     expect(lookupSharedSession("personal:resting-1")?.claudeSessionId).toBe(before!.claudeSessionId)
+    expect((await completeTurn(app, turn("resting-1"))).status).toBe(200)
+    const work = lookupSharedSession("work:resting-1")
+    expect(work).toBeDefined()
+    expect(work?.claudeSessionId).not.toBe(before!.claudeSessionId)
+    expect(lookupSharedSession("personal:resting-1")?.claudeSessionId).toBe(before!.claudeSessionId)
   })
 })
