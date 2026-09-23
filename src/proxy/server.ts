@@ -8287,8 +8287,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     // resolves the same session. The forwarded headers are gated on a resolved
     // key below.
     const openAiHeaderSessionId = isJcode ? undefined : openAiAdapter.getSessionId(c)
-    // A client running its own tool loop and sending no header gets a key
-    // derived from the loop's first tool-call id (see deriveToolLoopSessionId).
+    // NOTE: agent-specific (OpenAI). A client running its own tool loop and
+    // sending no header gets a key derived from the loop's first tool-call id
+    // (see deriveToolLoopSessionId).
     // Without one every round of the loop is a fresh session: the request is
     // packed, the headerless-tool-result guard skips lookup, and nothing is
     // stored for the next round. The derived key is a fallback only — a client
