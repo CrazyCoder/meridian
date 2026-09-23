@@ -195,7 +195,11 @@ the queue is complete. This batch has one owner and no delegated agents.
   tool-call and normal-stream controls (`/tmp/meridian-1098-e2e-corrected.log`).
   New HTTP tests exercise assistant-only turns; a pure helper and direct tests
   preserve thinking blocks for clients that support them. Focused 14/14 and
-  typecheck pass. Full tests, build, related live gates and final CI remain.
+  typecheck/build pass. The unchanged-main streaming control also passed;
+  all 14 real-SDK local-fixture capped-turn cases passed, and live E41 passed
+  all four chain/parallel × plain/stream modes. Logs:
+  `/tmp/meridian-1098-capped-*.log` and `/tmp/meridian-1098-e41-*.log`.
+  Full tests and final CI remain.
 - #1096 explicitly describes itself as an unvalidated illustration draft for
   issue #1095. Do not merge it as-is. #1050 is Antigravity research with no production
   behavior. #792 explicitly asks not to be reviewed or merged yet.
