@@ -429,6 +429,21 @@ export function buildPassthroughToolAliases(
   return { aliasByClientName, clientNameByAlias }
 }
 
+/** Render historical client calls with the name the SDK registered today.
+ * A tool absent from the current request keeps its historical name; only
+ * currently registered tools can be presented as callable SDK names. */
+export function createPassthroughReplayToolNameRenderer(
+  names: readonly string[],
+  serverName: string = PASSTHROUGH_MCP_NAME,
+): (name: string) => string {
+  const aliases = buildPassthroughToolAliases(names, serverName).aliasByClientName
+  const prefix = passthroughMcpPrefix(serverName)
+  return (name) => {
+    const alias = aliases.get(name)
+    return alias === undefined ? name : `${prefix}${alias}`
+  }
+}
+
 /**
  * Map an SDK-side tool name back to the name the client declared.
  *
