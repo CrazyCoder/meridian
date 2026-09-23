@@ -2425,6 +2425,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           lastMessage.content.some((block: { type?: unknown } | null) => block?.type === "tool_result")
           ? lastMessage.content
           : undefined
+        // NOTE: Pi may append a reminder or queue user text after a client tool result.
         if (!toolResultContent && adapterBase === "pi" && !agentSessionId && Array.isArray(body.messages)) {
           // A Pi result turn may queue user text or append a system reminder.
           // Stop at the newest assistant turn so an older result cannot make
@@ -2459,7 +2460,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const isClientDrivenLoop = !ownsToolLoopWithResume && !agentSessionId && lastIsToolResult
         const durableMappingKey = profileSessionId
           || getConversationFingerprint(lineageMessages, profileScopedCwd)
-        // A headerless Pi tool round must stay independent of the fingerprint's
+        // NOTE: A headerless Pi tool round must stay independent of the fingerprint's
         // SDK checkpoint: concurrent loops can share its first user message.
         // The refused tool-use ID keys only a one-shot tool-schema grant, so
         // sibling loops with distinct tool-use IDs cannot overwrite one another.
@@ -3110,6 +3111,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       const advisorModel = extractAdvisorModel(requestTools)
       if (advisorModel) requestTools = stripAdvisorTools(requestTools)
       let firstResultId: string | undefined
+      // NOTE: Pi's headerless result needs the refused tool ID to find its one-shot grant.
       if (!profileSessionId && adapterBase === "pi" && Array.isArray(toolResultContent)) {
         for (const block of toolResultContent) {
           if (block?.type === "tool_result" && typeof block.tool_use_id === "string" &&
@@ -6956,6 +6958,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   `event: message_stop\ndata: {"type":"message_stop"}\n\n`
                 ), "recover_message_stop")
                 let firstStreamedId: string | undefined
+                // NOTE: Pi's headerless refusal stores tools under the matching client call ID.
                 if (!profileSessionId && adapterBase === "pi") {
                   for (const id of streamedToolUseIds) {
                     if (!firstStreamedId || id < firstStreamedId) firstStreamedId = id
