@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.76.1](https://github.com/rynfar/meridian/compare/meridian-v1.76.0...meridian-v1.76.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* preserve headerless grants across result suffixes ([af0a73a](https://github.com/rynfar/meridian/commit/af0a73a9c6cb1ad55dd2734bfcbe2a5c151040f8))
+* preserve rejected tool grants for headerless Pi ([b368d97](https://github.com/rynfar/meridian/commit/b368d97be15bc2943a806455d2c3f610edd92a7b))
+
 ## [1.76.0](https://github.com/rynfar/meridian/compare/meridian-v1.75.0...meridian-v1.76.0) (2026-09-23)
 
 
