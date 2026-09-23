@@ -8318,12 +8318,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     }
     const previousProfile = getActiveProfileId() ?? null
     setActiveProfile(body.profile!)
-    // Evict all cached SDK sessions — they were started under the old profile's
-    // credentials and cannot be reused with different auth. The rate-limit
-    // store is NOT cleared: entries are profile-scoped, so the new profile
-    // can no longer read the old one's quotas, and other profiles' snapshots
-    // stay valid (consumers judge staleness from `observedAt`).
-    clearSessionCache()
+    // Session mappings are NOT cleared. Their keys are already scoped by
+    // profile, so the new profile can never resume a session started under
+    // another account's credentials. Wiping the durable store instead failed
+    // every in-flight keyed turn at publication, because it advanced the
+    // mapping generation that turn fences its write with, and it discarded
+    // every other profile's resume state for nothing. The rate-limit store is
+    // not cleared either: entries are profile-scoped, so the new profile can no
+    // longer read the old one's quotas, and other profiles' snapshots stay
+    // valid (consumers judge staleness from `observedAt`).
+
     // Attribute the switch: multiple surfaces can POST here (the meridian UI,
     // the CLI, pylon's provider switcher, the iOS companion) and the active
     // profile is GLOBAL state — an unexplained flip should be answerable from
@@ -8334,7 +8338,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       userAgent: c.req.header("user-agent")?.slice(0, 120) ?? null,
       origin: c.req.header("origin") ?? c.req.header("referer")?.slice(0, 120) ?? null,
     })
-    plog(`[PROXY] Active profile switched to: ${body.profile} (from ${previousProfile ?? "unset"}, ua: ${(c.req.header("user-agent") || "unknown").slice(0, 60)}) (session + rate-limit caches cleared)`)
+    plog(`[PROXY] Active profile switched to: ${body.profile} (from ${previousProfile ?? "unset"}, ua: ${(c.req.header("user-agent") || "unknown").slice(0, 60)})`)
     return c.json({ success: true, activeProfile: body.profile })
   })
 
