@@ -69,7 +69,8 @@ the queue is complete. This batch has one owner and no delegated agents.
   and `52a3f914` requires the label inside a system reminder. Delivery
   [#1113](https://github.com/rynfar/meridian/pull/1113) is draft. Rebasing
   preserved both Letta and OpenAI identity documentation. Focused 69/69,
-  typecheck and build passed; full suite and CI are running. Actual Letta Code
+  typecheck, build, full `npm test`, and every CI check on the draft head
+  passed (`35830427471`, Docker `35830427507`, desktop `35830427622`). Actual Letta Code
   0.32.18 local backend requests use `local-conv-*`, not the `conv-<uuid>`
   reminder path being fixed. A cloud backend connect returned 401; the real
   affected-client acceptance gate remains unavailable. E57's wire-shape
@@ -95,7 +96,7 @@ the queue is complete. This batch has one owner and no delegated agents.
   `35829422393`), merged as `bfede92b` with Guy's authored commit intact;
   unchanged source #1100 was closed without comment.
 
-### #1097 and #1112 under review
+### #1097 incorporated as #1115; #1112 under review
 
 - #1097 source `73ba641a` (Guy Addadi) was cherry-picked as authored commit
   `d81be56b` onto `/tmp/meridian-systemd-1097`, branch
@@ -108,18 +109,32 @@ the queue is complete. This batch has one owner and no delegated agents.
   fd adoption, idle exit and reactivation without a model call
   (`/tmp/meridian-1097-linux.log`). The first Linux attempt failed solely
   because the minimal container lacked `/etc/machine-id`; a generated
-  container-local ID enabled the successful rerun. Full suite is running;
-  final-head CI and unchanged source-head check are needed before merge.
+  container-local ID enabled the successful rerun. Full `npm test` and all
+  final-head CI passed (`35830800049`, Docker `35830799848`, desktop
+  `35830799897`). Delivery [#1115](https://github.com/rynfar/meridian/pull/1115)
+  merged as `79e14d7f` with Guy's authored commit intact; unchanged source
+  #1097 was closed without comment.
 - #1112 source `b5c485a8` (Nowaker) was cherry-picked onto
-  `/tmp/meridian-gc-1112`, branch `codex/session-gc-lock-1112`. Focused 43/43,
-  typecheck/build passed before the maintainer test correction. On unchanged
+  `/tmp/meridian-gc-1112`, branch `codex/session-gc-lock-1112`. On current
+  main the authored commit is `7d809138`; maintainer test correction is
+  `98db8278`. Focused 43/43 and typecheck/build pass. On unchanged
   main, the source's sampling-based candidate-reuse test passed despite the
   old implementation; its FIFO test failed with `late, early`, whereas the
   cherry-picked code passes. The maintainer correction replaces the sampling
-  test with a direct candidate lifetime assertion; final typecheck/build are
-  pending. Real E2E publication lifetime passed both nonstream and stream,
+  test with a direct candidate lifetime assertion. Full `npm test` exited 0
+  before rebasing onto #1115. Real E2E publication lifetime passed both
+  nonstream and stream on that base,
   preserving markers, sources and zero unsafe deletions; logs
-  `/tmp/meridian-1112-publication*.log`. Full suite and final-head CI remain.
+  `/tmp/meridian-1112-publication*.log`. Delivery
+  [#1117](https://github.com/rynfar/meridian/pull/1117) is open; after the
+  #1115 rebase, focused 43/43, typecheck/build and both real publication E2E
+  modes passed again (`/tmp/meridian-1112-publication*-rebase.log`). The
+  pre-rebase CI was fully green (`35830926505`, Docker `35830926466`, desktop
+  `35830926520`); final-head CI on the rebased branch remains.
+- #1099 and #1096 explicitly describe themselves as unvalidated illustration
+  drafts for issues #1098 and #1095. Do not merge them as-is; use the analysis
+  during the issue pass. #1050 is Antigravity research with no production
+  behavior. #792 explicitly asks not to be reviewed or merged yet.
 - The Release Please PR remains open until the issue pass and all affected
   flow gates are complete.
 
