@@ -23,6 +23,7 @@ import {
   attachPinnedTranscript,
   clipChildOutput,
   commitFork,
+  createInitializedSidecarLockCandidate,
   getSessionGcNodeExecutable,
   getTranscriptResourceKey,
   prepareFork,
@@ -769,36 +770,21 @@ describe("session transcript lifecycle", () => {
   it("initialises one lock candidate per acquisition, not one per retry", async () => {
     const lock = join(storeDir, "session-gc.json.lock")
     writeFileSync(lock, "another-owner\n", { mode: 0o600 })
-    chmodSync(lock, 0o600)
     const candidates = (): string[] =>
       readdirSync(storeDir).filter((name) => name.includes(".candidate-"))
-
-    let settled = false
-    const outcome = prepareFork(locator("retrying"), {
-      ...options,
-      lockWaitMs: 120,
-      lockRetryMs: 10,
-    }).catch((error: unknown) => error).finally(() => { settled = true })
-
-    const names = new Set<string>()
-    const samples: number[] = []
-    while (!settled) {
-      const present = candidates()
-      for (const name of present) names.add(name)
-      // Sampling starts at the first sighting so the tick that races candidate
-      // creation is not counted against it.
-      if (names.size > 0) samples.push(present.length)
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
-
-    expect(await outcome).toBeInstanceOf(SessionLifecycleLockError)
-    // A candidate initialised per attempt is a different name each time and is
-    // absent for most of every retry interval, because each one pays its own
-    // fsync before the link and is unlinked straight after.
-    expect(samples.length).toBeGreaterThanOrEqual(5)
-    expect(samples.every((count) => count === 1)).toBe(true)
-    expect(names.size).toBe(1)
+    const candidate = await createInitializedSidecarLockCandidate(lock, "this-owner\n")
+    const [staging] = candidates()
+    if (!staging) throw new Error("lock candidate was not created")
+    // Failed publication keeps the same synced inode ready for the next link.
+    expect(await candidate.publish()).toBe(false)
+    expect(candidates()).toEqual([staging])
+    rmSync(lock)
+    expect(await candidate.publish()).toBe(true)
+    expect(candidates()).toEqual([staging])
+    expect(readFileSync(lock, "utf8")).toBe("this-owner\n")
+    await candidate.discard()
     expect(candidates()).toEqual([])
+    expect(readFileSync(lock, "utf8")).toBe("this-owner\n")
   })
 
   it("grants the lock to one process's callers in arrival order", async () => {

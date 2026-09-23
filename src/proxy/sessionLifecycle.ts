@@ -1168,7 +1168,7 @@ interface SidecarLockCandidate {
  *  inode, re-linked, keeps the durability and drops the cost to a rename-class
  *  metadata operation.
  */
-async function createInitializedSidecarLockCandidate(
+export async function createInitializedSidecarLockCandidate(
   path: string,
   contents: string,
 ): Promise<SidecarLockCandidate> {
