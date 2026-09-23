@@ -219,8 +219,11 @@ the queue is complete. This batch has one owner and no delegated agents.
   `/tmp/meridian-1095-before.log`.
 - The real SDK/CLI E62 local fixture passed a repeated same-tool call on both
   unchanged main and the fix. It checks the surrounding delivery contract but
-  does not force the normal-completion abort timing. Focused tests, full tests,
-  build, live passthrough gates and final CI remain.
+  does not force the normal-completion abort timing. Focused HTTP and error tests
+  passed 233/233; typecheck and build passed. Live E41 passed all four
+  chain/parallel by stream/non-stream modes. E34 delivered three intact
+  parallel tool batches, but its separate #742 intermittent race did not occur
+  in three attempts, so that race gate is inconclusive for #742. Full `npm test` passed; final CI remains.
 - #1050 is Antigravity research with no production
   behavior. #792 explicitly asks not to be reviewed or merged yet.
 - The Release Please PR remains open until the issue pass and all affected
