@@ -339,11 +339,6 @@ export function singleTurnCapLiftRaisesBudget(
 }
 
 /**
- * Build an agent-neutral addendum that separates the client environment from
- * the proxy-side SDK subprocess. The CLI always emits its own working-directory
- * and repository facts; appended prompt text cannot suppress those lines.
- */
-/**
  * Counter-note for a may-differ client that declared no working directory.
  * Exported so prompt-level tests can compose exact expectations with it.
  * See buildCwdNote for when it applies.
@@ -365,6 +360,11 @@ export function buildNoClientCwdNote(sdkCwd: string, passthrough?: boolean): str
   )
 }
 
+/**
+ * Build an agent-neutral addendum that separates the client environment from
+ * the proxy-side SDK subprocess. The CLI always emits its own working-directory
+ * and repository facts; appended prompt text cannot suppress those lines.
+ */
 export function buildCwdNote(
   sdkCwd: string,
   clientCwd?: string,
