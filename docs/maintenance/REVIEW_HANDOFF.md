@@ -49,6 +49,13 @@ the queue is complete. This batch has one owner and no delegated agents.
   sequential/parallel × stream/non-stream modes, including exact results,
   durable forks and cache continuity. Local logs:
   `/tmp/meridian-1106-e58-authless.log` and `/tmp/meridian-1106-e41-*.log`.
+- The first delivery CI `test` run (`35827093158`) failed two assertions that
+  captured debug events through the process-global logger mock, even though
+  the same tests' direct SDK resume/replay assertions passed. The logger mock
+  is documented as susceptible to load-order races (#917). A separate
+  maintainer test correction removes those log-capture assertions and keeps
+  the direct SDK decisions as the behavioral regression gate; no production
+  branch or telemetry call changed. Final-head CI is required after this fix.
 - Next: wait for #1110 final-head CI, verify source and delivery heads, merge
   with contributor credit intact, then close source #1106. Review #1105 next;
   its new `letta.ts` has prohibited `as any` casts that need a separate
