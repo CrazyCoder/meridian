@@ -55,8 +55,30 @@ async function send(body, headers) {
 }
 const onlyPi = process.argv.includes('--pi-only')
 const onlyParent = process.argv.includes('--parent-only')
+const onlyNoCwd = process.argv.includes('--no-cwd-only')
 try {
-  for (const stream of [false,true]) for (const kind of onlyParent ? ['pi-parent'] : onlyPi ? ['pi'] : ['opencode','pi','pi-parent','sdk']) {
+  if (onlyNoCwd) for (const stream of [false,true]) {
+    const start = queries.length
+    const response = await send({
+      model:'haiku', max_tokens:300, stream,
+      messages:[{role:'user',content:'What, if anything, is known about my client working directory and repository? Answer briefly.'}],
+    }, { 'x-meridian-agent':'pi', 'x-session-affinity':crypto.randomUUID() })
+    assert.equal(response.stop_reason,'end_turn')
+    assert(response.content.some(block => block.type === 'text'))
+    const actual = queries.slice(start)
+    assert(actual.length > 0)
+    for (const query of actual) {
+      assert.equal(query.cwd,proxyCwd)
+      const append = typeof query.system === 'string' ? query.system : query.system.append
+      assert(append.includes("client's project location and repository state are unknown"),append)
+      assert(append.includes('not evidence about the client\'s project'),append)
+      assert(!append.includes(`Working directory: ${escapePath(proxyCwd)}\n</env>`),append)
+    }
+    const answer = response.content.filter(block => block.type === 'text').map(block => block.text).join('')
+    results.push({kind:'pi-no-cwd',stream,queryCount:actual.length,answer})
+    console.log(JSON.stringify({passed:results.at(-1)}))
+  }
+  for (const stream of onlyNoCwd ? [] : [false,true]) for (const kind of onlyParent ? ['pi-parent'] : onlyPi ? ['pi'] : ['opencode','pi','pi-parent','sdk']) {
     const isPi = kind.startsWith('pi')
     const clientCwd = kind === 'pi-parent' ? `${proxyCwd}/link/..` : kind === 'pi' ? `${proxyCwd}\\` : 'C:\\client\\project'
     if (kind === 'pi') mkdirSync(clientCwd,{recursive:true})
