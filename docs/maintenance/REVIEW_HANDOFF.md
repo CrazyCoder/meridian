@@ -96,7 +96,7 @@ the queue is complete. This batch has one owner and no delegated agents.
   `35829422393`), merged as `bfede92b` with Guy's authored commit intact;
   unchanged source #1100 was closed without comment.
 
-### #1097 incorporated as #1115; #1112 under review
+### #1097 incorporated as #1115; #1112 incorporated as #1117
 
 - #1097 source `73ba641a` (Guy Addadi) was cherry-picked as authored commit
   `d81be56b` onto `/tmp/meridian-systemd-1097`, branch
@@ -126,11 +126,30 @@ the queue is complete. This batch has one owner and no delegated agents.
   nonstream and stream on that base,
   preserving markers, sources and zero unsafe deletions; logs
   `/tmp/meridian-1112-publication*.log`. Delivery
-  [#1117](https://github.com/rynfar/meridian/pull/1117) is open; after the
+  [#1117](https://github.com/rynfar/meridian/pull/1117) merged as `a3640f0d`
+  with Nowaker's authored cherry-pick intact; unchanged source #1112 was
+  closed without comment. After the
   #1115 rebase, focused 43/43, typecheck/build and both real publication E2E
-  modes passed again (`/tmp/meridian-1112-publication*-rebase.log`). The
-  pre-rebase CI was fully green (`35830926505`, Docker `35830926466`, desktop
-  `35830926520`); final-head CI on the rebased branch remains.
+  modes passed again (`/tmp/meridian-1112-publication*-rebase.log`). Full
+  final-head CI passed (`35831709077`, Docker `35831709065`, desktop
+  `35831709066`).
+
+### Issue #1107: fresh replay tool names
+
+- On unchanged main, a real HTTP regression reproduced a fresh Pi replay
+  containing the bare historical names `bash` and `mcp__oc__read`; the SDK
+  registers prefixed aliases. The first baseline test run unexpectedly passed
+  under shared process mocks, but an instrumented rerun and a clean rerun
+  both failed as expected (`/tmp/meridian-1107-before.log`).
+- Branch `fix/replay-tool-names-1107` renders historical calls with the same
+  aliases used for current MCP registration, including collision handling,
+  and threads the renderer through text and structured fresh replay and
+  resume-fallback paths. Ordinary non-passthrough flattening is unchanged.
+  Focused 34/34, typecheck, build and full `npm test` passed before rebase.
+  Real Opus 5.5 E60 passed nonstream and stream, returning a new `bash` call
+  after twelve old calls; existing Haiku replay-history control passed both
+  modes. Logs `/tmp/meridian-1107-opus-live*.log` and
+  `/tmp/meridian-1107-replay-control*.log`. Final-head gates remain.
 - #1099 and #1096 explicitly describe themselves as unvalidated illustration
   drafts for issues #1098 and #1095. Do not merge them as-is; use the analysis
   during the issue pass. #1050 is Antigravity research with no production
