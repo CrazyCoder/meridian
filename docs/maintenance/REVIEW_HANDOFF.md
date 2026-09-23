@@ -18,8 +18,12 @@ the queue is complete. This batch has one owner and no delegated agents.
   escaping, and adds a five-page inline-script parse test. The new test passed
   5/5; typecheck, build, full `npm test` and final-head CI `test` passed.
   CI: `https://github.com/rynfar/meridian/actions/runs/35825319080`.
-- Live browser verification of the served Profiles page is still pending before
-  release. Do not count the parse test alone as that live UI gate.
+- Live shared-browser check on macOS served `/profiles` from an isolated local
+  proxy: the page reached the "No profiles configured" state rather than
+  staying blank. With a sample profile rendered through the page's own script,
+  the Rename button opened a focused input with Save/Cancel controls; Cancel
+  restored the card. This exercises the repaired inline script and markup,
+  but does not claim a backend profile rename or OAuth flow was exercised.
 
 ### #1106 accepted with a maintainer comment as #1110: OpenAI tool-loop identity
 
