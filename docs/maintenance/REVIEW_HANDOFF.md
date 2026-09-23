@@ -60,16 +60,21 @@ the queue is complete. This batch has one owner and no delegated agents.
   local full tests, typecheck, build and all relevant CI jobs (CI run
   `35828305778`, Docker `35828305721`, desktop `35828305756`).
 
-### #1105 and #1100 under review
+### #1105 held as draft #1113; #1100 incorporated as #1111
 
 - #1105 source `5f2a9a9e` (Chris Wilson) was cherry-picked as ten authored
   commits on `/tmp/meridian-letta-1105`, branch `codex/letta-identity-1105`.
-  Maintainer commits `23f01050` remove prohibited casts and guard malformed
-  Letta bodies; `91e6df4b` limits reminder extraction to a system reminder.
-  Focused 62 tests and typecheck passed before rebasing on #1110. Actual Letta
-  Code 0.32.18 local backend requests use `local-conv-*`, not the `conv-<uuid>`
-  reminder path being fixed. A real cloud-client acceptance gate remains
-  unavailable; do not claim #1105 complete from the wire-shape probe alone.
+  On current main, the first authored cherry-pick is `b30fc617`; maintainer
+  commits `15c01ba5` remove prohibited casts and guard malformed Letta bodies,
+  and `52a3f914` requires the label inside a system reminder. Delivery
+  [#1113](https://github.com/rynfar/meridian/pull/1113) is draft. Rebasing
+  preserved both Letta and OpenAI identity documentation. Focused 69/69,
+  typecheck and build passed; full suite and CI are running. Actual Letta Code
+  0.32.18 local backend requests use `local-conv-*`, not the `conv-<uuid>`
+  reminder path being fixed. A cloud backend connect returned 401; the real
+  affected-client acceptance gate remains unavailable. E57's wire-shape
+  probe must not be presented as Letta binary evidence. Hold merge and source
+  closure until the client gate is satisfied.
 - #1100 source `0823b361` (Guy Addadi) was cherry-picked to
   `/tmp/meridian-cwd-1100`, branch `codex/cwd-no-client-1100`, and rebased onto
   `73d98d14` as `72dbaab4` (author and AuthorDate intact). Maintainer test
@@ -83,9 +88,38 @@ the queue is complete. This batch has one owner and no delegated agents.
   `/tmp/meridian-1100-e2e-no-cwd.log`. Full `npm test` exited 0; all four
   distinct E41 modes passed, including an explicit parallel+stream rerun after
   a shell argument grouping mistake. Logs `/tmp/meridian-1100-e41-*.log`.
-  OpenCode V2 `0.0.0-beta-19271` passed the extended live E42 gate with a
-  separate proxy CWD; log `/tmp/meridian-1100-e42.log`. Final-head CI and
-  source-head recheck are still required before merge.
+  All three pinned OpenCode V2 betas (`18314`, `18866`, `19271`) passed extended
+  live E42 with separate proxy CWD; logs `/tmp/meridian-1100-e42*.log`.
+  Delivery [#1111](https://github.com/rynfar/meridian/pull/1111) passed all
+  final-head CI jobs (`35829422423`, Docker `35829422455`, desktop
+  `35829422393`), merged as `bfede92b` with Guy's authored commit intact;
+  unchanged source #1100 was closed without comment.
+
+### #1097 and #1112 under review
+
+- #1097 source `73ba641a` (Guy Addadi) was cherry-picked as authored commit
+  `d81be56b` onto `/tmp/meridian-systemd-1097`, branch
+  `codex/systemd-1097`. Separate maintainer commits `9dbb3b82` and
+  `7e0dadfd` make numeric parsing strict, reset the idle clock on completed
+  model HTTP requests, clear the timer on manual close, add the E59 process
+  gate and document Node/systemd use. Focused 13/13, typecheck and build pass.
+  E59 passed with an inherited fd and real Haiku response on macOS Node
+  22.22.3 (`/tmp/meridian-1097-macos-live.log`); Linux Node 24.20.0 passed
+  fd adoption, idle exit and reactivation without a model call
+  (`/tmp/meridian-1097-linux.log`). The first Linux attempt failed solely
+  because the minimal container lacked `/etc/machine-id`; a generated
+  container-local ID enabled the successful rerun. Full suite is running;
+  final-head CI and unchanged source-head check are needed before merge.
+- #1112 source `b5c485a8` (Nowaker) was cherry-picked onto
+  `/tmp/meridian-gc-1112`, branch `codex/session-gc-lock-1112`. Focused 43/43,
+  typecheck/build passed before the maintainer test correction. On unchanged
+  main, the source's sampling-based candidate-reuse test passed despite the
+  old implementation; its FIFO test failed with `late, early`, whereas the
+  cherry-picked code passes. The maintainer correction replaces the sampling
+  test with a direct candidate lifetime assertion; final typecheck/build are
+  pending. Real E2E publication lifetime passed both nonstream and stream,
+  preserving markers, sources and zero unsafe deletions; logs
+  `/tmp/meridian-1112-publication*.log`. Full suite and final-head CI remain.
 - The Release Please PR remains open until the issue pass and all affected
   flow gates are complete.
 
