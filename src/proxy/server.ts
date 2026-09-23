@@ -6200,7 +6200,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               }
 
               if (requestAbort.controller.signal.aborted || durableWritesRevoked) {
-                throw new Error("Request canceled before final stream envelope")
+                // The passthrough single-step path aborts this request itself so the captured
+                // tool_use can be handed back. "canceled" hides that from extractSdkTermination,
+                // which only recognises "aborted", so the recovery canRecoverCapturedToolUses
+                // gates on abortIsOurs never runs and a deliberate turn end surfaces as a 500.
+                const selfAborted =
+                  !durableWritesRevoked &&
+                  requestAbort.abortSnapshot().cause === "passthrough_single_step"
+                throw new Error(
+                  selfAborted
+                    ? "Request aborted before final stream envelope"
+                    : "Request canceled before final stream envelope",
+                )
               }
 
               if (!streamClosed) {
@@ -6586,6 +6597,14 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               // and stderr tail to /telemetry/logs?category=error so failures are
               // visible without trawling raw log files.
               const sdkTerm = extractSdkTermination(errMsg)
+              // A deliberate single-step abort can be intercepted by a
+              // publication guard before the final-envelope guard below runs.
+              // That guard reports cancellation, so use the recorded cause
+              // directly for tool handoff rather than relying on error words.
+              const ownSingleStepAbort =
+                !durableWritesRevoked &&
+                requestAbort.controller.signal.aborted &&
+                requestAbort.abortSnapshot().cause === "passthrough_single_step"
 
               // Graceful recovery: when max_turns hits in passthrough mode but
               // we already captured tool_use blocks, the client has actionable
@@ -6605,10 +6624,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               // later reports having "forgotten", because the next resume shows
               // its promise to act with no matching call.
               const canRecoverAsToolUse = canRecoverCapturedToolUses({
-                reason: sdkTerm.reason,
+                reason: ownSingleStepAbort ? "aborted" : sdkTerm.reason,
                 passthrough,
                 capturedToolUses: capturedToolUses.length,
-                abortIsOurs: sawDuplicateToolUse,
+                abortIsOurs: ownSingleStepAbort && sawDuplicateToolUse,
               }) && messageStartEmitted
 
               // Uncaptured-streamed recovery (opt-in): the abort-window shape

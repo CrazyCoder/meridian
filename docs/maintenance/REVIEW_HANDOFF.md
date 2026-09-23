@@ -182,7 +182,7 @@ the queue is complete. This batch has one owner and no delegated agents.
   A fresh registry install executed the exported scrub and preserved the cwd.
   Issue #1101 is closed.
 
-### Issue #1098: unstreamed SDK fallback under review
+### Issue #1098: unstreamed SDK fallback delivered
 
 - Source illustration [#1099](https://github.com/rynfar/meridian/pull/1099)
   head `7043fa93` (Magnus Schmidt Rasmussen) is cherry-picked as authored
@@ -199,9 +199,32 @@ the queue is complete. This batch has one owner and no delegated agents.
   all 14 real-SDK local-fixture capped-turn cases passed, and live E41 passed
   all four chain/parallel × plain/stream modes. Logs:
   `/tmp/meridian-1098-capped-*.log` and `/tmp/meridian-1098-e41-*.log`.
-  Full tests and final CI remain.
-- #1096 explicitly describes itself as an unvalidated illustration draft for
-  issue #1095. Do not merge it as-is. #1050 is Antigravity research with no production
+  Full `npm test` and all final-head CI passed (`35834431194`, Docker
+  `35834431188`, desktop `35834431167`). Delivery
+  [#1121](https://github.com/rynfar/meridian/pull/1121) merged as `31d8560f`
+  with Magnus's authored commit intact. Issue #1098 closed automatically;
+  unchanged source illustration #1099 was closed without comment.
+
+### Issue #1095: single-step abort under review
+
+- Source illustration [#1096](https://github.com/rynfar/meridian/pull/1096)
+  head `38bc082f` (Magnus Schmidt Rasmussen) was cherry-picked with Author
+  and AuthorDate intact as `a012b4f7` onto `fix/single-step-abort-1095`.
+  The source explicitly
+  asked not to merge as-is. A new HTTP regression makes a self-aborted SDK
+  iterator complete normally. It fails on unchanged main with a client error
+  and passes with a separate cause-aware correction; source wording alone
+  still failed because an earlier durability guard can throw a cancellation
+  error before the final-envelope guard. Baseline log:
+  `/tmp/meridian-1095-before.log`.
+- The real SDK/CLI E62 local fixture passed a repeated same-tool call on both
+  unchanged main and the fix. It checks the surrounding delivery contract but
+  does not force the normal-completion abort timing. Focused HTTP and error tests
+  passed 233/233; typecheck and build passed. Live E41 passed all four
+  chain/parallel by stream/non-stream modes. E34 delivered three intact
+  parallel tool batches, but its separate #742 intermittent race did not occur
+  in three attempts, so that race gate is inconclusive for #742. Full `npm test` passed; final CI remains.
+- #1050 is Antigravity research with no production
   behavior. #792 explicitly asks not to be reviewed or merged yet.
 - The Release Please PR remains open until the issue pass and all affected
   flow gates are complete.
