@@ -680,6 +680,30 @@ to verify the Claude Code preset remains optional. Meridian
 state is isolated in a temporary directory while the existing SDK auth is kept.
 Also run all four E41 modes to validate normal checkpoint resumes after changes.
 
+### Implicit SDK file mentions in passthrough
+
+```bash
+bun scripts/e2e-implicit-attachments.mjs --run
+# Negative control: must fail on the passthrough canary assertion.
+bun scripts/e2e-implicit-attachments.mjs --run --regression-control
+```
+
+This credential-free probe runs the installed Claude executable against an
+ephemeral loopback Anthropic fixture. Isolated `app` and `config` directories
+contain random filename canaries. Native SDK mode expands Ruby `@app`/`@config`
+into directory attachments; passthrough must preserve the original source while
+keeping those canaries out of the captured model request. Fresh, resumed and
+forked turns are covered, along with exact image/document data preservation and
+an explicit inherited environment override. It cleans up its SDK home and fixture directories.
+
+Passthrough sets the internal CLI switch `CLAUDE_CODE_DISABLE_ATTACHMENTS=1` to
+prevent implicit SDK context enrichment, including automatic file mentions and
+MCP resource attachments. Explicit client media is unaffected; native SDK mode
+keeps its existing behavior. See [configuration](docs/configuration.md) for
+`MERIDIAN_SUPPRESS_IMPLICIT_ATTACHMENTS=0` and inherited CLI override semantics.
+Existing attachments already stored in resumed history are not removed.
+Re-run this probe when updating Claude Code, since the switch is internal.
+
 ### Pi concurrent callers (#870 / #922)
 
 ```bash

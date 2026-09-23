@@ -23,6 +23,7 @@ jobs:
       - run: bun install
       - run: npm run typecheck
       - run: npm test
+      - run: bun scripts/e2e-implicit-attachments.mjs --run
       - run: bun run build
 
   # Windows smoke test — catches platform-specific regressions in:
