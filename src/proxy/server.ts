@@ -50,7 +50,7 @@ import { exec as execCallback } from "child_process"
 import { promisify } from "util"
 import { randomUUID } from "crypto"
 import { withClaudeLogContext } from "../logger"
-import { createPassthroughMcpServer, resolveClientToolName, normalizeToolInput, hasRepairableToolInput, computeToolSetKey, toolUseSignature, PASSTHROUGH_MCP_NAME, PASSTHROUGH_MCP_PREFIX, passthroughMcpPrefix, autoDeferDecision, getAutoDeferThreshold } from "./passthroughTools"
+import { createPassthroughMcpServer, createPassthroughReplayToolNameRenderer, resolveClientToolName, normalizeToolInput, hasRepairableToolInput, computeToolSetKey, toolUseSignature, PASSTHROUGH_MCP_NAME, PASSTHROUGH_MCP_PREFIX, passthroughMcpPrefix, autoDeferDecision, getAutoDeferThreshold } from "./passthroughTools"
 import { describeLocalBootIdentity } from "./session/processIncarnation"
 import { detectServerTools, serverToolErrorMessage } from "./tools"
 import { clientAbortDisposition, coalesceCompleteToolResultContinuation, createEarlyStopTracker, isClientForwardedToolUse, noteAssistantMessage, noteUserContent, settledToolCallAssistantUuid, shouldEarlyStop, trackerCoversStreamedCalls } from "./passthroughEarlyStop"
@@ -469,7 +469,8 @@ function flattenUserContent(
  */
 function buildFreshPrompt(
   messages: Array<{ role: string; content: any }>,
-  sanitizeOpts: import("./sanitize").SanitizeOptions = {}
+  sanitizeOpts: import("./sanitize").SanitizeOptions = {},
+  renderToolName?: (name: string) => string,
 ): string | AsyncIterable<any> {
   const hasMultimodal = messages.some((m) => hasMultimodalContent(m.content))
   const toolIndex = buildToolUseIndex(messages)
@@ -487,7 +488,7 @@ function buildFreshPrompt(
         })
       } else {
         // Preserve assistant text and completed tool calls as replay context.
-        const assistantText = flattenAssistantContent(m.content)
+        const assistantText = flattenAssistantContent(m.content, renderToolName)
         if (assistantText) {
           structured.push({
             type: "user" as const,
@@ -511,7 +512,7 @@ function buildFreshPrompt(
   return frameReplayTurns(
     messages.map((m) => {
       if (m.role === "assistant") {
-        const assistantText = flattenAssistantContent(m.content)
+        const assistantText = flattenAssistantContent(m.content, renderToolName)
         return { role: "assistant", text: assistantText ? `[Assistant: ${assistantText}]` : "" }
       }
       return { role: "user", text: flattenUserContent(m.content, sanitizeOpts, toolIndex) }
@@ -3063,6 +3064,30 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         await prepareFreshTarget()
       }
 
+      // Resolve the tool surface before rendering a fresh replay. A replayed
+      // client tool call must name the MCP tool the SDK actually registered;
+      // otherwise the model may copy a bare client name and call a tool the
+      // CLI cannot dispatch (#1107). Keep the same set for MCP registration.
+      let requestTools = Array.isArray(body.tools) ? body.tools : []
+      const advisorModel = extractAdvisorModel(requestTools)
+      if (advisorModel) requestTools = stripAdvisorTools(requestTools)
+      if (passthrough && isResume && requestTools.length === 0 && profileSessionId) {
+        const cached = sessionToolCache.get(profileSessionId)
+        if (cached && cached.sdkSessionId === resumeSessionId && cached.tools.length > 0) {
+          requestTools = cached.tools
+          plog(`[PROXY] ${requestMeta.requestId} tools_restored: client sent 0 tools but continued branch had ${cached.tools.length} — reusing cached tools to preserve prompt cache`)
+        }
+      }
+      // NOTE: agent-specific MCP namespace comes from the selected adapter.
+      const passthroughMcpName = adapter.getPassthroughMcpName?.() ?? PASSTHROUGH_MCP_NAME
+      const clientToolPrefix = passthroughMcpPrefix(passthroughMcpName)
+      const renderReplayToolName = passthrough
+        ? createPassthroughReplayToolNameRenderer(
+          requestTools.flatMap((tool: { name?: unknown }) => typeof tool?.name === "string" ? [tool.name] : []),
+          passthroughMcpName,
+        )
+        : undefined
+
       // Build the prompt — either structured or text.
       // Structured prompts are stored as arrays so they can be replayed on retry.
       let structuredMessages: Array<{ type: "user"; message: { role: string; content: any }; parent_tool_use_id: null }> | undefined
@@ -3103,7 +3128,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               })
             } else {
               // Preserve assistant text and completed tool calls as replay context.
-              const assistantText = flattenAssistantContent(m.content)
+              const assistantText = flattenAssistantContent(m.content, renderReplayToolName)
               if (assistantText) {
                 structuredMessages.push({
                   type: "user" as const,
@@ -3147,7 +3172,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           .map((m: { role: string; content: any }) => {
             if (m.role === "assistant") {
               if (isResume) return { role: "assistant", text: "" }
-              const assistantText = flattenAssistantContent(m.content)
+              const assistantText = flattenAssistantContent(m.content, renderReplayToolName)
               return { role: "assistant", text: assistantText ? `[Assistant: ${assistantText}]` : "" }
             }
             return { role: "user", text: flattenUserContent(m.content, sanitizeOpts, toolIndex) }
@@ -3281,26 +3306,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // Tool cache: if the client omits tools on a continuation request but
       // previously sent them, reuse the cached set to preserve prompt cache.
       let passthroughMcp: ReturnType<typeof createPassthroughMcpServer> | undefined
-      let requestTools = Array.isArray(body.tools) ? body.tools : []
-      // Extract advisor model from tools and strip advisor tool definitions
-      // before passing to passthrough MCP — the SDK handles advisors natively
-      // via the advisorModel query option.
-      const advisorModel = extractAdvisorModel(requestTools)
-      if (advisorModel) {
-        requestTools = stripAdvisorTools(requestTools)
-      }
-      if (passthrough && isResume && requestTools.length === 0 && profileSessionId) {
-        const cached = sessionToolCache.get(profileSessionId)
-        if (cached && cached.sdkSessionId === resumeSessionId && cached.tools.length > 0) {
-          requestTools = cached.tools
-          plog(`[PROXY] ${requestMeta.requestId} tools_restored: client sent 0 tools but continued branch had ${cached.tools.length} — reusing cached tools to preserve prompt cache`)
-        }
-      }
-      // #893: the namespace client tools are nested under. `oc` for every
-      // adapter that does not declare its own, which is what they all used
-      // before this existed — so no existing client's prompt moves.
-      const passthroughMcpName = adapter.getPassthroughMcpName?.() ?? PASSTHROUGH_MCP_NAME
-      const clientToolPrefix = passthroughMcpPrefix(passthroughMcpName)
       if (passthrough && requestTools.length > 0) {
         const toolSetKey = computeToolSetKey(requestTools)
         const cachedMcp = profileSessionId ? sessionMcpCache.get(profileSessionId) : undefined
@@ -3799,7 +3804,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     sdkUuidMap.length = 0
                     for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
                     yield* runSdkQueryAttempt(buildQueryOptions({
-                      prompt: buildFreshPrompt(allMessages, sanitizeOpts),
+                      prompt: buildFreshPrompt(allMessages, sanitizeOpts, renderReplayToolName),
                       model, workingDirectory, clientWorkingDirectory: promptClientWorkingDirectory, clientEnvironmentMayDifferFromProxy, systemContext, claudeExecutable,
                       passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                       resumeSessionId: undefined, isUndo: false, resumeSessionAtUuid: undefined, forkSessionId: managedForkTarget?.sessionId, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
@@ -3859,7 +3864,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     sdkUuidMap.length = 0
                     for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
                     yield* runSdkQueryAttempt(buildQueryOptions({
-                      prompt: buildFreshPrompt(allMessages, sanitizeOpts),
+                      prompt: buildFreshPrompt(allMessages, sanitizeOpts, renderReplayToolName),
                       model, workingDirectory, clientWorkingDirectory: promptClientWorkingDirectory, clientEnvironmentMayDifferFromProxy, systemContext, claudeExecutable,
                       passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                       resumeSessionId: undefined, isUndo: false, resumeSessionAtUuid: undefined, forkSessionId: managedForkTarget?.sessionId, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
@@ -4952,7 +4957,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       sdkUuidMap.length = 0
                       for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
                       yield* runSdkQueryAttempt(buildQueryOptions({
-                        prompt: buildFreshPrompt(allMessages, sanitizeOpts),
+                        prompt: buildFreshPrompt(allMessages, sanitizeOpts, renderReplayToolName),
                         model, workingDirectory, clientWorkingDirectory: promptClientWorkingDirectory, clientEnvironmentMayDifferFromProxy, systemContext, claudeExecutable,
                         passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                         resumeSessionId: undefined, isUndo: false, resumeSessionAtUuid: undefined, forkSessionId: managedForkTarget?.sessionId, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
@@ -5008,7 +5013,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       sdkUuidMap.length = 0
                       for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
                       yield* runSdkQueryAttempt(buildQueryOptions({
-                        prompt: buildFreshPrompt(allMessages, sanitizeOpts),
+                        prompt: buildFreshPrompt(allMessages, sanitizeOpts, renderReplayToolName),
                         model, workingDirectory, clientWorkingDirectory: promptClientWorkingDirectory, clientEnvironmentMayDifferFromProxy, systemContext, claudeExecutable,
                         passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                         resumeSessionId: undefined, isUndo: false, resumeSessionAtUuid: undefined, forkSessionId: managedForkTarget?.sessionId, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
