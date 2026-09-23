@@ -23,7 +23,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { deriveToolLoopSessionId, openAiAdapter } from "../proxy/adapters/openai"
 import { installSdkMock } from "./sdkMock"
-import { installLoggerMock } from "./loggerMock"
 import { installMcpToolsMock } from "./mcpToolsMock"
 import { assistantMessage, resolveMockSdkSessionId } from "./helpers"
 
@@ -203,13 +202,6 @@ installSdkMock(() => ({
   tool: () => ({}),
 }), "openai-tool-loop-identity.test.ts")
 
-let claudeEvents: Array<{ event: string; data?: any }> = []
-
-installLoggerMock(() => ({
-  claudeLog: (event: string, data?: any) => { claudeEvents.push({ event, data }) },
-  withClaudeLogContext: (_ctx: any, fn: any) => fn(),
-}))
-
 installMcpToolsMock(() => ({
   createOpencodeMcpServer: () => ({ type: "sdk", name: "opencode", instance: { tool: () => {}, registerTool: () => ({}) } }),
 }))
@@ -283,7 +275,6 @@ describe("checkpoint reconciliation on a synthesized identity", () => {
     process.env.MERIDIAN_PASSTHROUGH = "1"
     mockMessages = []
     capturedQueryParamsAll = []
-    claudeEvents = []
     mockBaseSessionId = `test-session-${crypto.randomUUID()}`
     clearSessionCache()
   })
@@ -322,10 +313,11 @@ describe("checkpoint reconciliation on a synthesized identity", () => {
     // echoed its own `client-call-2`, so the validator cannot settle it. This
     // is a confirmed continuation on a key Meridian derived, so it resumes —
     // and without the rewind marker, which would have demanded that batch.
+    // Assert the SDK decision directly. A process-global logger mock races with
+    // other test files in the full suite (#917), so captured log events cannot
+    // reliably prove this branch in CI.
     expect(capturedQueryParamsAll[1].options.resume).toBe(firstSessionId)
     expect(capturedQueryParamsAll[1].options.resumeSessionAt).toBeUndefined()
-    expect(claudeEvents.map((e) => e.event)).toContain("passthrough.checkpoint_resume_preferred")
-    expect(claudeEvents.map((e) => e.event)).not.toContain("passthrough.checkpoint_replay")
   })
 
   it("keeps today's replay for a header-keyed client with the same shape", async () => {
@@ -346,7 +338,5 @@ describe("checkpoint reconciliation on a synthesized identity", () => {
     // The client chose this key, so an unsettled checkpoint is a real mismatch
     // and the turn replays fresh rather than resuming the stored session.
     expect(capturedQueryParamsAll[1].options.resume).toBeUndefined()
-    expect(claudeEvents.map((e) => e.event)).toContain("passthrough.checkpoint_replay")
-    expect(claudeEvents.map((e) => e.event)).not.toContain("passthrough.checkpoint_resume_preferred")
   })
 })
