@@ -23,6 +23,7 @@ import {
   attachPinnedTranscript,
   clipChildOutput,
   commitFork,
+  createInitializedSidecarLockCandidate,
   getSessionGcNodeExecutable,
   getTranscriptResourceKey,
   prepareFork,
@@ -765,6 +766,64 @@ describe("session transcript lifecycle", () => {
     })).rejects.toBeInstanceOf(SessionLifecycleLockError)
     expect(readdirSync(storeDir)).not.toContain("session-gc.json")
   })
+
+  it("initialises one lock candidate per acquisition, not one per retry", async () => {
+    const lock = join(storeDir, "session-gc.json.lock")
+    writeFileSync(lock, "another-owner\n", { mode: 0o600 })
+    const candidates = (): string[] =>
+      readdirSync(storeDir).filter((name) => name.includes(".candidate-"))
+    const candidate = await createInitializedSidecarLockCandidate(lock, "this-owner\n")
+    const [staging] = candidates()
+    if (!staging) throw new Error("lock candidate was not created")
+    // Failed publication keeps the same synced inode ready for the next link.
+    expect(await candidate.publish()).toBe(false)
+    expect(candidates()).toEqual([staging])
+    rmSync(lock)
+    expect(await candidate.publish()).toBe(true)
+    expect(candidates()).toEqual([staging])
+    expect(readFileSync(lock, "utf8")).toBe("this-owner\n")
+    await candidate.discard()
+    expect(candidates()).toEqual([])
+    expect(readFileSync(lock, "utf8")).toBe("this-owner\n")
+  })
+
+  it("grants the lock to one process's callers in arrival order", async () => {
+    const lock = join(storeDir, "session-gc.json.lock")
+    writeFileSync(lock, "another-owner\n", { mode: 0o600 })
+    chmodSync(lock, 0o600)
+    const order: string[] = []
+
+    // The earlier caller is asleep in a long retry interval when the holder
+    // leaves; a later caller polling fast would win a poll-only race.
+    const early = prepareFork(locator("early"), { ...options, lockRetryMs: 400 })
+      .then(() => { order.push("early") })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const late = prepareFork(locator("late"), { ...options, lockRetryMs: 5 })
+      .then(() => { order.push("late") })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    rmSync(lock, { force: true })
+
+    await Promise.all([early, late])
+    expect(order).toEqual(["early", "late"])
+  })
+
+  it("hands the turn on when a queued caller's budget expires", async () => {
+    const lock = join(storeDir, "session-gc.json.lock")
+    writeFileSync(lock, "another-owner\n", { mode: 0o600 })
+    chmodSync(lock, 0o600)
+
+    const first = prepareFork(locator("first"), options)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const impatient = prepareFork(locator("impatient"), { ...options, lockWaitMs: 50 })
+      .catch((error: unknown) => error)
+    const last = prepareFork(locator("last"), options)
+
+    expect(await impatient).toBeInstanceOf(SessionLifecycleLockError)
+    rmSync(lock, { force: true })
+    await Promise.all([first, last])
+    expect(Object.keys(readSidecar(storeDir).resources)).toHaveLength(2)
+  })
+
   it("never overlaps a second physical deleter with an uncertain first", async () => {
     const target = locator("lease-token")
     let now = 1_000
