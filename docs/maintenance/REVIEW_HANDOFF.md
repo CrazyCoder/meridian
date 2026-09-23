@@ -205,7 +205,7 @@ the queue is complete. This batch has one owner and no delegated agents.
   with Magnus's authored commit intact. Issue #1098 closed automatically;
   unchanged source illustration #1099 was closed without comment.
 
-### Issue #1095: single-step abort under review
+### Issue #1095: single-step abort delivered
 
 - Source illustration [#1096](https://github.com/rynfar/meridian/pull/1096)
   head `38bc082f` (Magnus Schmidt Rasmussen) was cherry-picked with Author
@@ -223,7 +223,27 @@ the queue is complete. This batch has one owner and no delegated agents.
   passed 233/233; typecheck and build passed. Live E41 passed all four
   chain/parallel by stream/non-stream modes. E34 delivered three intact
   parallel tool batches, but its separate #742 intermittent race did not occur
-  in three attempts, so that race gate is inconclusive for #742. Full `npm test` passed; final CI remains.
+  in three attempts, so that race gate is inconclusive for #742. Full `npm test`
+  and all final-head CI jobs passed (`35835762270`, desktop `35835762260`,
+  Docker `35835762353`). Delivery
+  [#1122](https://github.com/rynfar/meridian/pull/1122) merged as `71495332`
+  with Magnus's authored commit intact. Issue #1095 closed automatically;
+  unchanged source #1096 was closed without comment.
+
+### PR #1119: implicit attachment suppression under review
+
+- Source head `8a7aec9c` (Nowaker) was cherry-picked with Author and
+  AuthorDate intact. Its AI attribution lines were removed from the copied
+  commit message to match project format; the implementation is unchanged.
+  On `fix/implicit-attachments-1119` rebased onto #1122, the authored commit
+  is `5dae08e4`.
+- The credential-free real CLI probe passed native expansion, passthrough
+  suppression, resume, fork, exact explicit media, and inherited opt-out.
+  Its negative control failed at the expected canary assertion. Focused query
+  tests passed 92/92; full `npm test`, typecheck, build, and live E53 all
+  passed before rebase. E41 passed all four chain/parallel by stream modes.
+  After rebase, focused query/abort tests passed 108/108 and the real CLI
+  probe passed again. Final-head CI remains.
 - #1050 is Antigravity research with no production
   behavior. #792 explicitly asks not to be reviewed or merged yet.
 - The Release Please PR remains open until the issue pass and all affected
