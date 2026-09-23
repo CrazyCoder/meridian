@@ -329,7 +329,14 @@ the queue is complete. This batch has one owner and no delegated agents.
   both real SDK/CLI E64 modes passed: default delivered the summary and
   omitted the removed head; legacy resumed. E64 runs both modes in Linux CI.
   Delivery [#1129](https://github.com/rynfar/meridian/pull/1129) is open;
-  final-head validation after #1128 remains.
+  final-head validation after #1128 remains. Its first final-head Linux CI
+  run passed the full main test pass but failed one of 73 isolated priority
+  tests: a fixed 5s quota reset expired during the test's own retry ladder,
+  causing the 10-minute fallback mark. This is unrelated to compaction and
+  reproduced only under that runner's timing. A separate test correction
+  shortens the mock retry delay and waits until the recorded reset rather
+  than sleeping 3.6s; all three affected cases and the entire 73-case
+  priority file pass locally. The corrected CI rerun remains.
 
 ### Issue #1094: stable OpenCode V2 compatibility hold
 
