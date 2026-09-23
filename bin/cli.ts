@@ -64,6 +64,7 @@ Environment variables:
   MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS Opt into native subagents (1)
   MERIDIAN_PASSTHROUGH              Enable passthrough mode (tools forwarded to client)
   MERIDIAN_IDLE_TIMEOUT_SECONDS     Idle timeout in seconds (default: 120)
+  MERIDIAN_IDLE_EXIT_SECONDS        Exit after this many seconds without a model request (opt-in)
   MERIDIAN_PLUGIN_DIR               Plugin auto-discovery directory (default: ~/.config/meridian/plugins)
   MERIDIAN_PLUGIN_CONFIG            Plugin manifest path (default: ~/.config/meridian/plugins.json)
 

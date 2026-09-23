@@ -22,6 +22,7 @@ Environment variables, endpoints, authentication, SDK feature toggles, passthrou
 | `MERIDIAN_MAX_STORED_SESSIONS` | `CLAUDE_PROXY_MAX_STORED_SESSIONS` | `10000` | File-based session store capacity |
 | `MERIDIAN_WORKDIR` | `CLAUDE_PROXY_WORKDIR` | `cwd()` | Default working directory for SDK |
 | `MERIDIAN_IDLE_TIMEOUT_SECONDS` | `CLAUDE_PROXY_IDLE_TIMEOUT_SECONDS` | `120` | HTTP keep-alive timeout |
+| `MERIDIAN_IDLE_EXIT_SECONDS` | `CLAUDE_PROXY_IDLE_EXIT_SECONDS` | unset | Exit through graceful shutdown after this many seconds without a model request; intended for socket activation. `/health` polls do not reset the timer. |
 | `MERIDIAN_SHUTDOWN_GRACE_MS` | `CLAUDE_PROXY_SHUTDOWN_GRACE_MS` | `30000` | Milliseconds `close()` waits for in-flight `/v1/messages` requests to finish after it stops admitting new ones, before closing the port. See [Graceful shutdown](#graceful-shutdown). |
 | `MERIDIAN_SESSION_TURN_MAX_HOLD_MS` | `CLAUDE_PROXY_SESSION_TURN_MAX_HOLD_MS` | `600000` | Hard ceiling on how long one turn may hold its session's serialization lease. On timeout the lease is force-released with a warning and queued turns for that session proceed concurrently. See [Concurrent requests to the same session](#concurrent-requests-to-the-same-session). |
 | `MERIDIAN_TELEMETRY_SIZE` | `CLAUDE_PROXY_TELEMETRY_SIZE` | `1000` | Telemetry ring buffer size, in rows. Pool routing writes one row **per account attempted**, so a request that failed over twice spends three. `/telemetry` reports what is actually held. |
@@ -376,6 +377,38 @@ MERIDIAN_DEV_BUILD=1 MERIDIAN_PORT=3457 bin/meridian-launchd.sh
 
 Set `MERIDIAN_NO_SELF_UPDATE=1` to keep the launcher's package resolution but
 skip the update step.
+
+## systemd socket activation
+
+On Linux, run the service under **Node** when using systemd socket activation. The daemon adopts the single listening fd passed in `LISTEN_FDS=1` when `LISTEN_PID` matches its own pid. Bun 1.3.14 does not adopt that fd correctly. The CLI skips its port probe for an activated service, because probing the socket would start the service again.
+
+Example user units:
+
+```ini
+# ~/.config/systemd/user/meridian.socket
+[Unit]
+Description=Meridian proxy socket
+
+[Socket]
+ListenStream=127.0.0.1:3456
+
+[Install]
+WantedBy=sockets.target
+```
+
+```ini
+# ~/.config/systemd/user/meridian.service
+[Unit]
+Description=Meridian proxy
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /path/to/meridian/dist/cli.js
+Environment=MERIDIAN_IDLE_EXIT_SECONDS=600
+Restart=no
+```
+
+The idle exit setting is optional. It starts a graceful shutdown after the configured period without a model request; the socket unit starts a new process on the next connection. The inherited fd is not passed on to the SDK subprocess. [E59](../E2E.md#e59-node-socket-activation-and-idle-exit) describes the process-level probe.
 
 ## Graceful shutdown
 
