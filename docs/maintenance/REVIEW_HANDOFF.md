@@ -230,7 +230,7 @@ the queue is complete. This batch has one owner and no delegated agents.
   with Magnus's authored commit intact. Issue #1095 closed automatically;
   unchanged source #1096 was closed without comment.
 
-### PR #1119: implicit attachment suppression under review
+### PR #1119: implicit attachment suppression delivered
 
 - Source head `8a7aec9c` (Nowaker) was cherry-picked with Author and
   AuthorDate intact. Its AI attribution lines were removed from the copied
@@ -243,7 +243,23 @@ the queue is complete. This batch has one owner and no delegated agents.
   tests passed 92/92; full `npm test`, typecheck, build, and live E53 all
   passed before rebase. E41 passed all four chain/parallel by stream modes.
   After rebase, focused query/abort tests passed 108/108 and the real CLI
-  probe passed again. Final-head CI remains.
+  probe passed again. All final-head CI jobs passed (`35836546338`, desktop
+  `35836546319`, Docker `35836546387`). Delivery
+  [#1123](https://github.com/rynfar/meridian/pull/1123) merged as `25a46612`
+  with Nowaker's authored commit intact; unchanged source #1119 was closed
+  without comment.
+
+### PR #1118: Pi trailing reminder checkpoint review
+
+- Source commits `7f3ecf48` and `756c3037` (Mate Remias) were cherry-picked
+  with Author and AuthorDate intact. Rebased onto #1123 as `885791ab` and
+  `6f92793e` on `fix/pi-trailing-reminder-1118`.
+- Focused passthrough tests passed 159/159 before rebase and 175/175 after
+  #1095 landed. Live Pi E2E passed plain and streaming checkpoint resumes;
+  a revised-history streaming image case fresh-replayed with the reminder and
+  image result intact. Typecheck, build, and full `npm test` passed on #1122.
+  After rebase onto #1123, focused tests passed 175/175 and live Pi streaming
+  resume passed again. Final-head CI remains.
 - #1050 is Antigravity research with no production
   behavior. #792 explicitly asks not to be reviewed or merged yet.
 - The Release Please PR remains open until the issue pass and all affected
