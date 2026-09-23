@@ -4,7 +4,8 @@ import { ClaudeProviderFacts, disabledProvider, providerSnapshot } from './backe
 import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { stream } from "hono/streaming"
-import { serve } from "@hono/node-server"
+import { serve, createAdaptorServer } from "@hono/node-server"
+import { socketActivationFd, parseIdleExitSeconds, isModelRequestPath } from "./socketActivation"
 import type { Server } from "node:http"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -9176,19 +9177,14 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
     installProxyProcessErrorHandlers()
   }
 
-  const server = serve({
-    fetch: app.fetch,
-    port: finalConfig.port,
-    hostname: finalConfig.host,
-    overrideGlobalObjects: false,
-  }, (info) => {
+  const onListening = (port: number): void => {
     // Armed here, not before serve(), because the self-follow guard needs the
     // port actually bound — the configured one may be 0.
-    startFollowPolling({ host: finalConfig.host, port: info.port })
+    startFollowPolling({ host: finalConfig.host, port })
     logFollowBanner(getRoutingMode(process.env.MERIDIAN_ROUTING ?? getSetting("routing")))
     if (!finalConfig.silent) {
-      console.log(`Meridian running at http://${finalConfig.host}:${info.port}`)
-      console.log(`Telemetry dashboard: http://${finalConfig.host}:${info.port}/telemetry`)
+      console.log(`Meridian running at http://${finalConfig.host}:${port}`)
+      console.log(`Telemetry dashboard: http://${finalConfig.host}:${port}/telemetry`)
       const pins = resolveSdkModelDefaults()
       console.log(`Model pins: fable=${pins.ANTHROPIC_DEFAULT_FABLE_MODEL} opus=${pins.ANTHROPIC_DEFAULT_OPUS_MODEL} sonnet=${pins.ANTHROPIC_DEFAULT_SONNET_MODEL} haiku=${pins.ANTHROPIC_DEFAULT_HAIKU_MODEL}`)
       // Surface the resolved Claude executable + which step picked it.
@@ -9209,9 +9205,36 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
       }))
       if (buildDrift) console.log(`Build: ${buildDrift}`)
       console.log(`\nPoint any Anthropic-compatible tool at this endpoint:`)
-      console.log(`  ANTHROPIC_API_KEY=x ANTHROPIC_BASE_URL=http://${finalConfig.host}:${info.port}`)
+      console.log(`  ANTHROPIC_API_KEY=x ANTHROPIC_BASE_URL=http://${finalConfig.host}:${port}`)
     }
-  }) as Server
+  }
+
+  // systemd socket activation: adopt the inherited listening fd (sd_listen_fds
+  // protocol: LISTEN_FDS + LISTEN_PID) instead of binding a port. The
+  // activation env is cleared after consumption so spawned SDK subprocesses
+  // don't inherit it.
+  const fd = socketActivationFd()
+  let server: Server
+  if (fd !== undefined) {
+    delete process.env.LISTEN_FDS
+    delete process.env.LISTEN_PID
+    server = createAdaptorServer({ fetch: app.fetch, overrideGlobalObjects: false }) as Server
+    server.listen({ fd }, () => {
+      const addr = server.address()
+      onListening(typeof addr === "object" && addr !== null ? addr.port : finalConfig.port)
+      if (!finalConfig.silent) console.log(`Meridian socket-activated (inherited fd ${fd})`)
+    })
+  } else {
+    server = serve(
+      {
+        fetch: app.fetch,
+        port: finalConfig.port,
+        hostname: finalConfig.host,
+        overrideGlobalObjects: false,
+      },
+      (info) => onListening(info.port),
+    ) as Server
+  }
 
   const idleMs = finalConfig.idleTimeoutSeconds * 1000
   server.keepAliveTimeout = idleMs
@@ -9283,11 +9306,13 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
   }
 
   let closePromise: Promise<void> | undefined
-  return {
+  let idleExitCheck: ReturnType<typeof setInterval> | undefined
+  const instance: ProxyInstance = {
     server,
     config: finalConfig,
     close() {
       closePromise ??= (async () => {
+        if (idleExitCheck) clearInterval(idleExitCheck)
         if (profileTokenRefreshInterval) clearInterval(profileTokenRefreshInterval)
         if (authKeepaliveInterval) clearInterval(authKeepaliveInterval)
         if (sessionGcInterval) clearInterval(sessionGcInterval)
@@ -9335,4 +9360,44 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
       return closePromise
     },
   }
+
+  // --- Opt-in idle self-exit for socket-activation / per-demand use ---
+  // When MERIDIAN_IDLE_EXIT_SECONDS is set, exit gracefully after the proxy
+  // sits idle (zero in-flight requests) for the configured duration; a
+  // systemd .socket unit re-activates the service on the next connection.
+  // No-op unless the env var is set, so always-on deployments are unaffected.
+  const idleExitSeconds = parseIdleExitSeconds()
+  if (idleExitSeconds !== undefined) {
+    const idleThresholdMs = idleExitSeconds * 1000
+    let lastBusyAt = Date.now()
+    // The in-flight count alone can miss a short model request that starts and
+    // finishes between polls. Record its completion so the full idle window
+    // starts after the request, including OpenAI/Responses outer HTTP routes.
+    server.on("request", (request, response) => {
+      if (!isModelRequestPath(request.url ?? "")) return
+      lastBusyAt = Date.now()
+      response.once("close", () => { lastBusyAt = Date.now() })
+    })
+    const idlePollMs = Math.min(15_000, Math.max(250, Math.floor(idleThresholdMs / 4)))
+    idleExitCheck = setInterval(() => {
+      if ((getInFlightCount?.() ?? 0) > 0) {
+        lastBusyAt = Date.now()
+        return
+      }
+      if (Date.now() - lastBusyAt <= idleThresholdMs) return
+      if (!finalConfig.silent) {
+        console.log(`[PROXY] idle ${idleExitSeconds}s reached — exiting (socket activation restarts on demand)`)
+      }
+      void instance.close().then(
+        () => process.exit(0),
+        (error: unknown) => {
+          console.error("[PROXY] idle shutdown failed:", error)
+          process.exit(1)
+        },
+      )
+    }, idlePollMs)
+    idleExitCheck.unref?.()
+  }
+
+  return instance
 }
