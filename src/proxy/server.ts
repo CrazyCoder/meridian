@@ -88,6 +88,7 @@ import { isClaudeCodeClient } from "./adapters/claudecode"
 import { openAiAdapter, deriveToolLoopSessionId, SYNTHESIZED_SESSION_HEADER } from "./adapters/openai"
 import { translateResponsesToAnthropic, translateAnthropicToResponses, createResponsesSseTranslator, reasoningRequested, buildResponsesToolAliases, resolveCodexThreadIdentity, type ResponsesRequest, type AnthropicSseEvent as ResponsesAnthropicSseEvent } from "./openaiResponses"
 import { flattenAssistantContent, normalizeStructuredUserContent, replayToolResultHeader, frameStructuredReplay, coalesceStructuredUserMessages } from "./replay"
+import { unstreamedAssistantBlockFrames } from "./unstreamedAssistant"
 import { extractAdvisorModel, extractSystemText, getLastUserMessage, stripAdvisorTools, stripNonStandardStreamFields, MULTIMODAL_TYPES, buildToolUseIndex, frameReplayTurns } from "./messages"
 import { requireAuth, authEnabled } from "./auth"
 import { detectAdapter } from "./adapters/detect"
@@ -4687,6 +4688,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             let currentClientAssistantUuid: string | null = null
 
             let messageStartEmitted = false
+            // Claude Code re-sends a turn without streaming when its stream fails
+            // before message_start (a burst rate_limit_error does this). Such a
+            // turn arrives only as assistant messages, never as stream events, so
+            // it is kept here and forwarded at close rather than dropped, which
+            // left the client with an empty 200 and no stop_reason.
+            const unstreamedAssistants: Array<{
+              id?: string
+              model?: string
+              content?: unknown[]
+              stop_reason?: string | null
+              usage?: TokenUsage
+            }> = []
             let lastUsage: TokenUsage | undefined
             let hasStructuredOutput = false
             let structuredOutput: unknown
@@ -5236,6 +5249,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       (message as any).uuid
                     )
                     currentClientAssistantUuid = sdkUuidMap[allMessages.length] ?? null
+                  }
+                  if (message.type === "assistant" && !messageStartEmitted) {
+                    const unstreamed = (message as { message?: (typeof unstreamedAssistants)[number] }).message
+                    if (unstreamed) {
+                      unstreamedAssistants.push(unstreamed)
+                      if (unstreamed.usage) lastUsage = { ...lastUsage, ...unstreamed.usage }
+                    }
                   }
                   if (message.type === "result") {
                     sawCanonicalResult = true
@@ -6184,9 +6204,63 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               }
 
               if (!streamClosed) {
+                // No stream event ever reached the client, but the SDK did answer:
+                // open the message here and forward its visible content. In
+                // passthrough only the first turn belongs to the client (later
+                // ones react to the denied tool call); its captured tool_use
+                // blocks follow through the ordinary path below.
+                let unstreamedStopReason: string | undefined
+                const unseenToolUses = capturedToolUses.filter(tu => !streamedToolUseIds.has(tu.id))
+                const allowUnstreamedThinking =
+                  (!pipelineCtx.hidesInternalTools || sdkFeatures.thinkingPassthrough) &&
+                  (!passthrough || pipelineCtx.supportsThinking || sdkFeatures.thinkingPassthrough)
+                const visibleTurns = passthrough ? unstreamedAssistants.slice(0, 1) : unstreamedAssistants
+                const hasUnstreamedContent = visibleTurns.some(turn =>
+                  turn.content?.some(block => unstreamedAssistantBlockFrames(block, 0, allowUnstreamedThinking).length > 0))
+                if (!messageStartEmitted && unstreamedAssistants.length > 0 &&
+                    (hasUnstreamedContent || (passthrough && unseenToolUses.length > 0))) {
+                  const first = unstreamedAssistants[0]!
+                  const turns = visibleTurns
+                  // No SDK message_delta was seen, so the terminal delta has to
+                  // be built here; a tool_use stop is re-derived below from what
+                  // was actually forwarded.
+                  const lastStop = turns[turns.length - 1]!.stop_reason
+                  unstreamedStopReason = lastStop && lastStop !== "tool_use" ? lastStop : "end_turn"
+                  if (safeEnqueue(encoder.encode(
+                    `event: message_start\ndata: ${JSON.stringify({
+                      type: "message_start",
+                      message: {
+                        id: first.id, type: "message", role: "assistant", model: first.model ?? model,
+                        content: [], stop_reason: null, stop_sequence: null, usage: first.usage ?? lastUsage ?? {},
+                      },
+                    })}\n\n`
+                  ), "unstreamed_message_start")) {
+                    messageStartEmitted = true
+                    eventsForwarded += 1
+                  }
+                  for (const turn of turns) {
+                    for (const block of turn.content ?? []) {
+                      const frames = unstreamedAssistantBlockFrames(block, nextClientBlockIndex, allowUnstreamedThinking)
+                      if (frames.length === 0) continue
+                      nextClientBlockIndex++
+                      for (const frame of frames) {
+                        if (!safeEnqueue(encoder.encode(
+                          `event: ${frame.event}\ndata: ${JSON.stringify(frame.data)}\n\n`
+                        ), `unstreamed_${frame.event}`)) continue
+                        eventsForwarded += 1
+                        if (frame.event === "content_block_start") contentBlocksForwarded += 1
+                        if (frame.textLength !== undefined) {
+                          textEventsForwarded += 1
+                          textCharsForwarded += frame.textLength
+                        }
+                      }
+                    }
+                  }
+                  claudeLog("response.unstreamed_turn_forwarded", { model, turns: turns.length })
+                }
+
                 // In passthrough mode, emit captured tool_use blocks as stream events
                 // Skip any that were already forwarded during the stream (dedup by ID)
-                const unseenToolUses = capturedToolUses.filter(tu => !streamedToolUseIds.has(tu.id))
                 if (passthrough && unseenToolUses.length > 0 && messageStartEmitted) {
                   for (let i = 0; i < unseenToolUses.length; i++) {
                     const tu = unseenToolUses[i]!
@@ -6272,7 +6346,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 assertPriorityPublicationReady()
                 finalizePriorityPublication()
                 if (messageStartEmitted) {
-                  sendTerminalDelta(streamedToolUseIds.size > 0 ? "tool_use" : undefined)
+                  sendTerminalDelta(streamedToolUseIds.size > 0 ? "tool_use" : unstreamedStopReason)
                   safeEnqueue(encoder.encode(`event: message_stop\ndata: {"type":"message_stop"}\n\n`), "final_message_stop")
                 }
 
