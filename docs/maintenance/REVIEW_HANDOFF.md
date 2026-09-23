@@ -149,7 +149,13 @@ the queue is complete. This batch has one owner and no delegated agents.
   Real Opus 5.5 E60 passed nonstream and stream, returning a new `bash` call
   after twelve old calls; existing Haiku replay-history control passed both
   modes. Logs `/tmp/meridian-1107-opus-live*.log` and
-  `/tmp/meridian-1107-replay-control*.log`. Final-head gates remain.
+  `/tmp/meridian-1107-replay-control*.log`. After rebasing onto #1117,
+  focused 34/34, typecheck/build, all four live E41 modes, and both live
+  Opus E60 modes passed again. E41 logs are
+  `/tmp/meridian-1107-e41-*.log`; E60 logs are
+  `/tmp/meridian-1107-e60-*.log`. The real E43 namespaced-tool control
+  also passed in both response modes (`/tmp/meridian-1107-e43-*.log`).
+  Final-head full suite and CI remain.
 - #1099 and #1096 explicitly describe themselves as unvalidated illustration
   drafts for issues #1098 and #1095. Do not merge them as-is; use the analysis
   during the issue pass. #1050 is Antigravity research with no production
