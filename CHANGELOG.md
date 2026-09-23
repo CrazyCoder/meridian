@@ -6,7 +6,6 @@
 ### Features
 
 * **openai:** resume client-driven tool loops that send no session header ([1b0892f](https://github.com/rynfar/meridian/commit/1b0892f7b7d21c62c81f9a1710cc17ac152d95b3))
-* support systemd socket activation and idle exit ([79e14d7](https://github.com/rynfar/meridian/commit/79e14d7fdb932f518aef0b0e48794d4e85bcc811))
 * systemd socket activation + opt-in idle self-exit ([d81be56](https://github.com/rynfar/meridian/commit/d81be56b800cdb536b6b102db2fcc3887f7a890a))
 
 
@@ -14,35 +13,22 @@
 
 * classify the passthrough single-step abort as aborted ([a012b4f](https://github.com/rynfar/meridian/commit/a012b4f781476c0d270999e9c73108dd4e435c33)), closes [#1095](https://github.com/rynfar/meridian/issues/1095)
 * counter the proxy host's environment lines when a may-differ client declares no cwd ([72dbaab](https://github.com/rynfar/meridian/commit/72dbaab490bca8e8bd5f85ed1f228ecd3a014697))
-* deliver nonstreaming SDK fallback turns ([31d8560](https://github.com/rynfar/meridian/commit/31d8560f8fa138b90cc36496c716fc969b63657c))
-* distinguish unknown client cwd from proxy fallback ([bfede92](https://github.com/rynfar/meridian/commit/bfede92b7e6329516457135570d4383f03a71a86))
 * forward a turn Claude Code re-sends without streaming ([7137eb7](https://github.com/rynfar/meridian/commit/7137eb7164e6cf03449fe5435fc50683cdb5197b)), closes [#1098](https://github.com/rynfar/meridian/issues/1098)
 * frame SDK fallback blocks and prove delivery ([4dc2213](https://github.com/rynfar/meridian/commit/4dc22136d343196bd6e9043d4e1e115f1475f199))
 * make the Profiles page script parse so the page renders again ([7040f8e](https://github.com/rynfar/meridian/commit/7040f8e60ab2b8878edf987e30c86becde3ed70d))
 * **openai:** keep a derived tool-loop continuation when its checkpoint is unsettled ([2ac19c6](https://github.com/rynfar/meridian/commit/2ac19c6a430b151a0a075aa9b4179398dbab97cd))
-* **openai:** resume headerless client-driven tool loops ([73d98d1](https://github.com/rynfar/meridian/commit/73d98d146a6b9e89113b83ca110edc80f4e85494))
 * **passthrough:** resume pi tool checkpoints across a trailing system reminder ([885791a](https://github.com/rynfar/meridian/commit/885791ab1deca73469870b70f81617e430778471))
-* preserve in-flight turns across profile switches ([69bcf6d](https://github.com/rynfar/meridian/commit/69bcf6dea24f8041920cda2e5afb6a844a334c65))
 * preserve in-flight turns across profile switches ([6ecfbaa](https://github.com/rynfar/meridian/commit/6ecfbaa7a76e5102995624a5a870c3839e45f70f))
 * **proxy:** gate the synthesized-session marker on the internal-hop token ([5b975c0](https://github.com/rynfar/meridian/commit/5b975c0c1ef78169b5d08e3e18fd0bfe0d5f0cb5))
 * **proxy:** replay a synthesized-key loser instead of serving its undo ([d7bcfaf](https://github.com/rynfar/meridian/commit/d7bcfaf064fb966236837c496144346cddc96133))
 * recover CLI-rejected client tools at one-turn cap ([14a47c3](https://github.com/rynfar/meridian/commit/14a47c34e8fbba1dc014a523696949fb4b2c8264))
-* recover CLI-rejected client tools at the one-turn cap ([ec7c9c3](https://github.com/rynfar/meridian/commit/ec7c9c39c16bfc03d648bbbb53f7eb198c46bf69))
-* recover passthrough single-step self-aborts ([7149533](https://github.com/rynfar/meridian/commit/71495332f6817922f5cfaa69227510cd6cdeb083))
 * recover self-aborts across durability guards ([116610d](https://github.com/rynfar/meridian/commit/116610d3516211d14ce1c887954f4c515aeb5545))
-* reduce session GC lock contention under ordinary load ([a3640f0](https://github.com/rynfar/meridian/commit/a3640f0d9f628642d88fd694696e0a1cd800cc02))
 * render registered tool names in fresh passthrough replay ([3a36b6d](https://github.com/rynfar/meridian/commit/3a36b6d1f4edce7d88b90fbcfce683921872a68f))
-* replay shortened client compaction summaries ([12a864c](https://github.com/rynfar/meridian/commit/12a864ce5c2db044e7d18a7c7b49726365e3682d))
 * replay shortened client compaction summaries ([0f978df](https://github.com/rynfar/meridian/commit/0f978dfc90d1f319df7ca2bdca5de367de26b0b2))
 * reset idle exit after completed model requests ([9dbb3b8](https://github.com/rynfar/meridian/commit/9dbb3b828cf7899c42276269c5618a74d1894900))
-* restore the Profiles page script ([6b25c5a](https://github.com/rynfar/meridian/commit/6b25c5a1d2232c31b2a7da12ecbedca033aa1778))
-* resume Pi checkpoints across trailing reminders ([bace62f](https://github.com/rynfar/meridian/commit/bace62f94c5c013d5d2f0b20220ba19e90f2de95))
-* retain tools after CLI-rejected handoff ([438b2bf](https://github.com/rynfar/meridian/commit/438b2bf9bbe4a8d9c33cf1c9b16b2ade966385fd))
 * retain tools for rejected-call continuations ([c6b0bc5](https://github.com/rynfar/meridian/commit/c6b0bc548f5ee404040cdac73d46a78468388310))
 * stop the session GC lock timing out under ordinary load ([7d80913](https://github.com/rynfar/meridian/commit/7d8091381dab55bbb21eb9e03566eab7a206e610))
-* suppress implicit SDK attachments in passthrough ([25a4661](https://github.com/rynfar/meridian/commit/25a46612659a48edbd81e34a2ced033c001216f6))
 * suppress implicit SDK attachments in passthrough ([5dae08e](https://github.com/rynfar/meridian/commit/5dae08e4834b4ab3074d897381622be2e8c5a2ba))
-* use registered tool names in fresh replay ([253c0fc](https://github.com/rynfar/meridian/commit/253c0fcc2ab4fe0d193a3014c14fe9ee75e97cfe))
 
 ## [1.75.0](https://github.com/rynfar/meridian/compare/meridian-v1.74.0...meridian-v1.75.0) (2026-09-22)
 
