@@ -299,7 +299,7 @@ the queue is complete. This batch has one owner and no delegated agents.
   [#1127](https://github.com/rynfar/meridian/pull/1127) merged as `438b2bf9`;
   unchanged source #1116 and follow-up #1126 were closed without comment.
 
-### PR #1114: preserve in-flight profile turns under review
+### PR #1114: preserve in-flight profile turns delivered
 
 - Source head `464c3c87` (Nowaker) is cherry-picked as `6ecfbaa7` with Author
   and AuthorDate intact on `fix/profile-switch-inflight-1114`; the copied
@@ -308,8 +308,35 @@ the queue is complete. This batch has one owner and no delegated agents.
   The fix removes the global session-cache clear during profile switching;
   existing profile-scoped keys keep the mappings isolated. A separate
   maintainer test checks another profile's durable resume state. Focused
-  17/17, full `npm test`, typecheck and build passed before rebasing;
-  the new three-case fixture passed on #1125. Final-head gates remain.
+  17/17, full `npm test`, typecheck and build passed on the final branch.
+  Final-head Linux, Windows, desktop and Docker checks passed
+  (`35840110191`, `35840110130`, `35840110184`). Delivery
+  [#1128](https://github.com/rynfar/meridian/pull/1128) merged as `69bcf6de`
+  with Nowaker's authored commit intact; unchanged source #1114 was closed
+  without comment.
+
+### Issue #1089: client summary compaction replay under review
+
+- The old suffix-overlap classifier resumed the stored SDK session after a
+  client replaced a long head with a short summary. A new pure-lineage
+  regression fails on unchanged main; the real SDK/CLI E64 local fixture
+  confirms the summary never reached the model on #1124. The correction
+  fresh-replays only a shortened head, keeps equal-length pruning on the
+  existing checkpoint, and has explicit legacy opt-in
+  `MERIDIAN_COMPACTION_SURVIVAL=1`. The lineage helper remains pure.
+- Focused lineage/HTTP tests passed 180/180, full `npm test`, typecheck and
+  build passed before the latest rebases. After #1127, focused 110/110 and
+  both real SDK/CLI E64 modes passed: default delivered the summary and
+  omitted the removed head; legacy resumed. E64 runs both modes in Linux CI.
+  Delivery [#1129](https://github.com/rynfar/meridian/pull/1129) is open;
+  final-head validation after #1128 remains. Its first final-head Linux CI
+  run passed the full main test pass but failed one of 73 isolated priority
+  tests: a fixed 5s quota reset expired during the test's own retry ladder,
+  causing the 10-minute fallback mark. This is unrelated to compaction and
+  reproduced only under that runner's timing. A separate test correction
+  shortens the mock retry delay and waits until the recorded reset rather
+  than sleeping 3.6s; all three affected cases and the entire 73-case
+  priority file pass locally. The corrected CI rerun remains.
 
 ### Issue #1094: stable OpenCode V2 compatibility hold
 

@@ -761,7 +761,7 @@ UI. Both fixtures isolate Meridian state and work only in temporary directories.
 | E3 | [Tool Use Loop](#e3-tool-use-loop) | MCP tools (read/write/bash) execute through SDK | 2026-03-24 |
 | E4 | [Session Continuation](#e4-session-continuation) | Same session header → `lineage=continuation`, SDK session reused | 2026-03-24 |
 | E5 | [Undo with Rollback](#e5-undo-with-rollback) | Shorter/diverged suffix → `lineage=undo`, rollback UUID emitted | 2026-03-24 |
-| E6 | [Compaction](#e6-compaction) | Summarized prefix + preserved suffix → `lineage=compaction` | 2026-03-24 |
+| E6 | [Compaction](#e6-compaction) | Shortened summary head + preserved suffix → fresh replay with the supplied summary; equal-length pruning still resumes | 2026-09-23 |
 | E7 | [Diverged Detection](#e7-diverged-detection) | Completely unrelated messages → `lineage=new`, fresh session | 2026-03-24 |
 | E8 | [Cross-Proxy Resume](#e8-cross-proxy-resume) | Kill proxy → restart → session resumes from file store | 2026-03-24 |
 | E9 | [Fingerprint Fallback](#e9-fingerprint-fallback) | No session header → fingerprint-based session lookup works | 2026-03-24 |
@@ -846,6 +846,7 @@ UI. Both fixtures isolate Meridian state and work only in temporary directories.
 | E61 | [SDK nonstreaming fallback delivery](#e61-sdk-nonstreaming-fallback-delivery) | **Automated, real SDK/CLI with a local API fixture**: `bun scripts/e2e-unstreamed-fallback.mjs`. An upstream stream refusal makes Claude Code retry without streaming; the proxy must deliver one complete SSE envelope for text and for a captured client tool call. A normal streamed response is the control. **Run before releases touching streaming close, SDK retry behavior, or passthrough tool delivery** | 2026-09-23 |
 | E62 | [Legacy single-step tool handoff](#e62-legacy-single-step-tool-handoff) | **Automated, real SDK/CLI with a local API fixture**: `bun scripts/e2e-single-step-abort.mjs --case=repeat`, then `--case=single`. With early stop disabled, require complete client tool blocks, a single terminal `tool_use` envelope, and no error. The normal-completion self-abort regression is separately pinned by the HTTP test because the live fixture does not force that timing. **Run before releases touching single-step abort or captured-tool recovery** | 2026-09-23 |
 | E63 | [CLI-rejected client tool handoff](#e63-cli-rejected-client-tool-handoff) | **Automated in Linux CI, real SDK/CLI with a local API fixture**: `bun scripts/e2e-rejected-tool-handoff.mjs --case=rejected`, then `--case=registered`. The model emits bare `read` although the CLI registered `mcp__oc__read`; the client must receive one complete `read` tool handoff and no error. The namespaced call is a normal-dispatch control. **Run before releases touching uncaptured tool recovery or passthrough tool aliases** | 2026-09-23 |
+| E64 | [Client compaction summary replay](#e64-client-compaction-summary-replay) | **Automated in Linux CI, real SDK/CLI with a local API fixture**: `bun scripts/e2e-compaction-summary.mjs`, then `--legacy`. A shortened head must send its summary to the model in a fresh session without the removed head; the opt-in control keeps the old resume. **Run before releases touching lineage, compaction, or SDK session replay** | 2026-09-23 |
 
 | P1 | [Profile: List & Auth Status](#p1-profile-list--auth-status) | `/profiles/list` returns profiles with emails, login status, auth timestamps | - |
 | P2 | [Profile: Switch via API](#p2-profile-switch-via-api) | `POST /profiles/active` switches profile; health endpoint reflects new email | - |
@@ -1057,7 +1058,7 @@ curl -s http://127.0.0.1:3456/v1/messages \
 
 ## E6: Compaction
 
-**Verifies:** When the agent summarizes early messages but preserves recent ones, proxy detects compaction and resumes.
+**Verifies:** When the agent replaces a long head with a short summary and preserves recent messages, the proxy starts a fresh SDK session from the supplied history. Resuming the stored suffix would discard the summary and retain the context the client removed.
 
 ```bash
 # Step 1: Seed a 7-message conversation (≥6 required for compaction detection)
@@ -1102,9 +1103,10 @@ curl -s http://127.0.0.1:3456/v1/messages \
 ```
 
 **Pass criteria:**
-- Step 2 proxy log: `lineage=compaction session=<same-id>` (not `new`)
-- `Compaction detected` message in proxy stderr
-- Response is valid (session was resumed, not restarted)
+- Step 2 proxy log: `lineage=diverged` with `reason=compaction`.
+- `Client compaction detected` message in proxy stderr.
+- Response is valid and the SDK prompt includes `[Summary of earlier conversation]`.
+- With `MERIDIAN_COMPACTION_SURVIVAL=1`, the legacy `lineage=compaction` resume remains available. An equal-length pruned head also keeps its checkpoint.
 
 **Key constants:** `MIN_SUFFIX_FOR_COMPACTION = 2`, `MIN_STORED_FOR_COMPACTION = 6` (in `session/lineage.ts`)
 
@@ -5335,6 +5337,9 @@ Run `bun scripts/e2e-single-step-abort.mjs --case=repeat` and again with `--case
 ## E63: CLI-rejected client tool handoff
 
 Run `bun scripts/e2e-rejected-tool-handoff.mjs --case=rejected` and then `--case=registered`. The credential-free local API fixture sends a bare `read` tool call while the real SDK/CLI has registered only `mcp__oc__read`. The CLI refuses dispatch before PreToolUse; Meridian must close the SSE envelope with exactly one client `read` call, `stop_reason: tool_use`, and no error. The registered-name control must also pass. `E2E_MERIDIAN_ROOT` selects another checkout for before/after comparison. On unchanged main after #1095, the rejected case emitted `max_tokens` followed by an SSE API error; it passes with #1116's recovery.
+## E64: Client compaction summary replay
+
+Run `bun scripts/e2e-compaction-summary.mjs` and again with `--legacy`. The local API fixture sends an OpenCode-shaped nine-message request to the real SDK/CLI, then a shorter summarized head with a preserved tail and a new turn. The default run requires the model-bound input to include the new summary and exclude the removed opening message. `--legacy` sets `MERIDIAN_COMPACTION_SURVIVAL=1` and requires the former resume behavior. `E2E_MERIDIAN_ROOT` selects another checkout: the default case fails on unchanged #1124 main because its model request lacks the summary, while both cases pass with #1089's fix.
 
 ## Concurrent transcript publication
 
