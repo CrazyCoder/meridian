@@ -249,7 +249,7 @@ the queue is complete. This batch has one owner and no delegated agents.
   with Nowaker's authored commit intact; unchanged source #1119 was closed
   without comment.
 
-### PR #1118: Pi trailing reminder checkpoint review
+### PR #1118: Pi trailing reminder checkpoint delivered
 
 - Source commits `7f3ecf48` and `756c3037` (Mate Remias) were cherry-picked
   with Author and AuthorDate intact. Rebased onto #1123 as `885791ab` and
@@ -259,7 +259,41 @@ the queue is complete. This batch has one owner and no delegated agents.
   a revised-history streaming image case fresh-replayed with the reminder and
   image result intact. Typecheck, build, and full `npm test` passed on #1122.
   After rebase onto #1123, focused tests passed 175/175 and live Pi streaming
-  resume passed again. Final-head CI remains.
+  resume passed again. All final-head CI jobs passed (`35837311983`, desktop
+  `35837311976`, Docker `35837312005`). Delivery
+  [#1124](https://github.com/rynfar/meridian/pull/1124) merged as `bace62f9`
+  with Mate's authored commits intact. Source #1118 added an empty CI-retry
+  commit `893348c8` without file changes; after recheck it was closed without
+  comment.
+
+### PR #1116: CLI-rejected client tools under review
+
+- Source `f501cf9d` (Mate Remias) was cherry-picked with Author and AuthorDate
+  intact as `14a47c34` onto `fix/rejected-tools-1116`, rebased through #1124.
+  Its copied headline was normalized to `fix:` for this repository. Separate
+  maintainer commit `d1420779` adds E63, a credential-free real SDK/CLI gate
+  in Linux CI.
+- E63's bare `read` refusal fails on unchanged #1122 main with an SSE API
+  error after `max_tokens`; it passes with #1116 as one complete `tool_use`
+  handoff. The registered-name control passes before and after. Focused
+  tests passed 125/125 before rebase; full `npm test`, typecheck and build
+  passed on #1122. After rebase onto #1124, focused tests passed 137/137,
+  both real SDK/CLI E63 cases passed, and E41 passed all four
+  chain/parallel by stream modes. Final-head CI remains.
+
+### Issue #1094: stable OpenCode V2 compatibility hold
+
+- [Official OpenCode V2 installation](https://opencode.ai/v2/docs) now uses
+  `@opencode/cli`; npm `latest` was 2.0.15
+  when checked September 23. The isolated binary reports `opencode v2.0.15`.
+  Current Meridian setup correctly rejects it and leaves the beta-only
+  plugin uninstalled (`/tmp/meridian-1094-setup.log`). The plugin imports
+  `@opencode-ai/plugin/promise`, while the
+  [stable V2 migration guide](https://opencode.ai/v2/docs/build/plugins/migrate-v1)
+  requires `@opencode/plugin` and a changed setup/hook API. Unpinning the
+  version gate alone would load
+  an incompatible plugin. Leave #1094 open for a port and full E42-style host
+  qualification; do not claim stable V2 support in this release.
 - #1050 is Antigravity research with no production
   behavior. #792 explicitly asks not to be reviewed or merged yet.
 - The Release Please PR remains open until the issue pass and all affected
