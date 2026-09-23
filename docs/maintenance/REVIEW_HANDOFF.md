@@ -266,7 +266,7 @@ the queue is complete. This batch has one owner and no delegated agents.
   commit `893348c8` without file changes; after recheck it was closed without
   comment.
 
-### PR #1116: CLI-rejected client tools under review
+### PR #1116 and follow-up #1126: CLI-rejected client tools delivered
 
 - Source `f501cf9d` (Mate Remias) was cherry-picked with Author and AuthorDate
   intact as `14a47c34` onto `fix/rejected-tools-1116`, rebased through #1124.
@@ -279,7 +279,37 @@ the queue is complete. This batch has one owner and no delegated agents.
   tests passed 125/125 before rebase; full `npm test`, typecheck and build
   passed on #1122. After rebase onto #1124, focused tests passed 137/137,
   both real SDK/CLI E63 cases passed, and E41 passed all four
-  chain/parallel by stream modes. Final-head CI remains.
+  chain/parallel by stream modes. Final-head Linux test, Windows smoke,
+  desktop and Docker checks passed (`35838259252`, `35838259244`,
+  `35838259072`). Delivery [#1125](https://github.com/rynfar/meridian/pull/1125)
+  merged as `ec7c9c39` with Mate's authored commit intact.
+- The source added a follow-up commit after #1125 merged. Commit `8bce3b4d`
+  and #1126's extra assertion `7d02c432` were cherry-picked with Author and
+  AuthorDate intact as `c6b0bc54` and `0a502cc5` on
+  `fix/rejected-tools-continuation-1116`. The #1120 tool-selection move made
+  one cherry-pick conflict; tool restoration was placed before the fresh
+  replay renderer so the replay and MCP registration see the same schema.
+  A separate maintainer commit runs the real SDK/CLI refusal-to-result-turn
+  fixture in Linux CI. The fixture failed on #1125 main and passed on the
+  follow-up, including a fresh SDK session, omitted client tools, and the
+  registered MCP name in replay. Focused integration 104/104, full
+  `npm test`, typecheck, build, E63 controls, and live Pi parallel streaming
+  E41 all passed. Final-head Linux, Windows, desktop and Docker checks passed
+  (`35839354306`, `35839354302`, `35839354294`). Delivery
+  [#1127](https://github.com/rynfar/meridian/pull/1127) merged as `438b2bf9`;
+  unchanged source #1116 and follow-up #1126 were closed without comment.
+
+### PR #1114: preserve in-flight profile turns under review
+
+- Source head `464c3c87` (Nowaker) is cherry-picked as `6ecfbaa7` with Author
+  and AuthorDate intact on `fix/profile-switch-inflight-1114`; the copied
+  headline was normalized to `fix:`. The source's HTTP fixture reproduced
+  the in-flight failure on unchanged #1122 main in both response modes.
+  The fix removes the global session-cache clear during profile switching;
+  existing profile-scoped keys keep the mappings isolated. A separate
+  maintainer test checks another profile's durable resume state. Focused
+  17/17, full `npm test`, typecheck and build passed before rebasing;
+  the new three-case fixture passed on #1125. Final-head gates remain.
 
 ### Issue #1094: stable OpenCode V2 compatibility hold
 
