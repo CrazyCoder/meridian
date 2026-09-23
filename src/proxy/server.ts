@@ -5,7 +5,7 @@ import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { stream } from "hono/streaming"
 import { serve, createAdaptorServer } from "@hono/node-server"
-import { socketActivationFd, parseIdleExitSeconds } from "./socketActivation"
+import { socketActivationFd, parseIdleExitSeconds, isModelRequestPath } from "./socketActivation"
 import type { Server } from "node:http"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -9306,11 +9306,13 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
   }
 
   let closePromise: Promise<void> | undefined
+  let idleExitCheck: ReturnType<typeof setInterval> | undefined
   const instance: ProxyInstance = {
     server,
     config: finalConfig,
     close() {
       closePromise ??= (async () => {
+        if (idleExitCheck) clearInterval(idleExitCheck)
         if (profileTokenRefreshInterval) clearInterval(profileTokenRefreshInterval)
         if (authKeepaliveInterval) clearInterval(authKeepaliveInterval)
         if (sessionGcInterval) clearInterval(sessionGcInterval)
@@ -9366,10 +9368,18 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
   // No-op unless the env var is set, so always-on deployments are unaffected.
   const idleExitSeconds = parseIdleExitSeconds()
   if (idleExitSeconds !== undefined) {
-    const IDLE_POLL_MS = 15_000
     const idleThresholdMs = idleExitSeconds * 1000
     let lastBusyAt = Date.now()
-    const idleExitCheck = setInterval(() => {
+    // The in-flight count alone can miss a short model request that starts and
+    // finishes between polls. Record its completion so the full idle window
+    // starts after the request, including OpenAI/Responses outer HTTP routes.
+    server.on("request", (request, response) => {
+      if (!isModelRequestPath(request.url ?? "")) return
+      lastBusyAt = Date.now()
+      response.once("close", () => { lastBusyAt = Date.now() })
+    })
+    const idlePollMs = Math.min(15_000, Math.max(250, Math.floor(idleThresholdMs / 4)))
+    idleExitCheck = setInterval(() => {
       if ((getInFlightCount?.() ?? 0) > 0) {
         lastBusyAt = Date.now()
         return
@@ -9378,10 +9388,15 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
       if (!finalConfig.silent) {
         console.log(`[PROXY] idle ${idleExitSeconds}s reached — exiting (socket activation restarts on demand)`)
       }
-      clearInterval(idleExitCheck)
-      void instance.close().finally(() => process.exit(0))
-    }, IDLE_POLL_MS)
-    if (idleExitCheck.unref) idleExitCheck.unref()
+      void instance.close().then(
+        () => process.exit(0),
+        (error: unknown) => {
+          console.error("[PROXY] idle shutdown failed:", error)
+          process.exit(1)
+        },
+      )
+    }, idlePollMs)
+    idleExitCheck.unref?.()
   }
 
   return instance

@@ -32,11 +32,17 @@ export function socketActivationFd(
 	env: NodeJS.ProcessEnv = process.env,
 	pid: number = process.pid,
 ): number | undefined {
-	const listenPid = parseInt(env.LISTEN_PID ?? "", 10)
-	if (!Number.isFinite(listenPid) || listenPid !== pid) return undefined
-	const fds = parseInt(env.LISTEN_FDS ?? "", 10)
-	if (!Number.isFinite(fds) || fds < 1) return undefined
+	if (!/^\d+$/.test(env.LISTEN_PID ?? "") || !/^\d+$/.test(env.LISTEN_FDS ?? "")) return undefined
+	const listenPid = Number(env.LISTEN_PID)
+	const fds = Number(env.LISTEN_FDS)
+	if (!Number.isSafeInteger(listenPid) || listenPid !== pid) return undefined
+	if (!Number.isSafeInteger(fds) || fds < 1) return undefined
 	return SD_LISTEN_FDS_START
+}
+
+/** Count only model requests as idle-exit activity; health polls may be frequent. */
+export function isModelRequestPath(path: string): boolean {
+	return /^\/v1\/(?:messages|chat\/completions|responses)(?:[/?]|$)/.test(path)
 }
 
 /**
@@ -53,7 +59,8 @@ export function socketActivationFd(
 export function parseIdleExitSeconds(env: NodeJS.ProcessEnv = process.env): number | undefined {
 	const raw = env.MERIDIAN_IDLE_EXIT_SECONDS ?? env.CLAUDE_PROXY_IDLE_EXIT_SECONDS
 	if (raw === undefined || raw === "") return undefined
-	const seconds = parseInt(raw, 10)
-	if (!Number.isFinite(seconds) || seconds < 1) return undefined
+	if (!/^\d+$/.test(raw)) return undefined
+	const seconds = Number(raw)
+	if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > Number.MAX_SAFE_INTEGER / 1000) return undefined
 	return seconds
 }

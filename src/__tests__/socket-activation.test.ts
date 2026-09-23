@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parseIdleExitSeconds, SD_LISTEN_FDS_START, socketActivationFd } from "../proxy/socketActivation"
+import { isModelRequestPath, parseIdleExitSeconds, SD_LISTEN_FDS_START, socketActivationFd } from "../proxy/socketActivation"
 
 describe("socketActivationFd", () => {
 	it("returns SD_LISTEN_FDS_START (3) when LISTEN_PID matches and LISTEN_FDS >= 1", () => {
@@ -27,6 +27,8 @@ describe("socketActivationFd", () => {
 	it("returns undefined when the values are malformed", () => {
 		expect(socketActivationFd({ LISTEN_PID: "not-a-number", LISTEN_FDS: "1" }, 1234)).toBeUndefined()
 		expect(socketActivationFd({ LISTEN_PID: "1234", LISTEN_FDS: "abc" }, 1234)).toBeUndefined()
+		expect(socketActivationFd({ LISTEN_PID: "1234junk", LISTEN_FDS: "1" }, 1234)).toBeUndefined()
+		expect(socketActivationFd({ LISTEN_PID: "1234", LISTEN_FDS: "1junk" }, 1234)).toBeUndefined()
 	})
 
 	it("returns undefined when nothing is set", () => {
@@ -58,5 +60,19 @@ describe("parseIdleExitSeconds", () => {
 		expect(parseIdleExitSeconds({ MERIDIAN_IDLE_EXIT_SECONDS: "0" })).toBeUndefined()
 		expect(parseIdleExitSeconds({ MERIDIAN_IDLE_EXIT_SECONDS: "-5" })).toBeUndefined()
 		expect(parseIdleExitSeconds({ MERIDIAN_IDLE_EXIT_SECONDS: "abc" })).toBeUndefined()
+		expect(parseIdleExitSeconds({ MERIDIAN_IDLE_EXIT_SECONDS: "1junk" })).toBeUndefined()
+		expect(parseIdleExitSeconds({ MERIDIAN_IDLE_EXIT_SECONDS: "1.5" })).toBeUndefined()
+		expect(parseIdleExitSeconds({ MERIDIAN_IDLE_EXIT_SECONDS: "999999999999999999999" })).toBeUndefined()
+	})
+})
+
+describe("isModelRequestPath", () => {
+	it("tracks model endpoints including query strings, but not health polling", () => {
+		for (const path of ["/v1/messages", "/v1/messages?foo=bar", "/v1/chat/completions", "/v1/responses"]) {
+			expect(isModelRequestPath(path)).toBe(true)
+		}
+		for (const path of ["/health", "/v1/models", "/v1/messages-extra", "/telemetry"]) {
+			expect(isModelRequestPath(path)).toBe(false)
+		}
 	})
 })
