@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.76.5](https://github.com/rynfar/meridian/compare/meridian-v1.76.4...meridian-v1.76.5) (2026-09-24)
+
+
+### Bug Fixes
+
+* support released OpenCode V2 host ([#1148](https://github.com/rynfar/meridian/issues/1148)) ([1a5e1a2](https://github.com/rynfar/meridian/commit/1a5e1a2b43311527650fc834d7d777abc5620141))
+
+## [1.76.4](https://github.com/rynfar/meridian/compare/meridian-v1.76.3...meridian-v1.76.4) (2026-09-24)
+
+
+### Bug Fixes
+
+* **release:** ship validated Nix scrub integration ([0c7646c](https://github.com/rynfar/meridian/commit/0c7646c807abfcfe2f76b57714e9a2699f2b4b97))
+
+## [1.76.3](https://github.com/rynfar/meridian/compare/meridian-v1.76.2...meridian-v1.76.3) (2026-09-24)
+
+
+### Bug Fixes
+
+* stop session GC sweeps from saturating the lifecycle lock ([#1140](https://github.com/rynfar/meridian/issues/1140)) ([f30b22f](https://github.com/rynfar/meridian/commit/f30b22f9a99a73b723ced39aa1fab263a84272a8))
+
 ## [1.76.2](https://github.com/rynfar/meridian/compare/meridian-v1.76.1...meridian-v1.76.2) (2026-09-23)
 
 
