@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -9,6 +9,8 @@ import { createServer } from 'node:net'
 import { spyOn } from 'bun:test'
 
 const meridianRoot = fileURLToPath(new URL('..', import.meta.url))
+const meridianVersion = JSON.parse(readFileSync(join(meridianRoot, 'package.json'), 'utf8')).version
+if (process.env.E2E_EXPECT_MERIDIAN_VERSION) assert.equal(meridianVersion, process.env.E2E_EXPECT_MERIDIAN_VERSION)
 const pluginPath = process.env.E2E_PLUGIN_PATH
 assert(pluginPath, 'Set E2E_PLUGIN_PATH to an installed OpenCode scrub plugin entrypoint')
 const model = process.env.E2E_MODEL ?? 'claude-haiku-4-5'
@@ -128,7 +130,7 @@ try {
     assert(globalThis.__opencodeScrubPost.some(entry => entry.hasWorkingDirectory), JSON.stringify(globalThis.__opencodeScrubPost))
   }
   else assert(globalThis.__opencodeScrubPost.some(entry => entry.hasPowered && entry.hasEnvPreamble), JSON.stringify(globalThis.__opencodeScrubPost))
-  console.log(JSON.stringify({ result: 'PASS', root, expectedOutcome: expectScrub ? 'model response' : 'billing gate', versions: { opencode: '1.18.32', litellm: '1.81.10', meridian: '1.76.3' }, model, before: globalThis.__opencodeScrubPre, after: globalThis.__opencodeScrubPost, sdkQueries: observed }))
+  console.log(JSON.stringify({ result: 'PASS', root, expectedOutcome: expectScrub ? 'model response' : 'billing gate', versions: { opencode: '1.18.32', litellm: '1.81.10', meridian: meridianVersion }, model, before: globalThis.__opencodeScrubPre, after: globalThis.__opencodeScrubPost, sdkQueries: observed }))
 } finally {
   if (litellm) {
     litellm.kill('SIGTERM')

@@ -6329,6 +6329,8 @@ from its tarball or the public registry, and pass the absolute path to its
 and project directories and consume Claude Max quota. Keep the generated local
 artifact private because it contains client and proxy logs. For a Nix plugin
 build, point `E2E_PLUGIN_PATH` at the output's `lib/index.js` instead.
+Set `E2E_EXPECT_MERIDIAN_VERSION` for a release gate so the harness asserts
+and reports the exact Meridian package version under test.
 
 ```sh
 npm run build
