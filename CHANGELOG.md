@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.76.4](https://github.com/rynfar/meridian/compare/meridian-v1.76.3...meridian-v1.76.4) (2026-09-24)
+
+
+### Bug Fixes
+
+* **release:** ship validated Nix scrub integration ([0c7646c](https://github.com/rynfar/meridian/commit/0c7646c807abfcfe2f76b57714e9a2699f2b4b97))
+
 ## [1.76.3](https://github.com/rynfar/meridian/compare/meridian-v1.76.2...meridian-v1.76.3) (2026-09-24)
 
 

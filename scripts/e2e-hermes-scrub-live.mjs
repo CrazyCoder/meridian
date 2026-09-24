@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -10,6 +10,8 @@ import { Readable } from 'node:stream'
 import { spyOn } from 'bun:test'
 
 const meridianRoot = fileURLToPath(new URL('..', import.meta.url))
+const meridianVersion = JSON.parse(readFileSync(join(meridianRoot, 'package.json'), 'utf8')).version
+if (process.env.E2E_EXPECT_MERIDIAN_VERSION) assert.equal(meridianVersion, process.env.E2E_EXPECT_MERIDIAN_VERSION)
 const pluginPath = process.env.E2E_PLUGIN_PATH
 assert(pluginPath, 'Set E2E_PLUGIN_PATH to an installed Hermes scrub plugin entrypoint')
 const model = process.env.E2E_MODEL ?? 'claude-opus-5-5'
@@ -95,7 +97,7 @@ try {
   assert(globalThis.__hermesScrubPost.some(entry => entry.hasNeutralSkillView))
   assert(globalThis.__hermesScrubPost.every((entry, i) => entry.hasFinishingJob === globalThis.__hermesScrubPre[i]?.hasFinishingJob))
   assert(sdkQueries > 0)
-  console.log(JSON.stringify({ result: 'PASS', root, versions: { hermes: '0.21.4', meridian: '1.76.3' }, model, before: globalThis.__hermesScrubPre, after: globalThis.__hermesScrubPost, sdkQueries }))
+  console.log(JSON.stringify({ result: 'PASS', root, versions: { hermes: '0.21.4', meridian: meridianVersion }, model, before: globalThis.__hermesScrubPre, after: globalThis.__hermesScrubPost, sdkQueries }))
 } finally {
   if (relay) await new Promise(resolve => relay.close(resolve))
   if (proxy) await proxy.close()

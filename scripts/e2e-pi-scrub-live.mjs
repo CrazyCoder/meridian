@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -8,6 +8,8 @@ import { spawn } from 'node:child_process'
 import { spyOn } from 'bun:test'
 
 const meridianRoot = fileURLToPath(new URL('..', import.meta.url))
+const meridianVersion = JSON.parse(readFileSync(join(meridianRoot, 'package.json'), 'utf8')).version
+if (process.env.E2E_EXPECT_MERIDIAN_VERSION) assert.equal(meridianVersion, process.env.E2E_EXPECT_MERIDIAN_VERSION)
 const pluginPath = process.env.E2E_PLUGIN_PATH
 assert(pluginPath, 'Set E2E_PLUGIN_PATH to an installed Pi scrub plugin entrypoint')
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'pi-scrub-live-')))
@@ -83,7 +85,7 @@ try {
   assert(globalThis.__piScrubPre.some(entry => entry.hasPiIdentity && entry.hasPiDocs), JSON.stringify(globalThis.__piScrubPre))
   assert(observed.length > 0)
   assert(observed.every(entry => !entry.hasPiIdentity && !entry.hasPiDocs && entry.hasGenericIdentity), JSON.stringify(observed))
-  console.log(JSON.stringify({ result: 'PASS', root, piVersion: '0.72.1', model: 'claude-haiku-4-5', before: globalThis.__piScrubPre, after: observed, responseLength: stdout.length }))
+  console.log(JSON.stringify({ result: 'PASS', root, piVersion: '0.72.1', meridianVersion, model: 'claude-haiku-4-5', before: globalThis.__piScrubPre, after: observed, responseLength: stdout.length }))
 } finally {
   if (proxy) await proxy.close()
   observer.mockRestore()
