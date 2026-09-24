@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.76.2](https://github.com/rynfar/meridian/compare/meridian-v1.76.1...meridian-v1.76.2) (2026-09-23)
+
+
+### Bug Fixes
+
+* advertise passthrough tools' declared schema at every depth ([#1136](https://github.com/rynfar/meridian/issues/1136)) ([2922970](https://github.com/rynfar/meridian/commit/2922970e8c5d0657b74edddb044554239af80c63))
+
 ## [1.76.1](https://github.com/rynfar/meridian/compare/meridian-v1.76.0...meridian-v1.76.1) (2026-09-23)
 
 
