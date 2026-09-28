@@ -56,6 +56,7 @@ const OPUS = rates(5, 25) // Opus 4.5 through 5
 // Opus 5.5 cache reads are 5% of input (official model specs, 2026-09-22).
 const OPUS_55: ModelPricing = { ...rates(4, 20), cacheReadPerMTok: 0.2 }
 const OPUS_LEGACY = rates(15, 75) // Opus 4.1 and earlier
+const SONNET_55 = rates(2, 10)
 const SONNET = rates(3, 15) // every Sonnet generation to date, standard rate
 // Sonnet 5 introductory pricing runs through 2026-08-31; standard 3/15 applies
 // from 2026-09-01. Update this entry (or set a settings override) after that.
@@ -90,7 +91,8 @@ export const BUILTIN_MODEL_PRICING: Record<string, ModelPricing> = {
   "claude-opus-4-0": OPUS_LEGACY,
   "claude-opus-4-20250514": OPUS_LEGACY,
   "claude-3-opus-20240229": OPUS_LEGACY,
-  sonnet: SONNET,
+  sonnet: SONNET_55,
+  "claude-sonnet-5-5": SONNET_55,
   "claude-sonnet-5": SONNET_5_INTRO,
   "claude-sonnet-4-6": SONNET,
   "claude-sonnet-4-5": SONNET,

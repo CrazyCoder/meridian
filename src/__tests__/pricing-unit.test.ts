@@ -29,6 +29,14 @@ function makeMetric(overrides: Partial<RequestMetric> = {}): RequestMetric {
 }
 
 describe("resolveModelPricing", () => {
+  it("prices Sonnet 5.5 at standard rates", () => {
+    expect(resolveModelPricing("claude-sonnet-5-5")).toEqual({
+      inputPerMTok: 2, outputPerMTok: 10, cacheReadPerMTok: 0.2, cacheWritePerMTok: 2.5,
+    })
+    expect(resolveModelPricing("claude-sonnet-5-5[1m]")).toEqual({
+      inputPerMTok: 2, outputPerMTok: 10, cacheReadPerMTok: 0.2, cacheWritePerMTok: 2.5,
+    })
+  })
   it("prices Opus 5.5 including its reduced cache-read rate", () => {
     expect(resolveModelPricing("claude-opus-5-5[1m]")).toEqual({
       inputPerMTok: 4, outputPerMTok: 20, cacheReadPerMTok: 0.2, cacheWritePerMTok: 5,
@@ -37,14 +45,14 @@ describe("resolveModelPricing", () => {
   })
   it("resolves SDK aliases meridian uses", () => {
     expect(resolveModelPricing("opus")).toMatchObject({ inputPerMTok: 4, outputPerMTok: 20 })
-    expect(resolveModelPricing("sonnet")).toMatchObject({ inputPerMTok: 3, outputPerMTok: 15 })
+    expect(resolveModelPricing("sonnet")).toMatchObject({ inputPerMTok: 2, outputPerMTok: 10 })
     expect(resolveModelPricing("haiku")).toMatchObject({ inputPerMTok: 1, outputPerMTok: 5 })
     expect(resolveModelPricing("fable")).toMatchObject({ inputPerMTok: 10, outputPerMTok: 50 })
   })
 
   it("strips the [1m] extended-context suffix", () => {
     expect(resolveModelPricing("opus[1m]")).toMatchObject({ inputPerMTok: 4 })
-    expect(resolveModelPricing("sonnet[1m]")).toMatchObject({ inputPerMTok: 3 })
+    expect(resolveModelPricing("sonnet[1m]")).toMatchObject({ inputPerMTok: 2 })
     expect(resolveModelPricing("fable[1m]")).toMatchObject({ inputPerMTok: 10 })
   })
 

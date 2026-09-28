@@ -673,8 +673,11 @@ bun scripts/e2e-retirement-admission.mjs --stream
 ```
 
 With a two-slot pending budget and a long retirement quarantine, seed two real
-sessions, switch profiles through HTTP, sweep GC and require a fresh request and
-its follow-up to answer correctly. Supported SDK history inspection verifies both
+sessions, switch profiles through HTTP, drop the old mappings, sweep GC and
+require a fresh request and its follow-up to answer correctly. The switch itself
+deliberately retains session mappings (`6ecfbaa7`): their keys are already
+profile-scoped, so the gate unpins them explicitly rather than assuming the
+switch did, which is what cache eviction and a proxy restart do in production. Supported SDK history inspection verifies both
 old histories remain unchanged and the new mapping contains the expected token.
 Both profile aliases use the existing authentication; this does not validate two
 distinct billing accounts. Meridian state and SDK working directory are isolated.
@@ -682,6 +685,28 @@ The one-slot configuration retains its existing behavior; reserving its only slo
 would disable passive cleanup. At limit two, passive retirement can pause while a
 publication is in flight, then resume after it completes. Capacity and cleanup
 progress are covered by the lifecycle tests.
+
+### Concurrent retirement admission (#1174)
+
+```bash
+bun scripts/e2e-retirement-concurrent-admission.mjs
+bun scripts/e2e-retirement-concurrent-admission.mjs --stream
+```
+
+The gate above is sequential and cannot reach the refusal this one covers: a turn
+holds its prepared publication slot across its whole SDK call, so the backlog only
+saturates when later turns arrive while an earlier one is still in the model. With
+a three-slot budget and a long quarantine, seed three real sessions, drop their
+mappings so the sweep parks two genuinely unpinned transcripts at the passive
+bound, then issue three concurrent real turns.
+
+Require zero refusals, each turn's own token in its own transcript and no other
+turn's token in it, one durable mapping per session, a pending count never above
+the budget, every parked transcript still tracked after the sweep, correct
+follow-up answers on each session and unchanged seeded histories. A refusal is
+reported with its response body rather than thrown, so the `overloaded_error`
+backlog message is recorded as evidence. Run both modes after any change to
+retirement admission or the pending budget.
 
 ### Fresh replay with completed tool calls (#888 / #858)
 
@@ -844,6 +869,7 @@ UI. Both fixtures isolate Meridian state and work only in temporary directories.
 | E54 | [Lineage divergence reason](#e54-lineage-divergence-reason) | **Automated**: `bun scripts/e2e-lineage-divergence-reason.mjs` — real proxy + SDK, A/B. Drives a headerless pi tool loop and the same loop with `x-session-affinity`. Asserts no divergence is silent, that the headerless bypass names itself, that the advice is printed once per process, and that the named remedy actually restores resume and prompt-cache reuse. **Run before releases touching lineage classification, the independence guards, or the request log line** | 2026-09-09 |
 | E55 | [Gateway-fronted Claude Code](#e55-gateway-fronted-claude-code) | **Automated, needs the `claude` CLI** (skips cleanly without it): `bun scripts/e2e-passthrough-claude-code-session.mjs` — real proxy + SDK, and the REAL Claude Code CLI as the client. Asserts a gateway-fronted Claude Code session keeps the tool-loop exemption it has on a direct connection, that its following turn resumes, and that the CLI's auxiliary requests do not collide with the conversation. **Run before releases touching the independence guards, adapter detection, or passthrough session identity** | 2026-09-09 |
 | E56 | [Namespaced tool-round resume](#e56-namespaced-tool-round-resume) | **Automated**: `bun scripts/e2e-passthrough-namespace-resume.mjs` — real proxy + SDK, three adapters. Drives an identical keyed tool loop on `pi`, `passthrough` and `opencode` and asserts every keyed tool round resumes on all of them, so an adapter-specific client-tool namespace cannot silently take the resume checkpoint away. **Run before releases touching the passthrough namespace, the early-stop tracker, or checkpoint storage** | 2026-09-09 |
+| E57 | [Letta conversation identity and cache reuse](#e57-letta-conversation-identity-and-cache-reuse) | **Manual**, real Claude Max, two arms without any session header (driver: a probe reproducing Letta Code's wire shape, not the Letta Code binary): the `<system-reminder>` `Conversation ID` makes the second turn `adapter=letta lineage=continuation` and reads the prefix from cache (15,300 of 15,365 prompt tokens reused, 63 written); the control — the same request shape with no reminder, on its own prefix — falls back to `adapter=openai lineage=new` and rewrites the whole prefix every turn. **Run before releases touching the letta adapter, adapter detection, or prompt-cache reuse** | 2026-09-22 |
 | E58 | [Headerless OpenAI tool-loop identity](#e58-headerless-openai-tool-loop-identity) | **Automated**: `bun scripts/e2e-tool-loop-identity.mjs` — real proxy + SDK, A/B. Drives a headerless OpenAI `/v1/chat/completions` tool loop with the client's own stable first tool-call id, and a no-tool control. Asserts the derived `tool-loop:<hash>` resumes and every turn from the second reads ≥90% of the previous prompt from cache with only the new-turn delta written, that no round takes the headerless-tool-result bypass, and that the packed control reads nothing and rewrites everything; also observes the `synthesized-session-key` checkpoint rescue. **Run before releases touching OpenAI session identity, the derived tool-loop key, the passthrough early-stop checkpoint, or the headerless-tool-result bypass** | 2026-09-22 |
 | E59 | [Node socket activation and idle exit](#e59-node-socket-activation-and-idle-exit) | **Automated, Node on macOS or Linux**: `python3 scripts/e2e-socket-activation.py`; add `--live` for a real Claude Max model turn. Passes a listening fd 3 with matching `LISTEN_PID`, verifies health, resets the idle window with a short model-route request, shows health polls do not reset it, then verifies clean exit and reactivation on the same listener. **Run before releases touching socket activation, CLI port preflight, or idle shutdown** | 2026-09-23 |
 | E60 | [Fresh replay tool names](#e60-fresh-replay-tool-names) | **Automated, real SDK and model**: `bun scripts/e2e-replay-tool-names.mjs [--stream]`. Replays twelve completed Pi client `bash` calls on a fresh request, requires the SDK prompt to name the registered `mcp__oc__bash` tool each time, and requires a real new tool call delivered to the client as `bash`. **Run both modes before releases touching fresh replay, passthrough tool aliases, or tool registration** | 2026-09-23 |
@@ -851,6 +877,10 @@ UI. Both fixtures isolate Meridian state and work only in temporary directories.
 | E62 | [Legacy single-step tool handoff](#e62-legacy-single-step-tool-handoff) | **Automated, real SDK/CLI with a local API fixture**: `bun scripts/e2e-single-step-abort.mjs --case=repeat`, then `--case=single`. With early stop disabled, require complete client tool blocks, a single terminal `tool_use` envelope, and no error. The normal-completion self-abort regression is separately pinned by the HTTP test because the live fixture does not force that timing. **Run before releases touching single-step abort or captured-tool recovery** | 2026-09-23 |
 | E63 | [CLI-rejected client tool handoff](#e63-cli-rejected-client-tool-handoff) | **Automated in Linux CI, real SDK/CLI with a local API fixture**: `bun scripts/e2e-rejected-tool-handoff.mjs --case=rejected`, then `--case=registered`. The model emits bare `read` although the CLI registered `mcp__oc__read`; the client must receive one complete `read` tool handoff and no error. The namespaced call is a normal-dispatch control. **Run before releases touching uncaptured tool recovery or passthrough tool aliases** | 2026-09-23 |
 | E64 | [Client compaction summary replay](#e64-client-compaction-summary-replay) | **Automated in Linux CI, real SDK/CLI with a local API fixture**: `bun scripts/e2e-compaction-summary.mjs`, then `--legacy`. A shortened head must send its summary to the model in a fresh session without the removed head; the opt-in control keeps the old resume. **Run before releases touching lineage, compaction, or SDK session replay** | 2026-09-23 |
+| E65 | [Historical media attribution on fresh replay](#e65-historical-media-attribution-on-fresh-replay) | **Real SDK/model and Oh My Pi client**: `bun scripts/e2e-replay-media-attribution.mjs [--current-image]` and `E2E_OMP_PACKAGE=/path/to/package bun scripts/e2e-omp-replay-media-attribution.mjs`. A historical image must stay inside replay context and receive a provenance note; a genuine current image remains current. The Oh My Pi gate checks its actual request has prior media and a text-only current turn. **Run before releases touching structured replay or multimodal input** | 2026-09-25 |
+| E66 | [Interrupted turn after a settled checkpoint](#e66-interrupted-turn-after-a-settled-checkpoint) | **Automated, real proxy + SDK + Claude Max**: `bun scripts/e2e-checkpoint-interrupted-turn.mjs`. An OpenCode-keyed tool round whose complete result is followed by a partial assistant turn (what a dropped stream leaves) must resume the stored session; a result for an unknown call is the negative control and must still take the fresh replay. **Run before releases touching the passthrough early-stop checkpoint or checkpoint replay** | 2026-09-26 |
+| E67 | [OpenCode V2 interrupted tool turn](#e67-opencode-v2-interrupted-tool-turn) | **Actual OpenCode 2.0.16 client and Meridian V2 plugin, real SDK/model**: `E2E_OPENCODE_BIN=/path/to/opencode E2E_PLUGIN_PATH=/path/to/opencode-scrub/dist/index.js bun scripts/e2e-opencode-checkpoint-fault.mjs`. Inject one partial SSE failure after the real client tool call; require the client's exact retry shape and SDK resume, plus a same-session recovery. **Run before releases touching keyed checkpoint recovery** | 2026-09-26 |
+| E68 | [OpenCode V2 user-invoked skill](#e68-opencode-v2-user-invoked-skill) | **Actual OpenCode V2 server, real SDK/model**: `E2E_OPENCODE_BIN=/path/to/opencode E2E_PLUGIN_PATH=/path/to/opencode-scrub/dist/index.js bun scripts/e2e-opencode-skill-content.mjs`. A skill invoked with no typed text must reach the SDK prompt inside `<skill_content>` and drive the reply. **Run before releases touching user-text sanitization** | 2026-09-27 |
 
 | P1 | [Profile: List & Auth Status](#p1-profile-list--auth-status) | `/profiles/list` returns profiles with emails, login status, auth timestamps | - |
 | P2 | [Profile: Switch via API](#p2-profile-switch-via-api) | `POST /profiles/active` switches profile; health endpoint reflects new email | - |
@@ -5237,6 +5267,250 @@ visible as an asymmetry rather than as an absolute.
 `opencode` report `continuation` on all three tool rounds and `passthrough`
 reports `new` on all three. After, all three agree.
 
+## E57: Letta conversation identity and cache reuse
+
+Run `bun scripts/e2e-letta-identity.mjs` for an automated two-arm, real SDK/model
+check before releases touching Letta or generic OpenAI conversation identity.
+It asserts Letta continuation and cache reuse against a no-reminder OpenAI
+control, with isolated proxy state and a fresh prompt prefix on each run. Set
+`E2E_MERIDIAN_ROOT` to an independently installed package root to check its
+`dist/server.js` instead of this checkout. Like
+the manual procedure below, this reproduces Letta's wire shape; it does not
+run the Letta Code binary. Actual cloud-client evidence is required separately.
+
+**What it proves:** with Letta's agent-info reminder present, Meridian resolves
+`adapter=letta` and the second turn resumes the same SDK session
+(`lineage=continuation`), so the prompt prefix is read from cache instead of
+re-written. The control repeats that request shape with no `Conversation ID`
+line and its own prefix, and falls back to `adapter=openai`, which repacks the
+conversation into the system prompt and rewrites the prefix on every turn.
+
+Letta Code sends no session header of any kind. Its only identity on the wire is
+the `conv-<uuid>` value inside the `<system-reminder>` agent-info block Letta
+places in its opening user message; later turns carry it only because the client
+replays the history. The probe therefore puts the reminder in the opening user
+message alone, so the id Meridian resolves is found in the replayed history and
+not in the newest message. The probe deliberately sends no header on either arm
+— the absence is the point being tested. The two arms share the body shape and
+differ only in whether the reminder is present; each arm uses its own prefix, so
+neither arm's cache can warm the other's, and within an arm the turns differ
+only by the appended exchange. Every execution also gives each arm's prefix a
+fresh random nonce, because an upstream prompt-cache entry outlives a run: on a
+machine that has run the probe before, the same fixed text would otherwise show
+a turn-1 cache read the run never earned.
+
+The driver here is a probe that reproduces Letta Code's wire shape, not the
+Letta Code binary itself. The corresponding real-client evidence is the deployed
+gateway running this same adapter module. So this procedure is what a maintainer
+can re-run on this machine; it is not a substitute for a run with the client
+installed.
+
+**Prerequisites:**
+
+- A proxy with a Claude Max login. The measured run used `claude-sonnet-5`.
+- Prompts long enough to clear Anthropic's minimum cacheable prefix
+  (~1024 tokens): the probe's prefixes are ~44 KB each, ~15k prompt tokens.
+- Loopback needs no `MERIDIAN_API_KEY`; send no `Authorization` header.
+- To run beside a live instance, relocate everything Meridian writes. Most paths
+  follow `MERIDIAN_CONFIG_DIR`, but two do not: the plugin directory
+  (`~/.config/meridian/plugins`) and `~/.config/meridian/design-token.json` (which
+  has its own `MERIDIAN_DESIGN_TOKEN_PATH`). The Claude credential file,
+  `~/.claude/.credentials.json`, has no switch either — so an isolated instance
+  sharing a live login must set `MERIDIAN_CREDENTIALS_READONLY=1` to stop writes.
+  The switches used here are `MERIDIAN_PORT`,
+  `MERIDIAN_CONFIG_DIR`, `MERIDIAN_SESSION_DIR`, `MERIDIAN_TELEMETRY_DB` and
+  `MERIDIAN_UPDATE_CHECK_PATH`:
+
+```bash
+BASE=/tmp/meridian-e2e-letta; rm -rf $BASE; mkdir -p $BASE/probe
+MERIDIAN_PORT=3457 \
+MERIDIAN_CONFIG_DIR=$BASE/config \
+MERIDIAN_SESSION_DIR=$BASE/sessions \
+MERIDIAN_TELEMETRY_DB=$BASE/telemetry.db \
+MERIDIAN_UPDATE_CHECK_PATH=$BASE/update-check.json \
+MERIDIAN_CREDENTIALS_READONLY=1 \
+  bun run bin/cli.ts > $BASE/proxy.log 2>&1 &
+until curl -sf http://127.0.0.1:3457/health >/dev/null; do sleep 1; done
+```
+
+```bash
+BASE=http://127.0.0.1:3457
+WORK=/tmp/meridian-e2e-letta/probe
+PROXYLOG=/tmp/meridian-e2e-letta/proxy.log
+mkdir -p "$WORK"
+
+# Long stable prefixes. Arm B shares no wording with Arm A, so a prefix warmed
+# by Arm A cannot be mistaken for a hit Arm B earned. Each execution adds a
+# fresh nonce, so the same reasoning holds across runs too.
+python3 - "$WORK" <<'PY'
+import sys, uuid
+work = sys.argv[1]
+para_a = ("Meridian routes Anthropic-compatible traffic from local coding clients to a "
+          "subscription-backed Claude backend. Preserving session identity lets a resumed "
+          "conversation reuse the upstream prompt cache instead of paying to re-read the "
+          "same prefix on every turn. This paragraph is deliberately long and unchanging "
+          "so that it forms a stable cacheable prefix for measurement.")
+para_b = ("A control arm needs a prefix of its own, otherwise a warm cache left behind by "
+          "the first arm would look like a hit the control never earned. So this text "
+          "shares no sentences with its counterpart and no n-gram long enough to matter. "
+          "It is repeated to the same length on purpose, so the only differences between "
+          "the arms are the reminder line and this wording.")
+nonce_a, nonce_b = uuid.uuid4().hex, uuid.uuid4().hex
+open(f"{work}/prefixA.txt", "w").write(f"[cache-run nonce {nonce_a}] " + " ".join([para_a] * 120))
+open(f"{work}/prefixB.txt", "w").write(f"[cache-run nonce {nonce_b}] " + " ".join([para_b] * 120))
+PY
+
+# One OpenAI-shaped chat completion per call. No session header is ever sent;
+# the only identity on the wire is the Conversation ID line in the opening user
+# message, when the arm has it.
+cat > "$WORK/probe.py" <<'PY'
+#!/usr/bin/env python3
+import argparse, json, sys, urllib.request, urllib.error
+
+AGENT_ID = "agent-659724ce-6392-43c6-af75-d189559cbdae"
+
+def reminder(conv_id):
+    lines = [
+        "<system-reminder> This is an automated message providing information about you.",
+        f"- **Agent ID (also stored in `AGENT_ID` env var)**: {AGENT_ID}",
+    ]
+    if conv_id is not None:
+        lines.append(f"- **Conversation ID (also stored in `CONVERSATION_ID` env var)**: {conv_id}")
+    lines.append("- **Agent name**: Axiom (the user can change this with /rename)")
+    lines.append("</system-reminder>")
+    return "\n".join(lines)
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--arm", required=True)
+    ap.add_argument("--turn", required=True, type=int)
+    ap.add_argument("--conv-id", default=None)
+    ap.add_argument("--prefix-file", required=True)
+    ap.add_argument("--reply-in", default=None)
+    ap.add_argument("--reply-out", default=None)
+    ap.add_argument("--base", default="http://127.0.0.1:3457")
+    args = ap.parse_args()
+
+    prefix = open(args.prefix_file).read()
+    rem = reminder(args.conv_id)
+
+    system = {"role": "system", "content": "You are a terse assistant. " + prefix}
+    user1 = {"role": "user", "content": rem + "\n\n" + "Reply with exactly the word ALPHA."}
+
+    if args.turn == 1:
+        messages = [system, user1]
+    else:
+        # The real client emits the reminder once, in the opening user message;
+        # turn 2 replays that history and appends a message with no reminder.
+        reply1 = open(args.reply_in).read()
+        user2 = {"role": "user", "content": "Now reply with exactly the word BETA."}
+        messages = [system, user1, {"role": "assistant", "content": reply1}, user2]
+
+    body = {"model": "claude-sonnet-5", "max_tokens": 64, "stream": False, "messages": messages}
+    req = urllib.request.Request(
+        args.base + "/v1/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    print(f"--- Arm {args.arm} turn {args.turn} ---")
+    print(f"  Conversation ID on wire: {args.conv_id if args.conv_id else '(absent)'}")
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            status, text = resp.status, resp.read().decode()
+    except urllib.error.HTTPError as e:
+        status, text = e.code, e.read().decode()
+
+    print(f"  HTTP status            : {status}")
+    if status != 200:
+        print(text); sys.exit(4)
+
+    parsed = json.loads(text)
+    usage = parsed.get("usage") or {}
+    details = usage.get("prompt_tokens_details") or {}
+    print(f"  usage.prompt_tokens                       = {usage.get('prompt_tokens')}")
+    print(f"  usage.prompt_tokens_details.cached_tokens = {details.get('cached_tokens')}")
+    print(f"  usage.cache_write_tokens                  = {usage.get('cache_write_tokens', details.get('cache_write_tokens'))}")
+    print(f"  usage (raw)                               : {json.dumps(usage, sort_keys=True)}")
+
+    content = parsed["choices"][0]["message"].get("content")
+    print(f"  assistant content                         : {json.dumps(content)}")
+    if args.reply_out:
+        open(args.reply_out, "w").write(content or "")
+
+if __name__ == "__main__":
+    main()
+PY
+
+run_turn() {
+  # run_turn <arm> <turn> <conv-id-or-empty> <prefix-file> <reply-in> <reply-out>
+  local arm="$1" turn="$2" conv="$3" prefix="$4" replyin="$5" replyout="$6"
+  local cid_arg=() in_arg=()
+  if [ -n "$conv" ]; then cid_arg=(--conv-id "$conv"); fi
+  if [ -n "$replyin" ]; then in_arg=(--reply-in "$replyin"); fi
+
+  before=$(wc -l < "$PROXYLOG")
+  python3 "$WORK/probe.py" \
+    --arm "$arm" --turn "$turn" "${cid_arg[@]}" \
+    --prefix-file "$prefix" "${in_arg[@]}" \
+    --reply-out "$replyout" --base "$BASE"
+
+  echo "  --- raw proxy log lines emitted during this request ---"
+  tail -n +"$((before + 1))" "$PROXYLOG" | sed 's/^/  | /'
+  echo
+}
+
+# ARM A - Letta shape, fresh conversation id, no session header.
+CONV_A="conv-$(python3 -c 'import uuid;print(uuid.uuid4())' | tr 'A-Z' 'a-z')"
+run_turn A 1 "$CONV_A" "$WORK/prefixA.txt" "" "$WORK/reply-A1.txt"
+sleep 3   # let the turn-1 cache write commit
+run_turn A 2 "$CONV_A" "$WORK/prefixA.txt" "$WORK/reply-A1.txt" "$WORK/reply-A2.txt"
+
+# ARM B - control: identical shape, no Conversation ID line, its own prefix.
+run_turn B 1 "" "$WORK/prefixB.txt" "" "$WORK/reply-B1.txt"
+sleep 3
+run_turn B 2 "" "$WORK/prefixB.txt" "$WORK/reply-B1.txt" "$WORK/reply-B2.txt"
+```
+
+`run_turn` prints each request's usage and then dumps only the proxy log lines
+that request produced, so the two arms cannot be confused in the evidence.
+
+**Pass criteria** (in the response and in the proxy log):
+
+- Both arms answer `ALPHA` then `BETA` with HTTP 200.
+- Arm A turn 1: `cached_tokens = 0` and a `cache_write_tokens` about the size of
+  the prefix.
+- Arm A turn 2: `cached_tokens` is approximately turn 1's `prompt_tokens`, with
+  a small `cache_write_tokens` for the appended turn. The proxy log line reads
+  `adapter=letta` and `lineage=continuation`, and the following usage line reads
+  `cache=99%` or similar.
+- Arm B, the same request shape with no `Conversation ID` line and its own
+  prefix: both turns log
+  `adapter=openai` and `lineage=new`, and turn 2 still shows
+  `cached_tokens = 0` with a full `cache_write_tokens` rewrite. The control is
+  what attributes the hit to the reminder rather than to the prefix wording.
+
+**Verified:** 2026-09-22 against the code at `579185b`, before the rebase onto 1.75.0, model `claude-sonnet-5`,
+`stream:false`, `max_tokens:64`, no session header on either arm. The probe puts
+the reminder in the opening user message alone, so the id Meridian resolves on
+turn 2 comes from the replayed history, not from the newest message. Measured:
+
+| Arm | Turn | prompt_tokens | cached_tokens | cache_write_tokens | Proxy log |
+|---|---|---|---|---|---|
+| A — reminder present | 1 | 15302 | 0 | 15300 | `adapter=letta lineage=new msgCount=1` |
+| A | 2 | 15365 | 15300 | 63 | `adapter=letta lineage=continuation session=940542e5 msgCount=3`, `cache=100%` |
+| B — control, no `Conversation ID` | 1 | 13220 | 0 | 13218 | `adapter=openai lineage=new msgCount=1` |
+| B | 2 | 13286 | 0 | 13284 | `adapter=openai lineage=new msgCount=1` |
+
+The two arms' absolute numbers differ because the prefixes differ; the
+comparison is within each arm. Arm A turn 2 read 15,300 of its 15,365 prompt
+tokens from cache and wrote 63; the control, whose bodies carry no
+`Conversation ID`, fell through to `openai`, started a new session, and rewrote
+its whole prefix both turns, reading nothing. The hit is therefore attributable
+to the reminder in the replayed opening message, not to the prefix wording and
+not to the newest message.
+
 ## E58: Headerless OpenAI tool-loop identity
 
 **What it proves:** a generic OpenAI client running its own tool loop — sending
@@ -5378,6 +5652,109 @@ Run `bun scripts/e2e-rejected-tool-handoff.mjs --case=rejected` and then `--case
 ## E64: Client compaction summary replay
 
 Run `bun scripts/e2e-compaction-summary.mjs` and again with `--legacy`. The local API fixture sends an OpenCode-shaped nine-message request to the real SDK/CLI, then a shorter summarized head with a preserved tail and a new turn. The default run requires the model-bound input to include the new summary and exclude the removed opening message. `--legacy` sets `MERIDIAN_COMPACTION_SURVIVAL=1` and requires the former resume behavior. `E2E_MERIDIAN_ROOT` selects another checkout: the default case fails on unchanged #1124 main because its model request lacks the summary, while both cases pass with #1089's fix.
+
+## E65: Historical media attribution on fresh replay
+
+Run `bun scripts/e2e-replay-media-attribution.mjs` and again with `--current-image` using Claude Max authentication. The first arm supplies one historical blue image and a text-only current Pi turn; the control adds a genuine red image to the current turn. Both use the real Agent SDK and model, inspect supported SDK session messages, and assert the historical image precedes `</conversation_history>`, the current image follows it only in the control, and Meridian's final provenance note reports the exact media counts. The model's answer is recorded for review without making its wording a brittle assertion.
+
+For the affected client, install Oh My Pi in a disposable directory and run `E2E_OMP_PACKAGE=/absolute/path/to/node_modules/@oh-my-pi/pi-coding-agent bun scripts/e2e-omp-replay-media-attribution.mjs`. This uses Oh My Pi's actual session API to put an agent-owned image in prior context, sends a text-only current turn through an isolated Meridian proxy, and checks the actual client wire shape, `adapter=pi`, and `lineage=new`. `E2E_MERIDIAN_ROOT` selects another checkout or an independently installed Meridian package root; the latter loads `dist/server.js`. The fixture constructs the affected fresh-replay request directly; it does not edit a user's existing Oh My Pi session.
+
+On 2026-09-25, macOS arm64, Oh My Pi 13.18.0, Agent SDK 0.2.141 and Haiku 4.5, the same client fixture on unchanged 1.76.6 answered that the user attached an image; after the provenance change it answered that the blue image was historical. A separate Sonnet 5 HTTP probe also answered incorrectly before and distinguished both no-new-image and real-new-red-image cases afterward. These observed model answers support the fix but are not deterministic assertions; the structural checks are the regression gate.
+
+## E66: Interrupted turn after a settled checkpoint
+
+Run `bun scripts/e2e-checkpoint-interrupted-turn.mjs` with Claude Max authentication (`PROBE_MODEL` overrides the default `claude-opus-5-5`). The gate starts an isolated in-process proxy with its own workdir and session store. An OpenCode-keyed first turn must produce one client `read` call. The follow-up then carries that call's complete result, a partial assistant text turn, and a new user turn — the history OpenCode keeps after a stream dies with `upstream_idle`. Require status 200 and `isResume=true` in `/telemetry/requests`. The negative control repeats the shape with a `tool_result` for an unknown call id and requires `isResume=false`, so only a settled checkpoint resumes.
+
+On 2026-09-26 (Linux x64, Bun 1.3.14, Agent SDK 0.2.141, Claude Code 2.1.280, Opus 5.5), unchanged `cd1ada9` failed the resume assertion (`lineage=continuation` but `isResume=false`: the whole history was replayed), and the fix passed all checks. In the reported OpenCode session the same fresh replay of 1345 messages exceeded the context window, and every retry returned the same 400.
+
+## E67: OpenCode V2 interrupted tool turn
+
+Build Meridian, then run `E2E_OPENCODE_BIN=/path/to/opencode-2.0.16 E2E_PLUGIN_PATH=/path/to/independently-installed-opencode-scrub/dist/index.js bun scripts/e2e-opencode-checkpoint-fault.mjs` with Claude Max authentication. The gate runs the actual OpenCode 2.0.16 client with the Meridian V2 plugin installed through `meridian setup --v2` and an independently installed Meridian server scrub plugin. A real Opus 5.5 call makes one client tool call. The relay injects a single partial text SSE response followed by an error **without forwarding that response to Meridian**; the real client then retries with the saved `[tool_result, assistant text, user]` history. Require `lineage=continuation`, `isResume=true` for that exact retry, and an answered same-session follow-up. Raw client output stays in a private temporary directory; `summary.json` contains only the observed roles, block types, and gate outcomes. The injected fault establishes the client history shape; it is not a claim that the real SDK itself emitted the error.
+
+On 2026-09-26, macOS arm64, OpenCode 2.0.16, Meridian V2 plugin, OpenCode scrub 0.2.3, Agent SDK 0.2.141, Claude Code 2.1.280 and Opus 5.5 produced the exact retry shape on both unchanged `cd1ada9` and the reviewed integration. Unchanged main verified `lineage=continuation` but used `isResume=false`; the corrected integration used `isResume=true` and completed the next same-session client turn. A Linux x64 image with Node 24.21.0 and Bun 1.3.14 passed the same corrected client gate. The [sanitized result](docs/maintenance/evidence/1165-opencode-interrupted-checkpoint.json) is escrowed here.
+
+## E68: Client tool-change blocks in structured replay
+
+Run `bun scripts/e2e-replay-tool-change-blocks.mjs` and again with `--stream`
+using Claude Max authentication (`E2E_MODEL` overrides the default `haiku`).
+
+omp sends a mid-conversation `system` message whose content is
+`tool_addition`/`tool_removal` blocks when it activates a deferred tool. The API
+accepts those block types only inside a `mid_conv_system` message, while
+structured replay recasts every non-assistant message as a user turn, so a fresh
+rebuild after compaction, undo or `diverged=not-found` failed outright. The text
+replay path already drops unknown blocks, so only the structured path is
+affected; the gate therefore includes real media to force that path and uses an
+unused session key to force a fresh replay.
+
+Require status 200 and exactly `PONG`, both `name` and nested `tool.name`
+spellings rendered as `[Client added tool: grep]` / `[Client removed tool: bash]`
+in supported SDK history, no raw `tool_addition`/`tool_removal` block reaching the
+SDK, and `lineage=new`.
+
+On 2026-09-28 (macOS arm64, Bun 1.3.14, Agent SDK 0.2.141, Haiku), unchanged
+`8d4c88ce` returned `500` carrying `API Error: 400 messages.0.content.8: Input tag
+'tool_addition' found using 'type' does not match any of the expected tags`, and
+the fix answered `PONG` in both modes.
+## E69: OpenCode V2 user-invoked skill
+
+Build Meridian, then run `E2E_OPENCODE_BIN=/path/to/opencode E2E_PLUGIN_PATH=/path/to/independently-installed-opencode-scrub/dist/index.js bun scripts/e2e-opencode-skill-content.mjs` with Claude Max authentication. The gate starts an actual OpenCode V2 server with isolated config, data and home, and a project-level fixture skill whose body holds a random receipt. It admits the same prompt the V2 composer sends for `/skill` with nothing typed (`text: ""` plus a skill attachment), so the only model-visible content is the `<skill_content>` block. An observer on the real SDK query records only the prompt length and whether it holds the receipt and wrapper. Require both, and a reply containing the receipt. `--baseline` with `E2E_MERIDIAN_ROOT` pointing at an unchanged build asserts the original failure instead: an empty SDK prompt.
+
+On 2026-09-27, Windows 10 x64, Bun 1.4.2, OpenCode 2.0.18, OpenCode scrub 0.2.3, Agent SDK 0.2.141, Claude Code 2.1.141 and Opus 5.5: unchanged `8d4c88c` sent a 0-character prompt, and the model answered that the message came through with no request. The fix sent 477 characters including the wrapper, and the reply was exactly the receipt. The [sanitized result](docs/maintenance/evidence/opencode-v2-skill-content.json) is escrowed here.
+
+### Portable HTTP arm
+
+```bash
+bun scripts/e2e-skill-content-http.mjs            # bare /skill, nothing typed
+bun scripts/e2e-skill-content-http.mjs --stream
+bun scripts/e2e-skill-content-http.mjs --typed    # skill body plus a typed request
+bun scripts/e2e-skill-content-http.mjs --typed --stream
+```
+
+The client arm above needs an OpenCode V2 install. Sanitization is proxy-side, so
+this arm sends V2's exact composer shape over HTTP against the real SDK and needs
+no client binary, which keeps the case runnable where only V1 is installed.
+
+The deterministic assertion is structural: supported SDK history must contain the
+random receipt, the `<skill_content name=...>` wrapper and the nested
+`<skill_files>` list. Whether the model then acts on a bare invocation is its own
+choice and is recorded, never asserted. Haiku has been observed calling an
+unsolicited instruction block a prompt-injection attempt and declining it, while
+quoting the receipt in the refusal, so the result reports `complied` (the reply is
+the receipt alone) separately from `quotedReceipt`. Compare against extracted text, not `JSON.stringify` output,
+which escapes the quotes inside `name="..."`.
+
+On 2026-09-28 (macOS arm64, Bun 1.3.14, Agent SDK 0.2.141, Haiku), reverting only
+`sanitize.ts` on the same tree failed with "The skill body did not reach the SDK
+prompt" in both modes, and all four arms passed with the fix. Observed bare-arm
+replies were the receipt alone; one earlier run on a conditional fixture had the
+model acknowledge the skill and decline to run it, which is why the model's
+wording is not the gate.
+## E70: Fresh replay bounded to the context window
+
+```bash
+bun scripts/e2e-replay-budget.mjs
+bun scripts/e2e-replay-budget.mjs --stream
+```
+
+The production failure needs a six-figure-token conversation, which no gate can
+afford, so `MERIDIAN_REPLAY_BUDGET_TOKENS` (test-only, opt-in, ignored when
+unusable) drives the same code path from a handful of turns. `E2E_REPLAY_BUDGET`
+sets it, default 900. What this proves is the behaviour, not the constant.
+
+Require status 200, the oldest turn absent from supported SDK history, the live
+tail present, an `[Meridian: N earlier messages (~K tokens) were omitted …]`
+marker with a non-zero count, and an answer drawn from the surviving tail — so the
+turn is usable rather than merely admitted. Disabling the override so no trim
+occurs must fail the oldest-turn assertion; that control confirms the gate is
+sensitive to the trim rather than passing by construction.
+
+On 2026-09-28 (macOS arm64, Bun 1.3.14, Agent SDK 0.2.141, Haiku), both modes
+trimmed 12 messages (~3114 estimated tokens) and answered from the kept tail.
+
+**Not covered.** The original 400 (`context_overflow` on an oversized replay) was
+not reproduced live, and neither was the reactive retry, which needs a real
+overflow from the model. Those remain covered only by the mocked envelope tests.
 
 ## Concurrent transcript publication
 
@@ -6354,6 +6731,23 @@ This validates macOS text and client tool use, not Windows/Linux runtime behavio
 Model ID, capability and pricing source:
 https://platform.claude.com/docs/en/models/opus-5-5/overview .
 
+## Sonnet 5.5 model availability
+
+Run `npm run build && node scripts/e2e-sonnet-55.mjs` with Claude Max
+authentication and Pi installed. This opt-in gate uses isolated proxy and client
+workdirs, config and session storage, and consumes subscription quota. It checks
+model discovery, explicit `claude-sonnet-5-5` and bare `sonnet` nonstreaming requests,
+then actual Pi streaming read/write tools against a random receipt with an exact
+file-content assertion.
+
+Verified 2026-09-28 on macOS arm64, Node 22.22.3, Agent SDK 0.2.141,
+bundled Claude Code 2.1.284 and Pi 0.72.1. All checks passed.
+Artifacts: passed `meridian-sonnet55-W87dtT` under the host temporary directory,
+containing report, HTTP response artifacts, and `pi.log`.
+This validates macOS text and client tool use, not Windows/Linux runtime behavior.
+Model ID, capability and pricing source:
+https://platform.claude.com/docs/en/models/sonnet-5-5/overview .
+
 ## Scrub plugin headless acceptance
 
 These opt-in harnesses preserve the actual client paths used for the 2026-09-24
@@ -6391,3 +6785,33 @@ result, and sanitized artifact link in the PR or handoff for each run.
 The Hermes gate uses Hermes 0.21.4 and Opus 5.5. It checks a real Hermes
 request's self-management tool identifiers before the plugin, neutral names
 afterward, and preservation of the finishing-job guidance.
+
+### OpenCode lifecycle admission with both plugins
+
+The lifecycle contention gate uses the built Meridian **OpenCode client plugin**
+to send `x-opencode-session` and the separately installed **OpenCode scrub
+server plugin** to remove the billing-trigger system fingerprint. Run it on the
+affected Linux platform with an authenticated Claude Agent SDK, OpenCode
+1.18.32, and Opus 5.5. The harness isolates client and proxy state, captures
+plugin hook counts and sanitized prompt probes, and requires each client to
+complete an initial turn and a continuation in the same OpenCode session.
+It leaves raw client output in a private temporary artifact directory.
+
+```sh
+npm run build
+E2E_PLUGIN_PATH=/absolute/path/to/node_modules/@rynfar/meridian-plugin-opencode-scrub/dist/index.js \
+  E2E_EXPECT_VERSION=0.2.3 E2E_MODEL=claude-opus-5-5 E2E_CONCURRENCY=6 \
+  bun scripts/e2e-opencode-lifecycle-admission.mjs
+E2E_EXPECT_BILLING_ERROR=1 E2E_MODEL=claude-opus-5-5 \
+  bun scripts/e2e-opencode-lifecycle-admission.mjs
+```
+
+The second command is a negative control: without the server scrub plugin,
+the same real client plugin leaves the OpenCode fingerprint in the system
+prompt and must receive `billing_error`. Use the same model and authenticated
+profile for both commands. The concurrent live gate complements the physical
+disk 1,400-resource / 800-pin / 24-registration test in
+`src/__tests__/session-gc-contention.test.ts`; it does not replace that test.
+The [sanitized #1152 Linux evidence](docs/maintenance/evidence/1152-opencode-admission.json)
+records the matching baseline, six-client pass, disk contention and four E41
+results without publishing credentials or raw transcripts.

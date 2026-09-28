@@ -1,5 +1,384 @@
 # Upstream review handoff
 
+## Contributor fix batch #1174/#1178/#1172/#1173/#1169 (2026-09-28)
+
+Live queue at start: 9 contributor PRs plus release PR #1167 and own #1050, from
+`origin/main` `8d4c88ce`. Bug fixes were taken before the four feature proposals
+(#1176, #1175, #1171, #792), which remain untriaged and are not approved by this
+entry. Worktrees `/private/tmp/mer-117{2,3,4,8}` and `/private/tmp/mer-1169`.
+
+**#1174 session retirement backlog — accepted with maintainer corrections.**
+Delivered as [#1179](https://github.com/rynfar/meridian/pull/1179), merged
+`074c44b8f116fa546e6c18df28292492c5a85b2d`, tree
+`826f06ecc9e37d1fd936b51b60558c013daae3aa` identical to the validated head
+`e4f97c93`. Source `389f3c543ab3b7fec6c9bbf86e3fe49fc807ccbd` by Nowaker
+(`spam@nowaker.net`, 2026-09-27) retained as `20058f649` with Author/AuthorDate;
+`Co-authored-by` present on the squash. Source head unchanged at closure.
+Reproduced first: contributor tests alone on unmodified main returned the exact
+`overloaded_error` "retirement backlog is full" 503 in both modes (baseline
+49 pass/0 fail on those files beforehand), 53 pass/0 fail after. Verified that
+`retired → live` cannot resurrect a transcript for resume: the gc sidecar has no
+state readers outside `sessionLifecycle.ts`, resume authority is `sessionStore`,
+and reconcile's pin rescue already performs that transition.
+Known limitations recorded in the PR: sustained saturation defers the newest
+retirements so the effective ceiling becomes the larger `maxOwned` one, and
+demotion clears `lastError`/`nextAttemptAt`, resetting a persistently failing
+deletion's backoff from up to 1 h to the 11 min grace (caused by reconcile's
+pre-existing re-stamp, newly reachable).
+
+**Broken #923 gate repaired in the same PR.** `scripts/e2e-retirement-admission.mjs`
+had failed on main since `6ecfbaa7` (2026-09-23) made a profile switch retain
+session mappings: it asserted the switch emptied the store, so it aborted before
+any retirement assertion and the documented gate could not pass. On current main a
+switch leaves both transcripts `live` with `pending: 0`. It now unpins explicitly,
+as cache eviction and a proxy restart do, and passes both modes. **Worth auditing
+whether other documented gates drifted the same way.**
+New gate `scripts/e2e-retirement-concurrent-admission.mjs` (E2E.md "Concurrent
+retirement admission"): the sequential gate cannot reach this refusal. With the fix
+reverted on the same tree, 2 of 3 concurrent real turns took that 503; with it,
+both modes passed with per-turn transcript isolation and no overbooking.
+
+**#1178 client tool-change blocks — accepted as proposed.** Delivered as
+[#1180](https://github.com/rynfar/meridian/pull/1180), merged
+`e8e74434a395e32314a5664cc867e39892f10127`, tree `5f8266f0` identical to validated
+head `33ad5229`. Source `175e6bb969b0571c5b11bb739534171f28318faf` was authored by
+the placeholder `Preview User <preview@example.invalid>`, a preview-tool default;
+recorded under the verified identity `Mate Remias <materemias@gmail.com>` (owner
+decision) with AuthorDate preserved, `Co-authored-by` present. Live RED on
+unmodified main returned `500` carrying `API Error: 400 messages.0.content.8: Input
+tag 'tool_addition' ...`; GREEN answered `PONG` in both modes with `lineage=new`.
+New gate E68 `scripts/e2e-replay-tool-change-blocks.mjs`.
+Verified the fix is correctly scoped: on resume only `role === "user"` messages pass
+through `normalizeStructuredUserContent`, so tool-change blocks never reach the SDK
+there. **Open limitation:** the structured path still forwards every unknown block
+type while the text path drops them, so another non-standard block in a client
+`system` message fails identically. A block-type allowlist would close the class
+but could swallow legitimately new types; left as a product decision.
+
+**#1172 windowsHide — accepted with a maintainer correction.** Delivered as
+[#1181](https://github.com/rynfar/meridian/pull/1181), merged
+`2a502b7a7ba9c49384343f5a1391192f17603404`, tree `eea504a2` identical to validated
+head `1542b5b4`. Source `8afda574` by `arch <arch@not.me>` preserved verbatim — a
+self-chosen pseudonym, unlike #1178's tool default — `Co-authored-by` present,
+source head unchanged at closure. The fix shipped with no test; the maintainer
+commit asserts the probe's `windowsHide` through `models-auth-status.test.ts`'s
+existing `child_process` mock, verified RED (`Expected: true, Received: undefined`)
+against the unfixed probe. **The Windows symptom was not independently reproduced**
+— this review ran on macOS arm64, where it cannot occur. The behavioural evidence
+is the contributor's window watcher (0 windows over 150s with two prompts 71s
+apart, versus one per ~100s before). Owner accepted that evidence explicitly.
+
+**#1173 OpenCode skill_content — accepted as proposed.** Delivery
+[#1182](https://github.com/rynfar/meridian/pull/1182) on
+`codex/opencode-skill-content`, source `0c80a42c281f65fb0f1c599146634eb978df8b5a`
+by `arch <arch@not.me>` preserved. Contributor tests alone on unmodified main gave
+the reported 7 failures; 42 pass/0 fail after. The client gate needs OpenCode V2
+and the scrub plugin and could not run here (host has 1.18.33 V1), so a portable
+HTTP arm sends V2's composer shape against the real SDK: reverting only
+`sanitize.ts` fails with "The skill body did not reach the SDK prompt" in both
+modes, all four arms pass with it. Renumbered to E69 in a maintainer commit because
+E68 went to #1180.
+**Behavioural caveat, repeatedly observed:** Haiku called the `<skill_content>`
+block "a prompt injection attempt" and declined it, including with an explicit
+typed request. The fix provably delivers the body to the model; it does not make
+the model act on it, so a bare `/skill` may still not do what the user expects.
+The gate therefore asserts structure (receipt, wrapper and nested `skill_files` in
+supported SDK history) and only *records* `complied` versus `quotedReceipt` — an
+earlier reply-based assertion passed on a refusal that quoted the receipt.
+
+**#1169 bounded fresh replay — accepted, corrected by us on owner instruction.**
+Delivered as [#1183](https://github.com/rynfar/meridian/pull/1183), merged
+`4e845f29f800283dc21b2c0c24f156961b6fb680`, tree `d1e1b397` identical to the
+validated head `4910ee10`; `Co-authored-by` present and source head `cec690477`
+unchanged at closure. Sources `324a37f290`, `653be40358`, `cec6904775`
+by Aleksey Proshutinskiy (`alexey.prosh@fluence.one`, 2026-09-26) cherry-picked
+with Author/AuthorDate; correction in a separate commit.
+Verified as correct: lineage, message hashing and the SDK UUID map all see full
+history (the trim sits after that work, and `buildToolUseIndex` uses full
+`allMessages`); `replaySource` holds the untrimmed array by reference so re-trims
+do not compound; `freshReplay = !isResume && !resumeSessionId` really excludes
+resumed attempts; a message of only `tool_result` blocks cannot start a droppable
+group.
+**The defect we corrected:** the flat 64k reserve is 6.4% of a 1M window but 32% of
+a 200k one. Stacked on the 0.9 factor and an estimator that overestimates Latin
+text, the 200k budget was 58% of the window, dropping history from about 101k real
+English tokens (~70k Cyrillic). Only the 1M case was analysed upstream, while
+extended context is opt-in. Capping the reserve at a tenth of the window leaves the
+1M budget byte-for-byte at 836_000 and lifts 200k models to 160_000, the same ~80%
+share; the 1M figures reproduce the contributor's own stated 730k/500k thresholds,
+which is what validates the 200k measurement.
+Two fixtures changed deliberately: `replayBudgetFor("sonnet")` 116_000 → 160_000,
+and the "indivisible live tail" case, whose literal `"я".repeat(200_000)` (133k
+estimated) stopped overflowing once the budget rose and so quietly tested nothing —
+now derived from the budget with an explicit overflow assertion.
+Added `MERIDIAN_REPLAY_BUDGET_TOKENS` (test-only, opt-in, ignored when unusable)
+because the trim cannot otherwise be proven against a real model at any affordable
+conversation size, plus gate E70 `scripts/e2e-replay-budget.mjs`: both modes trimmed
+12 messages (~3114 estimated tokens), kept the live tail, carried the omission
+marker and answered from the surviving tail; the control with the override disabled
+fails the oldest-turn assertion, so the gate is not passing by construction.
+**Not proven:** the original `context_overflow` 400 and the reactive retry were not
+reproduced live — both need a genuine overflow from the model and remain covered
+only by the mocked envelope tests. Recorded in E2E.md.
+
+**`npm ci` is broken on main — still open.** `package-lock.json` pins
+`@anthropic-ai/claude-code-win32-x64@2.1.257` while `claude-code` resolves to
+`^2.1.280`/`2.1.283`, so `npm ci` fails outright. CI runs only `bun install`, so no
+gate catches it; any clean install or contributor using `npm ci` fails. Not bundled
+into a contributor PR.
+
+**#1173 delivery merged.** [#1182](https://github.com/rynfar/meridian/pull/1182) is
+`26c41f9f09806db9c95fa2805b642983b3c059f1`; `Co-authored-by: arch` present, source
+head `0c80a42c2` unchanged at closure. Its branch predated #1181, so the squash
+layered the validated diff onto a newer base and the merged tree legitimately
+differs from the validated head by exactly #1181's three files. That combination had
+been tested by neither the branch nor CI, so merged main was verified separately:
+4903 pass / 0 fail / 4 skip.
+
+**`npm ci` fix delivered.** [#1184](https://github.com/rynfar/meridian/pull/1184)
+regenerates the lockfile. `package.json` was bumped to `^2.1.280` without
+regenerating it, so the lockfile kept the `^2.1.257` range and pinned every platform
+package at `2.1.257`. Regeneration aligns it with the range `bun install` already
+resolved rather than introducing a version. `npm ci` fails on the parent and exits 0
+after; 4903 pass / 0 fail.
+
+**E2E gate audit (bounded).** All 78 scripts referenced by E2E.md exist; the 8
+unreferenced scripts are `-host.mjs` helpers and probes invoked by parent gates. The
+#923 drift class is isolated: no other gate assumes a profile switch empties the
+mapping store. A "gates with no assert" heuristic flagged ~30 scripts and was
+disproved — they use a failure-counter plus `process.exit(1)` idiom and do verify.
+**This audit did not execute the gates**, which needs real models at prohibitive
+cost, so it rules out dangling references and that one drift class, not gate rot in
+general.
+
+**Feature PRs triaged, none incorporated, none approved by this entry.**
+[#1175](https://github.com/rynfar/meridian/pull/1175) version display and opt-in
+update check: recommend accept, but it deliberately changes `/health` — `build.latest`
+and `build.updateAvailable` become absent until `checkForUpdates` is enabled, and
+`/health` is on the stable-API list, so drift monitors need the setting.
+[#1176](https://github.com/rynfar/meridian/pull/1176) OpenAI list pricing: accept
+with reservations — a daily PR-opening workflow needing an Actions setting, a
+hand-maintained second-vendor price table as a standing obligation, and the
+actually-served-by-OpenAI path unit-tested only (no ChatGPT backend upstream).
+[#1171](https://github.com/rynfar/meridian/pull/1171) build provenance: defer pending
+a scope decision — 27 files, a new authenticated `/build-status`, a per-worktree
+counter ledger and an observation worker, with no full `npm test` claimed, on top of
+already-shipped #866 provenance.
+[#792](https://github.com/rynfar/meridian/pull/792) web profile login: defer, needs a
+dedicated security review — it makes `/callback` deliberately public and holds
+server-side PKCE verifiers; largest of the four and will need rebasing.
+
+Next actions: triage the remaining feature PRs on their own terms, and consider
+whether the two drifted-gate findings warrant executing high-value gates
+periodically rather than only on change. No release is authorized by this entry, and
+no contributor comment has been posted on any of these PRs.
+
+## #1165 interrupted OpenCode checkpoint review (2026-09-26)
+
+Disposition: accepted [source #1165](https://github.com/rynfar/meridian/pull/1165)
+with a maintainer safety correction in [delivery #1166](https://github.com/rynfar/meridian/pull/1166).
+Source head
+`758d80b86ea744f0eeadb6a28e8bf1f546cd3ade` by Nikita Bige
+(`wargloom@gmail.com`, authored 2026-09-26) was unchanged at closure; its
+unsigned commit blocked direct merge. The signed cherry-pick `965bef6c` from
+base `cd1ada92057926ee0bceeddaeca42318d0f06b07` retains Author and
+AuthorDate. Maintainer correction and evidence are separate commit `cf48561a`
+on `codex/review-resume-1165-20260926` in isolated worktree
+`/private/tmp/meridian-review-resume-1165-20260926`.
+
+The source helper verified the first complete tool-result batch but ignored
+later messages once it found an assistant turn. Direct tests proved it would
+resume after later unknown or duplicate tool results, tool calls, or system
+reminders. The correction accepts the observed text-only partial assistant
+turn followed by ordinary user turns, and keeps those mismatches on replay.
+Focused pure and HTTP tests pass. Full local `npm test` (isolated test HOME),
+standalone typecheck, build, and diff validation pass. E66 baseline on unchanged
+main used `isResume=false`; the correction resumed and answered with the tool
+result while its unknown-result control still replayed. Real Opus 5.5 E41
+chain/parallel, stream/nonstream and E56 namespaced resume gates pass.
+
+The [E67 actual-client gate](../../scripts/e2e-opencode-checkpoint-fault.mjs)
+uses OpenCode 2.0.16 with the installed Meridian V2 client plugin, independent
+OpenCode scrub 0.2.3, SDK 0.2.141, Claude Code 2.1.280 and Opus 5.5. It
+injects one partial SSE response after a real client tool call. On unchanged
+main, the real client sent `[tool_result, assistant text, user]` in its retry
+but Meridian took `isResume=false`; the corrected branch took `isResume=true`
+on macOS arm64 and Linux x64, and the next same-session client turn answered.
+The [sanitized evidence](evidence/1165-opencode-interrupted-checkpoint.json)
+records versions, checks, and limits. The original 1,345-message session was
+unavailable; the injected error does not establish that the SDK itself emitted
+the reporter's `upstream_idle`. Raw client logs remain in private temporary
+artifacts.
+
+Delivery final head `561d0939` passed required
+[CI/test](https://github.com/rynfar/meridian/actions/runs/36253279248/job/108435205698),
+Windows smoke, Docker smoke/build and both desktop builds. Squash merge
+`7e157aa24421c91dbc47fa520058f6d268ae121e` has the same tree as the
+validated head and credits Nikita as co-author. Source #1165 was rechecked at
+the reviewed SHA and closed as incorporated; no issue was closed based on this
+gate. The owned remote review branch was deleted; the isolated worktree remains
+under `/private/tmp`.
+
+## Issue-comment follow-up (2026-09-26)
+
+This checkpoint follows the merged [Meridian 1.77.1 release](https://github.com/rynfar/meridian/releases/tag/meridian-v1.77.1).
+Refresh GitHub and the affected account/client state before acting on it. The
+audit covered open Meridian issues with comments, recent closed issues with
+post-closure comments, and all five owner-controlled scrub repositories.
+
+- [#1094](https://github.com/rynfar/meridian/issues/1094): setup and V2 plugin
+  compatibility for **exact** OpenCode 2.0.16 shipped in #1148. Its separate
+  content-specific `billing_error` remains unverified: the reporter's failing
+  10,357-character system block is unavailable to maintainers, and a different
+  large passing block does not prove a fix. The [follow-up](https://github.com/rynfar/meridian/issues/1094#issuecomment-5844310560)
+  asks for a locally minimized, sanitized fragment that still fails, plus the
+  independent scrub plugin status. Keep the issue open until that affected
+  request can be reproduced and retested.
+- [#1068](https://github.com/rynfar/meridian/issues/1068): verified the Pi
+  comment's existing-text-block `<system-reminder>` behavior against lineage
+  hashing and the SDK retention path. [#1163](https://github.com/rynfar/meridian/pull/1163)
+  documents exact tag/whitespace limits and append-only snapshots; final-head
+  CI passed and its merge tree matched the reviewed head. The
+  [reply](https://github.com/rynfar/meridian/issues/1068#issuecomment-5844359601)
+  keeps the explicit request-scoped context contract open: stable hashing does
+  not remove text from a resumed SDK session.
+- [#933](https://github.com/rynfar/meridian/issues/933): one new Windows CWD
+  smoke failure on `main` was a measured 5,313 ms expiry of Bun's 5-second
+  default after the mocked HTTP response completed. [#1162](https://github.com/rynfar/meridian/pull/1162)
+  applies the existing 30-second suite bound only to those three Windows CWD
+  files, retaining assertions. The focused 28 tests, full local gates, and
+  final-head Windows, `test`, desktop, and Docker checks passed before merge.
+  The [issue update](https://github.com/rynfar/meridian/issues/933#issuecomment-5844318842)
+  separates this timeout from the unexplained fast assertion failures in
+  [#917](https://github.com/rynfar/meridian/issues/917); both issues remain open.
+- [#769](https://github.com/rynfar/meridian/issues/769): the September OpenClaw
+  production commenter reported a moving, undisclosed prompt trigger. The
+  [openclaw-scrub #3](https://github.com/rynfar/meridian-plugin-openclaw-scrub/pull/3)
+  README correction passed CI and merged; it scopes current rules and explains
+  same-window off/on/off, auth, and private minimization controls. The
+  [reply](https://github.com/rynfar/meridian/issues/769#issuecomment-5844308652)
+  does not claim a new scrub rule works without the new failing prompt. Issue
+  stays open for affected-flow evidence.
+- [#650](https://github.com/rynfar/meridian/issues/650): receiver and three
+  sender workflows are merged, but `MERIDIAN_DISPATCH_TOKEN` was absent from
+  all three sender repo secret lists on this audit. Only the owner can mint
+  and install the narrowly scoped credential, then trigger a sender and verify
+  the receiver. Do not substitute a broad existing CLI token.
+- The [closed #495 follow-up](https://github.com/rynfar/meridian/issues/495#issuecomment-5844366647)
+  answers the September request for a current tool-bearing Max control. The
+  published 1.77.1/OpenCode 1.18.32/Opus 5.5 path with both required plugins
+  completed a real `bash` tool call on the initial turn and same-session
+  continuation with zero client or billing errors. A fresh usage read on that
+  Max 20x account showed Extra Usage disabled. The
+  [sanitized evidence](evidence/495-max-tool-control-20260926.json) records the
+  measured scope; it does not replay the historic failing OpenClaw body.
+- The [closed OpenCode scrub #1 follow-up](https://github.com/rynfar/meridian-plugin-opencode-scrub/issues/1#issuecomment-5844328374)
+  fulfilled the earlier promise to report a published fix: npm scrub 0.2.3
+  installed as a Meridian server plugin passed the current real client gate.
+  It does not assert the original client/version tuple was retested.
+
+At this checkpoint Meridian has nine open issues: #1094, #1073, #1068, #1011,
+#1009, #933, #917, #769, and #650. #1073, #1011, and #1009 have no comment
+threads yet; they were outside this comment follow-up. The Meridian PR queue
+contains draft #1050 and #792 (author requested no review). All five scrub
+repos have zero open issues. OpenCode scrub #5 is the sole open scrub PR; its
+unchanged July head remains conflicted and its minimal-mode behavior remains
+unverified against newer prompt variants. No further release was cut for this
+documentation and Windows CI-budget work.
+
+## Live queue snapshot (2026-09-25; #1152 updated 2026-09-26)
+
+- [#1113](https://github.com/rynfar/meridian/pull/1113) merged as `aedb9b25`
+  after final-head CI, full local gates, a Sonnet 5 E57 cache/control run, and
+  all four E41 modes. Chris Wilson's ten authored cherry-picks remain in the
+  integration history; the squash commit credits him as co-author. The
+  contributor supplied an actual Letta Code 0.32.18 cloud-client run on the
+  same feature code; it included two unrelated effort-routing commits, and the
+  maintainer could not repeat cloud login locally (401). Source #1105 was
+  rechecked at `5f2a9a9e` and closed unchanged.
+- New issue [#1155](https://github.com/rynfar/meridian/issues/1155) was fixed by
+  [#1156](https://github.com/rynfar/meridian/pull/1156), merged as `16834f25`.
+  Unchanged 1.76.6,
+  actual Oh My Pi 13.18.0, Agent SDK 0.2.141, Haiku 4.5 and a historical
+  agent-owned image produced the false current-attachment answer. The fix's
+  matching headless client run attributed it to history; a Sonnet 5 Pi-protocol
+  control distinguished no new image from a genuine new red image. The PR
+  added E65 and a pure regression test. Release Please
+  [#1157](https://github.com/rynfar/meridian/pull/1157) merged, and npm
+  `@rynfar/meridian` 1.77.0 is published.
+- [#1152](https://github.com/rynfar/meridian/pull/1152) was incorporated by
+  [#1159](https://github.com/rynfar/meridian/pull/1159), merged as `da28f1e8`
+  after the corrected Linux client/model gate and final-head CI. The unchanged
+  source head was closed. #1050 and #792 remain draft.
+  The five scrub repos had no newly opened issues or PRs; OpenCode scrub #5 is
+  still deferred.
+- The older #1151/#1153 checkpoint below predates their successful merge and
+  1.76.6 release. Its pending language is historical.
+
+## #1152 corrected live gate and merge (2026-09-26)
+
+- User identified the missing OpenCode Meridian plugin in the earlier failed
+  live gate. The new headless harness
+  [`scripts/e2e-opencode-lifecycle-admission.mjs`](../../scripts/e2e-opencode-lifecycle-admission.mjs)
+  loads both the built Meridian OpenCode client plugin and independently
+  installed OpenCode scrub 0.2.3. With the scrub plugin absent on Linux, the
+  same OpenCode 1.18.32 / Opus 5.5 path produced one `billing_error`, no text,
+  and retained both reported system fingerprints. With both plugins present,
+  six concurrent Linux client processes each completed an initial turn and
+  same-session continuation: 12/12 text responses, zero client errors;
+  `/plugins/list` recorded 18 scrub invocations and zero hook errors. The
+  fingerprint was present before the scrub hook and absent after it. The
+  Linux run used Bun 1.4.0, Node 24.20.0 and Agent SDK 0.2.141, with a
+  privately passed Claude Max OAuth credential. A macOS arm64 six-client
+  control also passed. Raw client logs are private temporary artifacts;
+  the runnable gate and [sanitized Linux evidence](evidence/1152-opencode-admission.json)
+  are escrowed here and in the delivery PR.
+- Linux physical-disk contention on the integrated code passed 24/24
+  durable registrations with zero timeouts, both with and without GC, using
+  1,400 resources and 800 pins. Adversarial review found that the new test
+  failed on macOS because `/var` resolves to `/private/var`; a separate
+  maintainer correction canonicalizes the fixture path before constructing
+  resource keys. The corrected focused test passed both modes on macOS and
+  Linux. All four live E41 chain/parallel × stream/non-stream modes passed,
+  including exact tool-result pairing and cache continuity. The clean-exit
+  local `npm test` rerun passed 4,885 tests with four skips and zero failures;
+  standalone typecheck, build and diff validation passed. Final-head
+  [CI/test](https://github.com/rynfar/meridian/actions/runs/36222150845/job/108349302263),
+  Windows smoke, both desktop builds, Docker smoke and Docker build/push all
+  passed on `8ca37345`; changelog duplication was skipped by its workflow.
+- Source head `51bcec4f` by Nowaker is unchanged. The four authored
+  cherry-picks onto `ddb23e17` are `e5e4b22` → `3869cc4b`, `2f3e944` →
+  `c5ee3b5d`, `bee4e7d` → `70e4d1e2`, and `51bcec4` → `9874881b`.
+  The test correction, proof harness and E2E documentation were committed
+  separately as `8ca37345`. Delivery [#1159](https://github.com/rynfar/meridian/pull/1159)
+  squash-merged as `da28f1e81fc3a0c9b0e8abe159a9e0153d88534f`; its tree
+  matches the validated head exactly and the squash commit credits Nowaker
+  with a co-author trailer. Source #1152 was rechecked at unchanged head
+  `51bcec4f` and closed as incorporated. The owned remote delivery branch
+  was deleted; the private review worktree remains under `/private/tmp`.
+
+## Earlier contributor PR review checkpoint (2026-09-25)
+
+- [#1152](https://github.com/rynfar/meridian/pull/1152), head `51bcec4f`,
+  separates local lifecycle queue residence from the external lock deadline.
+  Its physical-disk stress and CI pass, but the contributor's affected Linux
+  OpenCode 1.18.32 / Opus 5.5 live batches completed no primary turns:
+  requests ended in HTTP 402 `billing_error` (one batch also reached 500 after
+  fallback). This was the state before the missing OpenCode plugin was
+  identified; the corrected Linux live gate above supersedes this hold.
+- [#1151](https://github.com/rynfar/meridian/pull/1151), source head
+  `79ee7d59` from @builder-main, fixes the Windows OpenCode V2 SDK gate using
+  an actual Node executable. Its commit author is `arch <arch@not.me>`; the
+  fork head is unsigned and GitHub held its workflow runs for approval.
+  Signed cherry-pick `9899e46b` on `codex/windows-sdk-gate-1151` preserves
+  Author and AuthorDate in delivery [#1153](https://github.com/rynfar/meridian/pull/1153).
+  The contributor reports published-1.76.5 failure and fixed Windows 11,
+  OpenCode 2.0.16, Claude Code 2.1.281, Opus 5.5 success. The integration
+  passed 13 focused process tests, full local `npm test`, typecheck, build,
+  and native Windows CI smoke on its first head. The final delivery head,
+  affected-client regression control, remaining CI, merge and source closure
+  must be checked in #1153; this is a dated checkpoint, not their verdict.
+
 ## Cross-repository scrub review (2026-09-24)
 
 Live discovery found five owner-controlled scrub repositories:

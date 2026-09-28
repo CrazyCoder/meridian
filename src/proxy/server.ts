@@ -45,6 +45,7 @@ export type {
 // transforms through the same runner meridian uses internally.
 export { runTransformHook, runObserveHook, buildPipeline, createRequestContext } from "./transform"
 import { claudeLog } from "../logger"
+import { replayBudgetFor, trimReplayHistory } from "./replayBudget"
 import { PASSTHROUGH_DENY_REASON } from "./passthroughDenial"
 import { exec as execCallback } from "child_process"
 import { promisify } from "util"
@@ -53,7 +54,7 @@ import { withClaudeLogContext } from "../logger"
 import { createPassthroughMcpServer, createPassthroughReplayToolNameRenderer, resolveClientToolName, normalizeToolInput, hasRepairableToolInput, computeToolSetKey, toolUseSignature, PASSTHROUGH_MCP_NAME, PASSTHROUGH_MCP_PREFIX, passthroughMcpPrefix, autoDeferDecision, getAutoDeferThreshold } from "./passthroughTools"
 import { describeLocalBootIdentity } from "./session/processIncarnation"
 import { detectServerTools, serverToolErrorMessage } from "./tools"
-import { clientAbortDisposition, coalesceCompleteToolResultContinuation, createEarlyStopTracker, isClientForwardedToolUse, noteAssistantMessage, noteUserContent, settledToolCallAssistantUuid, shouldEarlyStop, trackerCoversStreamedCalls } from "./passthroughEarlyStop"
+import { clientAbortDisposition, coalesceCompleteToolResultContinuation, createEarlyStopTracker, isClientForwardedToolUse, noteAssistantMessage, noteUserContent, settledToolCallAssistantUuid, settlesCheckpointThenContinues, shouldEarlyStop, trackerCoversStreamedCalls } from "./passthroughEarlyStop"
 import { checkEmptyToolInputs, checkUndeliveredToolUses, type EnvelopeViolation } from "./envelopeIntegrity"
 import { classifyTurnOutcome, createRecoveryLifter, hasTruncatableText, shouldAttemptRecovery, shouldInjectSilentTurn, SILENT_TURN_NUDGE } from "./turnOutcome"
 import { resolveAgentAlias } from "./agentMatch"
@@ -84,6 +85,7 @@ import { livenessReport, readinessReport, renderProbe } from "./probes"
 import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
 import { normalizeJcodeSessionId } from "./adapters/jcode"
+import { extractLettaConversationId, LETTA_CONVERSATION_HEADER } from "./adapters/letta"
 import { isClaudeCodeClient } from "./adapters/claudecode"
 import { openAiAdapter, deriveToolLoopSessionId, SYNTHESIZED_SESSION_HEADER } from "./adapters/openai"
 import { translateResponsesToAnthropic, translateAnthropicToResponses, createResponsesSseTranslator, reasoningRequested, buildResponsesToolAliases, resolveCodexThreadIdentity, type ResponsesRequest, type AnthropicSseEvent as ResponsesAnthropicSseEvent } from "./openaiResponses"
@@ -472,7 +474,16 @@ function buildFreshPrompt(
   messages: Array<{ role: string; content: any }>,
   sanitizeOpts: import("./sanitize").SanitizeOptions = {},
   renderToolName?: (name: string) => string,
+  budget?: number,
+  attempt = "fallback",
 ): string | AsyncIterable<any> {
+  if (budget !== undefined) {
+    const trimmed = trimReplayHistory(messages, budget)
+    messages = trimmed.messages
+    if (trimmed.omittedMessages > 0) claudeLog("session.replay_trimmed", {
+      omittedMessages: trimmed.omittedMessages, omittedTokens: trimmed.omittedTokens, budget, attempt,
+    })
+  }
   const hasMultimodal = messages.some((m) => hasMultimodalContent(m.content))
   const toolIndex = buildToolUseIndex(messages)
 
@@ -499,7 +510,8 @@ function buildFreshPrompt(
         }
       }
     }
-    // See #553 — consolidate earlier-turn multimodal onto the final user turn.
+    // One SDK input keeps historical media visible; frame its provenance
+    // before the live user turn (#553, #1155).
     const prompt = frameStructuredReplay(structured, messages.at(-1)?.role !== "assistant")
     return (async function* () { for (const msg of prompt) yield msg })()
   }
@@ -718,8 +730,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       0,
       envInt("SESSION_GC_GRACE_MS", SESSION_TURN_MAX_HOLD_MS + 60_000),
     ),
-    // A queue budget on one global lock: a deployment with many concurrent
-    // conversations may prefer a slower turn over a failed one.
+    // External acquisition budget at the local FIFO head, not local queue time.
     lockWaitMs: Math.max(100, envInt("SESSION_GC_LOCK_WAIT_MS", 2_000)),
     // No lease a live request holds can outlive the turn watchdog.
     unarmedLeaseTtlMs: SESSION_TURN_MAX_HOLD_MS + 60_000,
@@ -911,11 +922,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     let activeTranscriptLease: Awaited<ReturnType<typeof acquireActiveTranscriptLease>> | undefined
     let processGate: Awaited<ReturnType<typeof createSdkProcessGate>> | undefined
     let writerJoined = true
+    const admissionLifecycleOptions = { ...sessionGcOptions, admissionSignal: signal }
     try {
       for (const locator of activeLocators) {
-        await ensureTranscriptJournaled(locator, sessionGcOptions)
+        await ensureTranscriptJournaled(locator, admissionLifecycleOptions)
       }
-      activeTranscriptLease = await acquireActiveTranscriptLease(activeLocators, sessionGcOptions)
+      activeTranscriptLease = await acquireActiveTranscriptLease(activeLocators, admissionLifecycleOptions)
+      signal.throwIfAborted()
       // Unit SDK doubles never create an OS child. Production and real E2E runs
       // always use the gated exact-incarnation writer path.
       if (process.env.MERIDIAN_TEST_DISABLE_SDK_PROCESS_GATE !== "1") {
@@ -924,7 +937,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           (executor, recoverableAfterCrash) => attachActiveTranscriptExecutor(
             activeTranscriptLease!,
             executor,
-            sessionGcOptions,
+            admissionLifecycleOptions,
             recoverableAfterCrash,
           ),
           params.options?.stderr,
@@ -932,6 +945,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         params.options ??= {}
         params.options.spawnClaudeCodeProcess = processGate.spawnClaudeCodeProcess
       }
+      signal.throwIfAborted()
       sdkQuery = query(params)
       yield* guardUpstreamIdle(sdkQuery, UPSTREAM_IDLE_MS, (sinceLastMs) =>
         claudeLog("upstream.stalled", { mode, sinceLastMs }))
@@ -1493,6 +1507,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     // spans queue retries and profile-failover re-entries; create one only
     // when no outer link exists (direct in-process callers).
     const requestAbort = options.requestAbortLink ?? linkRequestAbort(requestSignal)
+    const admissionLifecycleOptions = { ...sessionGcOptions, admissionSignal: requestAbort.controller.signal }
     let streamOwnsAbortLink = false
 
     return withClaudeLogContext({ requestId: requestMeta.requestId, endpoint: requestMeta.endpoint }, async () => {
@@ -1654,7 +1669,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // Promote under the lifecycle lock before publishing the mapping. A
         // crash here leaves an unpinned live resource that reconciliation can
         // retire; the reverse order could expose a mapping to a deleted target.
-        await commitFork(managedForkTarget, sessionGcOptions)
+        await commitFork(managedForkTarget, admissionLifecycleOptions)
         managedForkCommitted = true
       }
 
@@ -2962,9 +2977,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           passthroughToolCallIds ?? [],
           trailingSystemReminderOptions,
         )
+        // A settled batch followed by an interrupted turn: a full replay would
+        // re-read the entire session and can exceed the context window the
+        // resumed session fits in.
+        const settledThenContinued = !checkpointContinuation && settlesCheckpointThenContinues(
+          messagesToConvert,
+          passthroughToolCallIds ?? [],
+          trailingSystemReminderOptions,
+        )
         if (checkpointContinuation) {
           messagesToConvert = checkpointContinuation
-        } else if (carriesSynthesizedSessionKey) {
+        } else if (carriesSynthesizedSessionKey || settledThenContinued) {
           // The checkpoint is Meridian's own inference, not a client contract.
           // A synthesized key means the client sent no session header and never
           // agreed to echo the exact tool-call ids Meridian forwarded, so an
@@ -2978,9 +3001,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           // (OpenCode, pylon, jcode, any header-keyed client) keeps today's
           // exact behaviour: for it the key is a contract the client chose, so
           // an unsettled checkpoint is a real mismatch worth replaying for.
+          // The one header-keyed exception is a batch the client did settle in
+          // full before continuing (settledThenContinued above).
           claudeLog("passthrough.checkpoint_resume_preferred", {
             expectedToolIds: passthroughToolCallIds?.length ?? 0,
-            reason: "synthesized_session_key",
+            reason: carriesSynthesizedSessionKey ? "synthesized_session_key" : "settled_then_continued",
           })
           passthroughToolCallAssistantUuid = undefined
           // Keep isResume, resumeSessionId and the resume delta already in
@@ -2999,6 +3024,28 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           messagesToConvert = allMessages
         }
       }
+
+      // Budget only the replay payload, never the lineage or SDK UUID mapping.
+      const replaySource = messagesToConvert
+      const freshReplay = !isResume && !resumeSessionId
+      // Client usage describes its resumed context, not the fresh transcript;
+      // derive replay capacity from the actual SDK model's window instead.
+      let currentReplayBudget = replayBudgetFor(model)
+      let replayTrimRetries = 0
+      let replayOmittedMessages = 0
+      const trimReplay = (attempt: number, reason?: string): boolean => {
+        const trimmed = trimReplayHistory(replaySource, currentReplayBudget)
+        const changed = trimmed.messages.length !== messagesToConvert.length ||
+          trimmed.omittedMessages !== replayOmittedMessages
+        messagesToConvert = trimmed.messages
+        replayOmittedMessages = trimmed.omittedMessages
+        if (reason || (changed && trimmed.omittedMessages > 0)) claudeLog("session.replay_trimmed", {
+          omittedMessages: trimmed.omittedMessages, omittedTokens: trimmed.omittedTokens,
+          budget: currentReplayBudget, model, attempt, ...(reason ? { reason } : {}),
+        })
+        return changed
+      }
+      if (freshReplay) trimReplay(0)
 
       // Multimodal blocks and passthrough tool results must remain structured.
       // In particular, a continuation resumed at an assistant tool_use expects
@@ -3036,7 +3083,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 mappingExpectedGeneration ?? undefined,
               )
             },
-            sessionGcOptions,
+            admissionLifecycleOptions,
           )
           : false
         if (!attachedGeneration) {
@@ -3046,8 +3093,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // Journal both ownership and the chosen target before query() can create
         // a fork file. This closes the crash window where the SDK file exists
         // but no emitted event or shared mapping names it yet.
-        managedForkSource = await registerLiveTranscript(managedForkSource, sessionGcOptions)
-        managedForkTarget = await prepareForkForPublication(managedForkTarget, sessionGcOptions)
+        managedForkSource = await registerLiveTranscript(managedForkSource, admissionLifecycleOptions)
+        managedForkTarget = await prepareForkForPublication(managedForkTarget, admissionLifecycleOptions)
         claudeLog("session.fork_prepared", {
           sourceSessionId: managedForkSource.sessionId,
           targetSessionId: managedForkTarget.sessionId,
@@ -3075,7 +3122,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         managedForkTarget = transcriptLocator(randomUUID())
         managedFreshTarget = true
         releaseManagedForkPins = pinActiveSessionGcLocators(managedForkTarget)
-        managedForkTarget = await prepareForkForPublication(managedForkTarget, sessionGcOptions)
+        managedForkTarget = await prepareForkForPublication(managedForkTarget, admissionLifecycleOptions)
         claudeLog("session.fresh_prepared", { targetSessionId: managedForkTarget.sessionId })
       }
 
@@ -3165,95 +3212,128 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       let structuredMessages: Array<{ type: "user"; message: { role: string; content: any }; parent_tool_use_id: null }> | undefined
       let textPrompt: string | undefined
 
-      if (hasMultimodal || hasPassthroughToolResults) {
-        // Structured messages preserve image/document/file and tool_result blocks.
-        // On resume, only send user messages (SDK has assistant context already).
-        // On first request, include everything.
-        structuredMessages = []
+      function rebuildReplayPrompt(): void {
+        structuredMessages = undefined
+        textPrompt = undefined
+        if (hasMultimodal || hasPassthroughToolResults) {
+          // Structured messages preserve image/document/file and tool_result blocks.
+          // On resume, only send user messages (SDK has assistant context already).
+          // On first request, include everything.
+          structuredMessages = []
 
-        if (isResume) {
-          // Resume: only send user messages from the delta (SDK has the rest)
-          for (const m of messagesToConvert) {
-            if (m.role === "user") {
-              structuredMessages.push({
-                type: "user" as const,
-                message: { role: "user" as const, content: normalizeStructuredUserContent(
-                  stripCacheControlDeep(m.content),
-                  Boolean(passthroughToolCallAssistantUuid)
-                ) },
-                parent_tool_use_id: null,
-              })
-            }
-          }
-        } else {
-          // Fresh replay preserves the text path's role attribution. In-message
-          // reminders are ordinary input; only assistant turns get its marker.
-          for (const m of messagesToConvert) {
-            if (m.role !== "assistant") {
-              structuredMessages.push({
-                type: "user" as const,
-                message: { role: "user" as const, content: normalizeStructuredUserContent(
-                  stripCacheControlDeep(m.content),
-                  Boolean(passthroughToolCallAssistantUuid)
-                ) },
-                parent_tool_use_id: null,
-              })
-            } else {
-              // Preserve assistant text and completed tool calls as replay context.
-              const assistantText = flattenAssistantContent(m.content, renderReplayToolName)
-              if (assistantText) {
+          if (isResume) {
+            // Resume: only send user messages from the delta (SDK has the rest)
+            for (const m of messagesToConvert) {
+              if (m.role === "user") {
                 structuredMessages.push({
                   type: "user" as const,
-                  message: { role: "user" as const, content: `[Assistant: ${assistantText}]` },
+                  message: { role: "user" as const, content: normalizeStructuredUserContent(
+                    stripCacheControlDeep(m.content),
+                    Boolean(passthroughToolCallAssistantUuid)
+                  ) },
                   parent_tool_use_id: null,
                 })
               }
             }
-          }
-        }
-
-        // SDK stream inputs are independently answered live turns. Deliver the
-        // complete delta before generation so appended context cannot produce
-        // an answer before the final user question arrives. With one input,
-        // media also stays visible in its original relative position (#553).
-        if (structuredMessages.length > 1) {
-          structuredMessages = isResume
-            ? coalesceStructuredUserMessages(structuredMessages)
-            : frameStructuredReplay(structuredMessages, messagesToConvert.at(-1)?.role !== "assistant")
-        }
-
-      } else {
-        // Text prompt — convert messages to string.
-        // Sanitize each text block before flattening to strip orchestration
-        // wrappers (<env>, <task_metadata>, etc.) that harnesses inject.
-        // `<system-reminder>` is only stripped for adapters that leak CWD
-        // through it (Droid) — preserved otherwise so that harness state
-        // like oh-my-opencode's background-task IDs reaches the model.
-        // Tool-result attribution is indexed from the FULL history so ids
-        // resolve even when the originating call sits before a resume-delta
-        // boundary (#552).
-        const toolIndex = buildToolUseIndex(allMessages ?? messagesToConvert ?? [])
-        // NEVER render 'Human:'/'Assistant:' transcript lines — the model
-        // imitates that format, emitting 'Human: ...' turns itself and
-        // self-approving actions (#496 self-talk). Match the structured
-        // path's proven convention instead: user turns plain, assistant
-        // turns bracketed as '[Assistant: ...]'. On resume, drop assistant
-        // messages entirely — the resumed SDK session already contains
-        // those turns; replaying them as user text is the imitation seed.
-        const promptTurns = (messagesToConvert ?? [])
-          .map((m: { role: string; content: any }) => {
-            if (m.role === "assistant") {
-              if (isResume) return { role: "assistant", text: "" }
-              const assistantText = flattenAssistantContent(m.content, renderReplayToolName)
-              return { role: "assistant", text: assistantText ? `[Assistant: ${assistantText}]` : "" }
+          } else {
+            // Fresh replay preserves the text path's role attribution. In-message
+            // reminders are ordinary input; only assistant turns get its marker.
+            for (const m of messagesToConvert) {
+              if (m.role !== "assistant") {
+                structuredMessages.push({
+                  type: "user" as const,
+                  message: { role: "user" as const, content: normalizeStructuredUserContent(
+                    stripCacheControlDeep(m.content),
+                    Boolean(passthroughToolCallAssistantUuid)
+                  ) },
+                  parent_tool_use_id: null,
+                })
+              } else {
+                // Preserve assistant text and completed tool calls as replay context.
+                const assistantText = flattenAssistantContent(m.content, renderReplayToolName)
+                if (assistantText) {
+                  structuredMessages.push({
+                    type: "user" as const,
+                    message: { role: "user" as const, content: `[Assistant: ${assistantText}]` },
+                    parent_tool_use_id: null,
+                  })
+                }
+              }
             }
-            return { role: "user", text: flattenUserContent(m.content, sanitizeOpts, toolIndex) }
-          })
-        // Fresh (non-resume) replays get the #619 anti-self-play envelope:
-        // history framed as context-only, the live user message terminal.
-        // Resume deltas are tail-only and stay bare.
-        const resumeDelta = promptTurns.map((t: { text: string }) => t.text).filter(Boolean).join("\n\n") || ""
-        textPrompt = isResume ? resumeDelta : frameReplayTurns(promptTurns)
+          }
+
+          // SDK stream inputs are independently answered live turns. Deliver the
+          // complete delta before generation so appended context cannot produce
+          // an answer before the final user question arrives. With one input,
+          // media also stays visible in its original relative position (#553).
+          if (structuredMessages.length > 1) {
+            structuredMessages = isResume
+              ? coalesceStructuredUserMessages(structuredMessages)
+              : frameStructuredReplay(structuredMessages, messagesToConvert.at(-1)?.role !== "assistant")
+          }
+
+        } else {
+          // Text prompt — convert messages to string.
+          // Sanitize each text block before flattening to strip orchestration
+          // wrappers (<env>, <task_metadata>, etc.) that harnesses inject.
+          // `<system-reminder>` is only stripped for adapters that leak CWD
+          // through it (Droid) — preserved otherwise so that harness state
+          // like oh-my-opencode's background-task IDs reaches the model.
+          // Tool-result attribution is indexed from the FULL history so ids
+          // resolve even when the originating call sits before a resume-delta
+          // boundary (#552).
+          const toolIndex = buildToolUseIndex(allMessages ?? messagesToConvert ?? [])
+          // NEVER render 'Human:'/'Assistant:' transcript lines — the model
+          // imitates that format, emitting 'Human: ...' turns itself and
+          // self-approving actions (#496 self-talk). Match the structured
+          // path's proven convention instead: user turns plain, assistant
+          // turns bracketed as '[Assistant: ...]'. On resume, drop assistant
+          // messages entirely — the resumed SDK session already contains
+          // those turns; replaying them as user text is the imitation seed.
+          const promptTurns = (messagesToConvert ?? [])
+            .map((m: { role: string; content: any }) => {
+              if (m.role === "assistant") {
+                if (isResume) return { role: "assistant", text: "" }
+                const assistantText = flattenAssistantContent(m.content, renderReplayToolName)
+                return { role: "assistant", text: assistantText ? `[Assistant: ${assistantText}]` : "" }
+              }
+              return { role: "user", text: flattenUserContent(m.content, sanitizeOpts, toolIndex) }
+            })
+          // Fresh (non-resume) replays get the #619 anti-self-play envelope:
+          // history framed as context-only, the live user message terminal.
+          // Resume deltas are tail-only and stay bare.
+          const resumeDelta = promptTurns.map((t: { text: string }) => t.text).filter(Boolean).join("\n\n") || ""
+          textPrompt = isResume ? resumeDelta : frameReplayTurns(promptTurns)
+        }
+      }
+      rebuildReplayPrompt()
+
+      function rebudgetReplay(reason: string): void {
+        if (!freshReplay) return
+        // Stripping [1m] changes capacity, not only billing: the previously
+        // valid replay must fit the smaller window before another SDK call.
+        currentReplayBudget = replayBudgetFor(model)
+        trimReplay(replayTrimRetries, reason)
+        rebuildReplayPrompt()
+      }
+
+      // Re-estimate from the original input: trimming an already marked replay
+      // would count our own omission notice as history and lose its provenance.
+      function retryReplayOverflow(errMsg: string): boolean {
+        // Resume owns hidden SDK history; shortening its delta cannot compact
+        // that history, and replay recovery must not silently replace a resume.
+        if (!freshReplay || replayTrimRetries >= 2 || extractSdkTermination(errMsg).reason !== "context_overflow") return false
+        const counts = errMsg.match(/(\d+)\s*tokens\s*>\s*(\d+)\s*maximum/i)
+        const shrunkBudget = counts
+          ? Math.floor(currentReplayBudget * (Number(counts[2]) / Number(counts[1])) * 0.9)
+          : Math.floor(currentReplayBudget * 0.5)
+        currentReplayBudget = Math.min(shrunkBudget, replayBudgetFor(model))
+        // A live tail is indivisible. Reissuing the same kept history only
+        // spends another upstream attempt to obtain the identical overflow.
+        if (!trimReplay(replayTrimRetries + 1)) return false
+        replayTrimRetries++
+        rebuildReplayPrompt()
+        return true
       }
 
       // Create a fresh prompt value — can be called multiple times for retry
@@ -3815,6 +3895,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   // Tool hooks and structured output are committed exposure
                   // even when the iterator has not yielded assistant content.
                   if (didYieldContent || options.priorityAttemptExposure?.committed) throw error
+                  if (retryReplayOverflow(errMsg)) continue
 
                   // Retry: the resume was refused, not answered. Both refusals
                   // that mean "not right now" — the session is busy, or it could
@@ -3876,7 +3957,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     sdkUuidMap.length = 0
                     for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
                     yield* runSdkQueryAttempt(buildQueryOptions({
-                      prompt: buildFreshPrompt(allMessages, sanitizeOpts, renderReplayToolName),
+                      prompt: buildFreshPrompt(allMessages, sanitizeOpts, renderReplayToolName, replayBudgetFor(model), "non_stream_resume_replay"),
                       model, workingDirectory, clientWorkingDirectory: promptClientWorkingDirectory, clientEnvironmentMayDifferFromProxy, systemContext, claudeExecutable,
                       passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                       resumeSessionId: undefined, isUndo: false, resumeSessionAtUuid: undefined, forkSessionId: managedForkTarget?.sessionId, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
@@ -3903,6 +3984,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   if (isExtraUsageRequiredError(errMsg) && hasExtendedContext(model)) {
                     const from = model
                     model = stripExtendedContext(model)
+                    rebudgetReplay("extra_usage_required")
                     recordExtendedContextUnavailable(profile.id)
                     claudeLog("upstream.context_fallback", {
                       mode: "non_stream",
@@ -3936,7 +4018,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     sdkUuidMap.length = 0
                     for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
                     yield* runSdkQueryAttempt(buildQueryOptions({
-                      prompt: buildFreshPrompt(allMessages, sanitizeOpts, renderReplayToolName),
+                      prompt: buildFreshPrompt(allMessages, sanitizeOpts, renderReplayToolName, replayBudgetFor(model), "non_stream_model_fallback"),
                       model, workingDirectory, clientWorkingDirectory: promptClientWorkingDirectory, clientEnvironmentMayDifferFromProxy, systemContext, claudeExecutable,
                       passthrough, stream: false, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                       resumeSessionId: undefined, isUndo: false, resumeSessionAtUuid: undefined, forkSessionId: managedForkTarget?.sessionId, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
@@ -3974,6 +4056,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     if (hasExtendedContext(model)) {
                       const from = model
                       model = stripExtendedContext(model)
+                      rebudgetReplay("rate_limit")
                       // Bench [1m] until the window resets. Without this the next
                       // request maps straight back to [1m], so one rate limit costs
                       // TWO model switches and a cold prompt cache in both directions
@@ -4595,6 +4678,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   await commitManagedFork()
                   let mappingStored: false | StoredSessionGeneration
                   try {
+                    assertDurableWritesAllowed()
                     mappingStored = await publishPinnedTranscript(
                       publicationTranscriptLocator(currentSessionId!),
                       () => {
@@ -4625,7 +4709,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                         }
                         return stored
                       },
-                      sessionGcOptions,
+                      admissionLifecycleOptions,
                     )
                   } catch (error) {
                     if (
@@ -4991,6 +5075,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     // Tool hooks and structured output are committed exposure
                     // even before the first client-visible SSE event.
                     if (didYieldClientEvent || options.priorityAttemptExposure?.committed) throw error
+                    if (retryReplayOverflow(errMsg)) continue
 
                     // Retry: the resume was refused, not answered — see the
                     // non-stream branch above for the full rationale. The busy
@@ -5041,7 +5126,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       sdkUuidMap.length = 0
                       for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
                       yield* runSdkQueryAttempt(buildQueryOptions({
-                        prompt: buildFreshPrompt(allMessages, sanitizeOpts, renderReplayToolName),
+                        prompt: buildFreshPrompt(allMessages, sanitizeOpts, renderReplayToolName, replayBudgetFor(model), "stream_resume_replay"),
                         model, workingDirectory, clientWorkingDirectory: promptClientWorkingDirectory, clientEnvironmentMayDifferFromProxy, systemContext, claudeExecutable,
                         passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                         resumeSessionId: undefined, isUndo: false, resumeSessionAtUuid: undefined, forkSessionId: managedForkTarget?.sessionId, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
@@ -5064,6 +5149,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                     if (isExtraUsageRequiredError(errMsg) && hasExtendedContext(model)) {
                       const from = model
                       model = stripExtendedContext(model)
+                      rebudgetReplay("extra_usage_required")
                       recordExtendedContextUnavailable(profile.id)
                       claudeLog("upstream.context_fallback", {
                         mode: "stream",
@@ -5097,7 +5183,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       sdkUuidMap.length = 0
                       for (let i = 0; i < allMessages.length; i++) sdkUuidMap.push(null)
                       yield* runSdkQueryAttempt(buildQueryOptions({
-                        prompt: buildFreshPrompt(allMessages, sanitizeOpts, renderReplayToolName),
+                        prompt: buildFreshPrompt(allMessages, sanitizeOpts, renderReplayToolName, replayBudgetFor(model), "stream_model_fallback"),
                         model, workingDirectory, clientWorkingDirectory: promptClientWorkingDirectory, clientEnvironmentMayDifferFromProxy, systemContext, claudeExecutable,
                         passthrough, stream: true, sdkAgents, passthroughMcp, cleanEnv: profileEnv, envOverrides, hasDeferredTools, earlyStop: earlyStopEnabled,
                         resumeSessionId: undefined, isUndo: false, resumeSessionAtUuid: undefined, forkSessionId: managedForkTarget?.sessionId, sdkHooks, blockedTools: pipelineCtx.blockedTools, incompatibleTools: pipelineCtx.incompatibleTools, mcpServerName: adapter.getMcpServerName(), allowedMcpTools: pipelineCtx.allowedMcpTools, onStderr,
@@ -5135,6 +5221,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       if (hasExtendedContext(model)) {
                         const from = model
                         model = stripExtendedContext(model)
+                        rebudgetReplay("rate_limit")
                         // Bench [1m] until the window resets. Without this the next
                         // request maps straight back to [1m], so one rate limit costs
                         // TWO model switches and a cold prompt cache in both directions
@@ -5809,6 +5896,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 } else {
                   validateManagedForkResult(currentSessionId)
                   await commitManagedFork()
+                  assertDurableWritesAllowed()
                   const mappingStored = await publishPinnedTranscript(
                     publicationTranscriptLocator(currentSessionId!),
                     () => {
@@ -5839,7 +5927,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       }
                       return stored
                     },
-                    sessionGcOptions,
+                    admissionLifecycleOptions,
                   )
                   if (requestAbort.controller.signal.aborted || durableWritesRevoked) {
                     if (
@@ -5982,7 +6070,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                           mappingExpectedGeneration ?? undefined,
                         )
                       },
-                      sessionGcOptions,
+                      admissionLifecycleOptions,
                     )
                     : false
                   if (!recoveryAttachedGeneration) {
@@ -5991,8 +6079,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   mappingExpectedGeneration = recoveryAttachedGeneration
                   recoveryForkTarget = transcriptLocator(randomUUID())
                   releaseRecoveryForkPins = pinActiveSessionGcLocators(recoveryForkSource, recoveryForkTarget)
-                  recoveryForkSource = await registerLiveTranscript(recoveryForkSource, sessionGcOptions)
-                  recoveryForkTarget = await prepareForkForPublication(recoveryForkTarget, sessionGcOptions)
+                  recoveryForkSource = await registerLiveTranscript(recoveryForkSource, admissionLifecycleOptions)
+                  recoveryForkTarget = await prepareForkForPublication(recoveryForkTarget, admissionLifecycleOptions)
                   try {
                   // Protect recovery parallel calls with the same deny hold as
                   // the main stream. Producer hooks can run before the first
@@ -6141,7 +6229,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   !isIndependentSession && !sawDuplicateToolUse
                 ) {
                   const recoverySdkUuidMap = allMessages.map(() => null)
-                  await commitFork(recoveryForkTarget, sessionGcOptions)
+                  await commitFork(recoveryForkTarget, admissionLifecycleOptions)
+                  assertDurableWritesAllowed()
                   const recoveryMappingStored = await publishPinnedTranscript(
                     recoveryForkTarget,
                     () => {
@@ -6167,7 +6256,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       }
                       return stored
                     },
-                    sessionGcOptions,
+                    admissionLifecycleOptions,
                   )
                   if (requestAbort.controller.signal.aborted || durableWritesRevoked) {
                     if (
@@ -6878,6 +6967,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 if (recoverableCheckpoint) {
                   validateManagedForkResult(currentSessionId)
                   await commitManagedFork()
+                  assertDurableWritesAllowed()
                   const mappingStored = await publishPinnedTranscript(
                     publicationTranscriptLocator(currentSessionId!),
                     () => {
@@ -6908,7 +6998,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                       }
                       return stored
                     },
-                    sessionGcOptions,
+                    admissionLifecycleOptions,
                   )
                   if (requestAbort.controller.signal.aborted || durableWritesRevoked) {
                     if (
@@ -8504,7 +8594,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       ? normalizeJcodeSessionId(c.req.header("x-jcode-session"))
       : undefined
     const isJcode = jcodeSessionId !== undefined
-    const adapterName = isJcode ? "jcode" : "openai"
+    // Letta Code sends no session header; the conversation id inside the
+    // agent-info block of its opening user message is the only identity
+    // available — the block is emitted once, and later turns carry it only
+    // because the client replays the history. The fingerprint fallback cannot
+    // substitute because that reminder is stripped before hashing (see
+    // adapters/letta.ts). Parsing it here both selects the adapter and supplies
+    // the key: a body without one is not a Letta request and keeps today's
+    // generic behaviour.
+    const lettaConversationId = isJcode ? undefined : extractLettaConversationId(rawBody)
+    const isLetta = lettaConversationId !== undefined
+    const adapterName = isJcode ? "jcode" : isLetta ? "letta" : "openai"
     // A generic client that carries a session key the adapter recognizes
     // (x-opencode-session / x-session-affinity) keeps its real messages and
     // resumes, like Jcode — packing re-sends the whole conversation as fresh
@@ -8525,7 +8625,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       : deriveToolLoopSessionId(rawBody)
     const openAiSessionId = openAiHeaderSessionId ?? toolLoopSessionId
     const anthropicBody = translateOpenAiToAnthropic(rawBody, {
-      preserveConversationHistory: isJcode || openAiSessionId !== undefined,
+      preserveConversationHistory: isJcode || isLetta || openAiSessionId !== undefined,
     })
 
     if (!anthropicBody) {
@@ -8575,15 +8675,21 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     // Forward the caller's auth headers so requireAuth on /v1/messages accepts
     // the inner hop when MERIDIAN_API_KEY is set (issue #415).
     // Tag the inner hop as generic OpenAI unless a verified Jcode request
-    // supplied its durable local session ID. Both adapters keep the Claude Code
-    // preset off; a keyed request (either adapter) preserves its real history
-    // and resumes instead of packing.
+    // supplied its durable local session ID, or a verified Letta request
+    // supplied its conversation id. All three tags keep the Claude Code preset
+    // off; a keyed request preserves its real history and resumes instead of
+    // packing.
     const internalHeaders: Record<string, string> = {
       "Content-Type": "application/json",
       "x-meridian-agent": adapterName,
     }
     if (jcodeSessionId) {
       internalHeaders["x-jcode-session"] = jcodeSessionId
+    } else if (lettaConversationId) {
+      // The inner hop rebuilds headers from scratch, so hand it the id the
+      // outer handler already resolved rather than re-parsing a body that has
+      // since been translated to Anthropic shape.
+      internalHeaders[LETTA_CONVERSATION_HEADER] = lettaConversationId
     } else if (openAiSessionId !== undefined) {
       // A keyed generic request: forward exactly the headers the inner hop
       // needs to resolve the same session (openCodeAdapter.getSessionId reads

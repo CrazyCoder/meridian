@@ -225,7 +225,7 @@ describe("SDK model pin injection (fixes #419)", () => {
     await post(app, { ...BASIC_REQUEST, model: "sonnet" })
     expect(capturedQueryOptions.env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("claude-fable-5-1")
     expect(capturedQueryOptions.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("claude-opus-5-5")
-    expect(capturedQueryOptions.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5")
+    expect(capturedQueryOptions.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5-5")
     expect(capturedQueryOptions.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("claude-haiku-4-5")
   })
 
@@ -260,6 +260,12 @@ describe("SDK model pin injection (fixes #419)", () => {
   // collapsed to the generic "sonnet" alias and resolved to Meridian's
   // canonical pin (claude-sonnet-4-6) instead of the requested version,
   // because envOverrides only special-cased opus/fable requests.
+  it("explicit claude-sonnet-5-5 requests pin the SDK env to sonnet-5-5", async () => {
+    const app = createTestApp()
+    await post(app, { ...BASIC_REQUEST, model: "claude-sonnet-5-5" })
+    expect(capturedQueryOptions.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5-5")
+  })
+
   it("explicit claude-sonnet-5 requests pin the SDK env to sonnet-5", async () => {
     const app = createTestApp()
     await post(app, { ...BASIC_REQUEST, model: "claude-sonnet-5" })
@@ -306,7 +312,7 @@ describe("SDK model pin injection (fixes #419)", () => {
   it("bare 'sonnet' alias requests do not set an envOverride, falling back to the canonical pin", async () => {
     const app = createTestApp()
     await post(app, { ...BASIC_REQUEST, model: "sonnet" })
-    expect(capturedQueryOptions.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5")
+    expect(capturedQueryOptions.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5-5")
   })
 
   it("shell ANTHROPIC_DEFAULT_* values win over Meridian's pins", async () => {

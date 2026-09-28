@@ -20,6 +20,7 @@ const { explicitModelPin, CANONICAL_FABLE_MODEL, CANONICAL_SONNET_MODEL, CANONIC
 
 describe("explicitModelPin (#631)", () => {
   it("pins fully-versioned sonnet ids", () => {
+    expect(explicitModelPin("claude-sonnet-5-5")).toEqual({ ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5" })
     expect(explicitModelPin("claude-sonnet-5")).toEqual({ ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5" })
     expect(explicitModelPin("claude-sonnet-4-6")).toEqual({ ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-6" })
   })
@@ -38,6 +39,7 @@ describe("explicitModelPin (#631)", () => {
   })
 
   it("strips the [1m] context suffix before pinning", () => {
+    expect(explicitModelPin("claude-sonnet-5-5[1m]")).toEqual({ ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5" })
     expect(explicitModelPin("claude-sonnet-5[1m]")).toEqual({ ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5" })
   })
 
@@ -53,7 +55,7 @@ describe("explicitModelPin (#631)", () => {
 
 describe("canonical sonnet pin (#631)", () => {
   it("bare sonnet means the current Sonnet", () => {
-    expect(CANONICAL_SONNET_MODEL).toBe("claude-sonnet-5")
+    expect(CANONICAL_SONNET_MODEL).toBe("claude-sonnet-5-5")
   })
 })
 
@@ -126,6 +128,13 @@ describe("explicit model pins reach the subprocess env (#631)", () => {
     queryEnvs = []
   })
 
+  it("claude-sonnet-5-5 pins the sonnet tier for the request", async () => {
+    const { app } = createProxyServer({ port: 0, host: "127.0.0.1" })
+    const res = await post(app, "claude-sonnet-5-5")
+    expect(res.status).toBe(200)
+    expect(queryEnvs[0]!.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5-5")
+  })
+
   it("claude-sonnet-5 pins the sonnet tier for the request", async () => {
     const { app } = createProxyServer({ port: 0, host: "127.0.0.1" })
     const res = await post(app, "claude-sonnet-5")
@@ -140,11 +149,11 @@ describe("explicit model pins reach the subprocess env (#631)", () => {
     expect(queryEnvs[0]!.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("claude-opus-4-7")
   })
 
-  it("bare sonnet resolves via the canonical pin (now Sonnet 5)", async () => {
+  it("bare sonnet resolves via the canonical pin (now Sonnet 5.5)", async () => {
     const { app } = createProxyServer({ port: 0, host: "127.0.0.1" })
     const res = await post(app, "sonnet")
     expect(res.status).toBe(200)
-    expect(queryEnvs[0]!.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5")
+    expect(queryEnvs[0]!.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5-5")
   })
 
   it("bare opus resolves via the canonical pin (now Opus 5.5)", async () => {

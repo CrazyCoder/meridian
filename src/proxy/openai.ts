@@ -1080,6 +1080,15 @@ const FULL_CAPABILITIES: ModelCapabilities = Object.freeze({
 export function buildModelList(extendedContextIncluded: boolean, now = Math.floor(Date.now() / 1000)): OpenAiModel[] {
   return [
     {
+      id: "claude-sonnet-5-5",
+      object: "model",
+      created: now,
+      owned_by: "anthropic",
+      display_name: "Claude Sonnet 5.5",
+      context_window: 200_000,
+      capabilities: FULL_CAPABILITIES,
+    },
+    {
       id: "claude-sonnet-5",
       object: "model",
       created: now,

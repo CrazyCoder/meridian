@@ -133,7 +133,7 @@ describe("translateOpenAiToAnthropic", () => {
     const result = translateOpenAiToAnthropic({
       messages: [{ role: "user", content: "Hi" }],
     })
-    expect(result!.model).toBe("claude-sonnet-5")
+    expect(result!.model).toBe("claude-sonnet-5-5")
   })
 
   it("passes through specified model", () => {
@@ -1458,13 +1458,23 @@ describe("buildModelList", () => {
       expect(model.capabilities!.thinking.types.enabled.supported).toBe(false)
     }
   })
-  it("returns 10 models", () => {
-    expect(buildModelList(true).length).toBe(10)
-    expect(buildModelList(false).length).toBe(10)
+  it("advertises Sonnet 5.5 and plan-appropriate context", () => {
+    for (const extended of [false, true]) {
+      const model = buildModelList(extended).find(m => m.id === "claude-sonnet-5-5")!
+      expect(model.display_name).toBe("Claude Sonnet 5.5")
+      expect(model.context_window).toBe(200_000)
+      expect(model.capabilities!.thinking.types.adaptive.supported).toBe(true)
+      expect(model.capabilities!.thinking.types.enabled.supported).toBe(true)
+    }
+  })
+  it("returns 11 models", () => {
+    expect(buildModelList(true).length).toBe(11)
+    expect(buildModelList(false).length).toBe(11)
   })
 
   it("includes current and legacy Fable plus the supported Sonnet and Opus models for UI pickers", () => {
     const ids = buildModelList(true).map(m => m.id)
+    expect(ids).toContain("claude-sonnet-5-5")
     expect(ids).toContain("claude-sonnet-5")
     expect(ids).toContain("claude-fable-5-1")
     expect(ids).toContain("claude-fable-5")
