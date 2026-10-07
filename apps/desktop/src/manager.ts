@@ -92,7 +92,7 @@ export class Manager {
     if (typeof input.allowAntigravitySubagents === 'boolean') result.allowAntigravitySubagents = input.allowAntigravitySubagents
     if (input.endpoint !== undefined) result.endpoint = endpoint(input.endpoint)
     if (input.port !== undefined) result.port = port(input.port)
-    for (const key of ['autoStart', 'notifications', 'notificationCritical', 'notificationRequests', 'notificationCache', 'notificationQuota', 'openWindowAtLaunch'] as const) if (typeof input[key] === 'boolean') result[key] = input[key]
+    for (const key of ['autoStart', 'notifications', 'notificationCritical', 'notificationRequests', 'notificationCache', 'notificationQuota', 'openWindowAtLaunch', 'hideDockIcon'] as const) if (typeof input[key] === 'boolean') result[key] = input[key]
     if (typeof input.quietUntil === 'number' && Number.isFinite(input.quietUntil)) result.quietUntil = Math.max(0, input.quietUntil)
     if (input.selected) result.selected = version(input.selected)
     if (input.previous) result.previous = version(input.previous)
@@ -483,24 +483,54 @@ export class Manager {
     const cli = join(this.options.directory, 'versions', selected, 'node_modules/@rynfar/meridian/dist/cli.js')
     await stat(cli)
     const child = spawn(this.options.node, [cli, 'profile', add ? 'add' : 'login', name, '--headless'], { env: this.environment(), stdio: ['pipe', 'pipe', 'pipe'] })
-    this.loginChild = child; this.state.login = { output: '' }
+    this.loginChild = child; this.state.login = { profile: name, phase: 'starting', output: '' }
+    const login = this.state.login
     const capture = (chunk: Buffer) => {
-      if (!this.state.login) return
+      if (this.loginChild !== child || this.state.login !== login) return
       this.state.login.output = (this.state.login.output + stripVTControlCharacters(String(chunk))).slice(-12000)
       const match = this.state.login.output.match(/https:\/\/(?:claude\.com|platform\.claude\.com)\/[^\s\u001b]+/)
-      if (match) this.state.login.url = match[0]
+      if (match) {
+        this.state.login.url = match[0]
+        if (login.phase === 'starting') login.phase = 'waiting'
+      }
       this.publish()
     }
     child.stdout?.on('data', capture); child.stderr?.on('data', capture)
-    child.on('error', error => { this.state.error = String(error); this.loginChild = undefined; this.publish() })
-    child.once('exit', code => { this.loginChild = undefined; if (code !== 0) this.state.error = `Profile login ended (${code}).`; this.state.login = undefined; void this.refresh() })
+    child.stdin?.on('error', error => {
+      if (this.loginChild !== child) return
+      login.output = `Could not send the authorization code: ${String(error)}`
+      child.kill()
+    })
+    child.on('error', error => {
+      if (this.loginChild !== child) return
+      login.phase = 'error'; login.url = undefined
+      login.output = String(error); this.loginChild = undefined; this.publish()
+    })
+    child.once('exit', code => {
+      if (this.loginChild !== child) return
+      this.loginChild = undefined
+      login.phase = login.phase === 'cancelling' ? 'cancelled' : code === 0 ? 'success' : 'error'
+      login.url = undefined
+      this.publish(); void this.refresh()
+    })
   }
   loginCode(raw: unknown) {
-    if (raw === 'cancel') { this.loginChild?.kill(); return }
+    if (raw === 'dismiss') {
+      if (this.loginChild) throw new Error('Cancel sign-in before dismissing it.')
+      this.state.login = undefined; this.publish(); return
+    }
+    if (raw === 'cancel') {
+      if (this.loginChild && this.state.login) {
+        this.state.login.phase = 'cancelling'; this.loginChild.kill(); this.publish()
+      }
+      return
+    }
     const code = text(raw).trim()
-    if (!code || code.includes('\n') || code.length > 4000) throw new Error('Paste the authorization code returned by Claude.')
-    if (!this.loginChild?.stdin) throw new Error('No login is waiting for a code.')
+    if (!code || /[\r\n]/.test(code) || code.length > 4000) throw new Error('Paste the authorization code returned by Claude.')
+    if (!this.loginChild?.stdin || this.state.login?.phase !== 'waiting') throw new Error('Wait for the browser sign-in link before submitting a code.')
+    this.state.login.phase = 'verifying'
     this.loginChild.stdin.write(code + '\n')
+    this.publish()
   }
   async inspectOwnership() {
     if (this.adopted) { this.state.migration = { label: this.adopted.label, canAdopt: false, adopted: true }; return }

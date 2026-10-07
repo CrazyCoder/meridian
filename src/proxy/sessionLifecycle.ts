@@ -33,7 +33,14 @@ export {
   SessionLifecycleQueueStalledError,
   SessionLifecycleReentrancyError,
 } from "./session/lifecycleErrors"
-import { getMaxStoredSessionsLimit, getSessionStoreDir } from "./sessionStore"
+import {
+  getMaxStoredSessionsLimit,
+  getSessionStoreDir,
+  pruneSupersededProfileCopies,
+  listSupersededProfileConversations,
+  type ProfileCopyPruneOptions,
+} from "./sessionStore"
+import { CrossProcessTurnCoordinator, type CrossProcessTurnLease } from "./session/crossProcessTurnCoordinator"
 import {
   directoryRenameWasBlocked,
   syncDirectoryDurably,
@@ -641,7 +648,14 @@ export async function reconcile(
   // Validate caller pins before waiting for the lock. The authoritative pin
   // provider is refreshed again while the lifecycle lock is held.
   indexPins(pins)
-  return withSidecarLock(options, async (paths) => {
+  return withSidecarLock(options, paths => reconcileUnderLock(pins, options, paths))
+}
+
+async function reconcileUnderLock(
+  pins: readonly TranscriptLocator[],
+  options: SessionLifecycleOptions,
+  paths: SidecarPaths,
+): Promise<ReconcileResult> {
     const effectivePins = indexPins(options.pinProvider?.() ?? pins)
     const sidecar = await readSidecar(paths.sidecar)
     const pinKeys = new Set(Object.values(sidecar.resources)
@@ -744,6 +758,57 @@ export async function reconcile(
 
     if (changed) await writeSidecar(paths.sidecar, sidecar)
     return result
+}
+
+/**
+ * Remove superseded cross-profile mappings no faster than the transcript
+ * backlog can absorb them. Fresh-request admission draws on the same pending
+ * budget and, when it is full, returns the newest retired transcripts to live
+ * (deferRetirementForAdmission) - which would undo this prune's retirements
+ * one request at a time. The transcripts unpinned here are therefore capped to
+ * keep at least half of the budget free: a large first prune drains over
+ * successive sweeps, as retired transcripts are deleted, instead of filling
+ * the backlog at once.
+ * Reconciliation reserves retirement capacity before releasing the same lock.
+ * An authoritative pin provider is required. Returns mappings removed.
+ */
+export async function releaseSupersededProfileCopies(
+  copies: Omit<ProfileCopyPruneOptions, "maxUnpinnedTranscripts">,
+  options: SessionLifecycleOptions = {},
+  turnCoordinator = new CrossProcessTurnCoordinator(join(options.storeDir ?? getSessionStoreDir(), "turn-locks")),
+): Promise<number> {
+  const maxPending = option(options.maxPending, DEFAULT_MAX_PENDING, "maxPending")
+  if (!options.pinProvider) throw new SessionLifecycleError("profile-copy pruning requires an authoritative pin provider")
+  return withSidecarLock(options, async paths => {
+    // Recover unrecorded retirements from an earlier failed publication before
+    // granting more capacity; a pin-provider/write failure must precede pruning.
+    await reconcileUnderLock([], options, paths)
+    const sidecar = await readSidecar(paths.sidecar)
+    const budget = Math.floor(maxPending / 2) - pendingResourceCount(sidecar)
+    if (budget <= 0) return 0
+    const selection = { ...copies, maxUnpinnedTranscripts: budget }
+    const conversations = listSupersededProfileConversations(selection).slice(0, 64)
+    const leases: CrossProcessTurnLease[] = []
+    const fenced = new Set<string>()
+    try {
+      // Never wait while holding the sidecar lock: a request holding a turn
+      // may itself need lifecycle metadata. Busy conversations wait for a later sweep.
+      for (const conversation of conversations) {
+        const lease = await turnCoordinator.tryAcquireIdle(`session:${conversation}`)
+        if (!lease) continue
+        leases.push(lease)
+        fenced.add(conversation)
+      }
+      const removed = pruneSupersededProfileCopies({ ...selection,
+        isConversationActive: id => !fenced.has(id) || copies.isConversationActive(id),
+      })
+      if (removed) await reconcileUnderLock([], options, paths)
+      return removed
+    } finally {
+      const releases = await Promise.allSettled(leases.map(lease => lease.release()))
+      const failed = releases.find(result => result.status === "rejected")
+      if (failed?.status === "rejected") throw failed.reason
+    }
   })
 }
 

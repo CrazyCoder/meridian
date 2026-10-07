@@ -810,8 +810,17 @@ export function unavailableToolResults(content: unknown): Array<{ id: string; na
  * Neither case can reuse the SDK's rejected transcript; callers evict it
  * before authorizing the client to execute the tools.
  *
- * Callers must also verify the one-turn cap, no cancellation, an open
- * envelope, complete blocks, and names declared by the client.
+ * The explicit rejection holds at any turn budget this proxy set. With
+ * deferred tools the budget is above one, so after the rejection the SDK
+ * keeps going: the model retries under the registered name (dropped as the
+ * hidden digest) or the bare name again (rejected again) until the budget
+ * runs out. Neither retry reached the client or ran, and a drop can only come
+ * from a call the hook saw — never from one of the rejected, forwarded calls —
+ * so drops do not veto a confirmed rejection. The opt-in path has no such
+ * proof and stays at the one-turn cap with no drops.
+ *
+ * Callers must also verify no cancellation, an open envelope, complete
+ * blocks, and names declared by the client.
  */
 export function canRecoverUncapturedToolUses(input: {
   reason: SdkTermination["reason"]
@@ -830,13 +839,14 @@ export function canRecoverUncapturedToolUses(input: {
   if (!input.uncapturedRecoveryEnabled && !input.confirmedToolUnavailable) return false
   if (!input.passthrough) return false
   if (input.reason !== "max_turns") return false
-  // Only a turn this proxy capped at 1 qualifies; an uncapped budget that
-  // ran out is a different failure, and a cap-lifted reissue is already a
-  // second attempt at recovery.
-  if (input.attemptedMaxTurns !== 1) return false
+  if (input.attemptedMaxTurns === undefined) return false
+  // Without an explicit rejection, only a turn this proxy capped at 1
+  // qualifies; an uncapped budget that ran out is a different failure, and a
+  // cap-lifted reissue is already a second attempt at recovery.
+  if (!input.confirmedToolUnavailable && input.attemptedMaxTurns !== 1) return false
   if (input.capturedToolUses > 0) return false
   if (input.streamedToolUses <= 0) return false
-  if (input.droppedToolUseIds > 0) return false
+  if (input.droppedToolUseIds > 0 && !input.confirmedToolUnavailable) return false
   if (input.sawDuplicateToolUse) return false
   if (input.forceSingleToolUse) return false
   if (input.earlyStopFired && !input.confirmedToolUnavailable) return false

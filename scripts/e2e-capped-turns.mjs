@@ -12,6 +12,11 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), "meridian-cap-")))
 const stream = process.argv.includes("--stream")
 const mode = process.argv.find(arg => arg.startsWith("--case="))?.slice(7) ?? "partial"
 const headerless = process.argv.includes("--headerless")
+// Deferred tools lift the one-turn cap to 4. The fixture keeps answering with
+// the bare name (and once with the registered name, which the hook drops as
+// the hidden digest) until the real CLI reports max_turns (4).
+const deferred = process.argv.includes("--deferred")
+if (deferred) assert(mode === "client-refusal", "The deferred budget is only tested with CLI refusal recovery")
 if (headerless) assert(mode === "client-refusal", "Headerless Pi is only tested with CLI refusal recovery")
 assert(["partial", "empty", "thinking", "unhandled", "retry", "retry-resume", "pinned", "client-refusal"].includes(mode))
 if (mode === "client-refusal") assert(stream, "CLI refusal recovery is streaming-only")
@@ -36,6 +41,7 @@ const results = []
 const hooks = []
 const rejections = []
 const tool = { name: "read_fixture", description: "Read synthetic data without side effects", input_schema: { type: "object", properties: {} } }
+const deferredTool = { name: "aux_fixture", description: "Unused deferred fixture tool", input_schema: { type: "object", properties: {} }, defer_loading: true }
 const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
   try {
     if (!new URL(request.url).pathname.endsWith("/messages")) return Response.json({ input_tokens: 100 })
@@ -63,8 +69,10 @@ const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request
         block.type === "tool_result" && block.tool_use_id === toolId)), "Resumed CLI lost structured tool result")
     }
     const text = apiPhase === "seed" ? "The fixture is ready." : apiPhase === "followup" ? receipt : mode === "empty" ? "" : "A partial answer"
+    const registeredName = body.tools.find(candidate => candidate.name.endsWith(tool.name))?.name
     const blocks = mode === "client-refusal" && capFault
-      ? [{ type: "tool_use", id: toolId, name: tool.name, input: {} }]
+      ? [apiCalls === 1 ? { type: "tool_use", id: toolId, name: tool.name, input: {} }
+        : { type: "tool_use", id: `${toolId}_retry${apiCalls}`, name: apiCalls === 2 ? registeredName : tool.name, input: {} }]
       : handoff ? [{ type: "tool_use", id: toolId, name: body.tools.find(candidate => candidate.name.endsWith(tool.name)).name, input: {} }]
       : [mode === "thinking" ? { type: "thinking", thinking: "internal fixture reasoning", signature: "fixture-signature" } : { type: "text", text },
         ...(capFault ? [{ type: "tool_use", id: "toolu_missing_fixture", name: "__cap_fixture_missing__", input: {} }] : [])]
@@ -102,7 +110,7 @@ const observer = spyOn(sdk, "query").mockImplementation(input => {
     env: { ...input.options?.env, ANTHROPIC_CUSTOM_HEADERS: `x-cap-phase: ${queryPhase}\nx-cap-attempt: ${attempt}` },
     hooks: { ...actualHooks,
     PreToolUse: actualHooks?.PreToolUse?.map(matcher => ({ ...matcher, hooks: matcher.hooks.map(hook => async (...args) => {
-      hooks.push({ phase: queryPhase, attempt, name: args[0].tool_name })
+      hooks.push({ phase: queryPhase, attempt, name: args[0].tool_name, id: args[0].tool_use_id })
       return await hook(...args)
     }) })),
   } } })
@@ -150,7 +158,7 @@ async function request(messages, includeTools = true) {
   } else headers["x-opencode-session"] = "cap-fixture"
   const response = await fetch(`http://127.0.0.1:${address.port}/v1/messages`, {
     method: "POST", headers,
-    body: JSON.stringify({ model: "haiku", stream, max_tokens: 256, ...(includeTools ? { tools: [tool] } : {}), messages }), signal: AbortSignal.timeout(120_000),
+    body: JSON.stringify({ model: "haiku", stream, max_tokens: 256, ...(includeTools ? { tools: deferred ? [tool, deferredTool] : [tool] } : {}), messages }), signal: AbortSignal.timeout(120_000),
   })
   const raw = await response.text()
   const content = stream ? [] : JSON.parse(raw).content ?? []
@@ -194,10 +202,11 @@ try {
   messages.push({ role: "user", content: "Read the synthetic fixture and report its receipt." })
   const response = await request(messages)
   assert(results.some(result => result.phase === "cap" && result.attempt === 1 && result.subtype === "error_max_turns"), JSON.stringify(results))
-  assert(!hooks.some(hook => hook.phase === "cap" && hook.attempt === 1), "Fault attempt executed a real hook")
+  assert(!hooks.some(hook => hook.phase === "cap" && hook.attempt === 1 && hook.id === toolId), "Fault attempt executed a real hook")
   const capQueries = queries.filter(query => query.phase === "cap")
   assert.equal(capQueries.length, retry ? 2 : 1)
-  assert.equal(capQueries[0].maxTurns, 1)
+  assert.equal(capQueries[0].maxTurns, deferred ? 4 : 1)
+  if (deferred) assert(hooks.some(hook => hook.phase === "cap" && hook.id === `${toolId}_retry2`), "Registered-name retry never reached the hook")
   if (retry) {
     success(response, "tool_use")
     assert.equal(capQueries[1].maxTurns, 3)
@@ -229,7 +238,7 @@ try {
     assert.equal(response.content[0].id, toolId)
     assert.equal(response.content[0].name, tool.name)
     if (!headerless) assert.equal(capQueries[0].resume, source)
-    assert(!hooks.some(hook => hook.phase === "cap"), "CLI executed a client tool instead of rejecting the bare name")
+    assert(!hooks.some(hook => hook.phase === "cap" && hook.id === toolId), "CLI executed a client tool instead of rejecting the bare name")
     assert(rejections.some(result => result.phase === "cap" && result.attempt === 1 && result.id === toolId &&
       JSON.stringify(result.content).includes("No such tool available: " + tool.name)),
     "Real CLI did not reject the bare declared tool")
@@ -248,7 +257,7 @@ try {
     else assert.equal(response.status, 500, response.raw)
   }
   assert.deepEqual(upstreamErrors, [])
-  console.log(JSON.stringify({ result: "PASS", mode, stream, root, withheld, queries, results,
+  console.log(JSON.stringify({ result: "PASS", mode, stream, deferred, root, withheld, queries, results,
     rejections: rejections.map(({ phase, attempt, id }) => ({ phase, attempt, id })), upstreamCalls }))
 } finally {
   await proxy.close()

@@ -234,3 +234,9 @@ form .check { display: flex; min-height: 40px; margin: 8px 0; }
 .route-kind-badge.route-pinned { background: color-mix(in srgb, #3b82f6 18%, transparent); color: #3b82f6; }
 .route-kind-badge.route-sticky { background: color-mix(in srgb, #a855f7 18%, transparent); color: #a855f7; }
 .route-kind-badge.route-priority, .route-kind-badge.route-active\+priority { background: color-mix(in srgb, #eab308 18%, transparent); color: #eab308; }
+
+.login-steps { padding-left: 24px; margin: 20px 0; }
+.login-steps > li { padding-left: 8px; margin-bottom: 24px; }
+.login-steps > li::marker { color: var(--accent); font-weight: 600; }
+.login-steps p { color: var(--muted); margin: 8px 0 12px; }
+.login-steps form { max-width: 480px; }

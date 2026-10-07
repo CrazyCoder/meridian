@@ -1,0 +1,256 @@
+{
+  "sourceHeads": {
+    "1251": "74ac9017582d900d84f1a59b29f65c3870a6304f",
+    "1252": "3d02224d891d839229ba0eb318b2e8e061d8b9e6"
+  },
+  "baseHead": "93d6c5c97daf9f21778cf5e6ecf90f12d53f40cb",
+  "approvalIssue": 1254,
+  "client": "Pylon native Chrome 152.0.7977.130 / Electron 44.4.2, macOS arm64",
+  "viewport": "Same-origin frame, asserted native innerWidth, native macOS scrollbars",
+  "profileData": "14 synthetic API accounts with explicit auth/native-store mocks; SDK queries prohibited",
+  "matrix": [
+    {
+      "cardWidth": 344,
+      "cards": 14,
+      "columns": 1,
+      "gutter": 8,
+      "headerGutter": 16,
+      "layout": "contained",
+      "pageOverflow": 0,
+      "path": "/",
+      "width": 375
+    },
+    {
+      "cardWidth": 312,
+      "cards": 14,
+      "columns": 1,
+      "gutter": 24,
+      "headerGutter": 16,
+      "layout": "contained",
+      "pageOverflow": 0,
+      "path": "/profiles",
+      "width": 375
+    },
+    {
+      "cardWidth": 448,
+      "cards": 14,
+      "columns": 2,
+      "gutter": 24,
+      "headerGutter": 24,
+      "layout": "contained",
+      "pageOverflow": 0,
+      "path": "/",
+      "width": 1280
+    },
+    {
+      "cardWidth": 752,
+      "cards": 14,
+      "columns": 1,
+      "gutter": 24,
+      "headerGutter": 24,
+      "layout": "contained",
+      "pageOverflow": 0,
+      "path": "/profiles",
+      "width": 1280
+    },
+    {
+      "cardWidth": 448,
+      "cards": 14,
+      "columns": 2,
+      "gutter": 24,
+      "headerGutter": 24,
+      "layout": "contained",
+      "pageOverflow": 0,
+      "path": "/",
+      "width": 1920
+    },
+    {
+      "cardWidth": 752,
+      "cards": 14,
+      "columns": 1,
+      "gutter": 24,
+      "headerGutter": 24,
+      "layout": "contained",
+      "pageOverflow": 0,
+      "path": "/profiles",
+      "width": 1920
+    },
+    {
+      "cardWidth": 448,
+      "cards": 14,
+      "columns": 2,
+      "gutter": 24,
+      "headerGutter": 24,
+      "layout": "contained",
+      "pageOverflow": 0,
+      "path": "/",
+      "width": 2560
+    },
+    {
+      "cardWidth": 752,
+      "cards": 14,
+      "columns": 1,
+      "gutter": 24,
+      "headerGutter": 24,
+      "layout": "contained",
+      "pageOverflow": 0,
+      "path": "/profiles",
+      "width": 2560
+    },
+    {
+      "cardWidth": 328,
+      "cards": 14,
+      "columns": 1,
+      "gutter": 16,
+      "headerGutter": 16,
+      "layout": "wide",
+      "pageOverflow": 0,
+      "path": "/",
+      "width": 375
+    },
+    {
+      "cardWidth": 328,
+      "cards": 14,
+      "columns": 1,
+      "gutter": 16,
+      "headerGutter": 16,
+      "layout": "wide",
+      "pageOverflow": 0,
+      "path": "/profiles",
+      "width": 375
+    },
+    {
+      "cardWidth": 385,
+      "cards": 14,
+      "columns": 3,
+      "gutter": 38.4,
+      "headerGutter": 38.4,
+      "layout": "wide",
+      "pageOverflow": 0,
+      "path": "/",
+      "width": 1280
+    },
+    {
+      "cardWidth": 586,
+      "cards": 14,
+      "columns": 2,
+      "gutter": 38.4,
+      "headerGutter": 38.4,
+      "layout": "wide",
+      "pageOverflow": 0,
+      "path": "/profiles",
+      "width": 1280
+    },
+    {
+      "cardWidth": 440,
+      "cards": 14,
+      "columns": 4,
+      "gutter": 48,
+      "headerGutter": 48,
+      "layout": "wide",
+      "pageOverflow": 0,
+      "path": "/",
+      "width": 1920
+    },
+    {
+      "cardWidth": 592,
+      "cards": 14,
+      "columns": 3,
+      "gutter": 48,
+      "headerGutter": 48,
+      "layout": "wide",
+      "pageOverflow": 0,
+      "path": "/profiles",
+      "width": 1920
+    },
+    {
+      "cardWidth": 395,
+      "cards": 14,
+      "columns": 6,
+      "gutter": 48,
+      "headerGutter": 48,
+      "layout": "wide",
+      "pageOverflow": 0,
+      "path": "/",
+      "width": 2560
+    },
+    {
+      "cardWidth": 600,
+      "cards": 14,
+      "columns": 4,
+      "gutter": 48,
+      "headerGutter": 48,
+      "layout": "wide",
+      "pageOverflow": 0,
+      "path": "/profiles",
+      "width": 2560
+    }
+  ],
+  "settingUi": [
+    {
+      "rendered": "contained",
+      "saved": "contained",
+      "selected": "contained"
+    },
+    {
+      "rendered": "wide",
+      "saved": "wide",
+      "selected": "wide"
+    }
+  ],
+  "allMainPages": {
+    "afterInvalid": {
+      "layout": "wide",
+      "layouts": [
+        "contained",
+        "wide"
+      ]
+    },
+    "invalidStatus": 400,
+    "pages": [
+      {
+        "path": "/",
+        "status": 200,
+        "wideBeforeScripts": true
+      },
+      {
+        "path": "/profiles",
+        "status": 200,
+        "wideBeforeScripts": true
+      },
+      {
+        "path": "/settings",
+        "status": 200,
+        "wideBeforeScripts": true
+      },
+      {
+        "path": "/telemetry",
+        "status": 200,
+        "wideBeforeScripts": true
+      },
+      {
+        "path": "/plugins",
+        "status": 200,
+        "wideBeforeScripts": true
+      },
+      {
+        "path": "/providers",
+        "status": 200,
+        "wideBeforeScripts": true
+      }
+    ]
+  },
+  "maintainedGridFlow": {
+    "accountSwitchSaved": true,
+    "activeCardUpdated": true,
+    "anchorPassed": true,
+    "domDispatchedEvents": true,
+    "dragAcrossRowsSaved": true,
+    "dragMarksCleared": true,
+    "keyboardAcrossRowSaved": true,
+    "keyboardFocusRestored": true,
+    "result": "PASS",
+    "searchPassed": true,
+    "wideRetained": true
+  }
+}

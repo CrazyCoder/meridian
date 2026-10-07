@@ -5,12 +5,15 @@ import { agOpenai } from "./antigravityOpenai"
 import { AgResponseStore, agResponseScope } from "./antigravityResponses"
 import { AgTextStops } from "./antigravityStops"
 import { providerPageHtml } from '../../telemetry/providerPage'
+import { withSavedLayout } from '../../telemetry/pageLayout'
+import { ICON_PATH, iconResponse } from '../../telemetry/icon'
 import { providerOverview, type ProviderUsage } from '../../telemetry/providerView'
 import { providerSnapshot, disabledProvider } from './providerStatus'
 import { randomUUID } from "node:crypto"
 import type { ProxyConfig, ProxyServer } from "../types"
-import { getBuildInfo } from "../buildInfo"
+import { buildRuntime } from "../buildRuntime"
 import { hasValidApiKey } from "../auth"
+import { headerSettingsResponse, healthHostname } from "../../headerSettings"
 import { AntigravityRuntime, type AntigravityRun } from "./antigravityRuntime"
 import { AntigravityError, forcedAgTool, toolChoiceInstruction, blocks, contractKey, historyKey, sameAgExecutionContract, parseAgRequest, type AgBlock, type AgResult, type AgRequest } from "./antigravityProtocol"
 
@@ -286,11 +289,14 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       ],
       activity: runtime.activity(), accounts: [{ id: 'Antigravity account', active: true, ...quota }] }
   }
-  const fetch = async (request: Request): Promise<Response> => {
+  const dispatch = async (request: Request): Promise<Response> => {
     try {
       const path = new URL(request.url).pathname
       if (!["/health", "/readyz", "/livez"].includes(path) && !hasValidApiKey(request.headers)) throw new AntigravityError("Invalid or missing API key", 401, "authentication_error")
-      if (request.method === 'GET' && ['/', '/providers'].includes(path)) return new Response(providerPageHtml, { headers: { 'content-type': 'text/html; charset=utf-8' } })
+      if (["GET", "PUT"].includes(request.method) && path === "/settings/api/header") return headerSettingsResponse(request)
+      if (request.method === "GET" && path === "/build-status") return buildRuntime.local ? Response.json(buildRuntime.status(), { headers: { "Cache-Control": "no-store" } }) : new Response("Not found", { status: 404 })
+      if (request.method === 'GET' && ['/', '/providers'].includes(path)) return new Response(withSavedLayout(providerPageHtml), { headers: { 'content-type': 'text/html; charset=utf-8' } })
+      if (request.method === 'GET' && path === ICON_PATH) { const icon = iconResponse(); if (icon) return icon }
       if (request.method === 'GET' && ['/providers/status', '/providers/view'].includes(path)) {
         const data = providerSnapshot([disabledProvider('claude'), await providerStatus()])
         const filter = new URL(request.url).searchParams.get('provider')
@@ -309,7 +315,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         if (runtime.draining) return Response.json({ status: "draining" }, { status: 503 })
         await runtime.initialize()
         await runtime.verifyAccount()
-        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: getBuildInfo({ version: config.version ?? "unknown", modulePath: import.meta.url }), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, urlImages: !!runtime.options.allowToolBridge, documents: "local-poppler", audio: "local-whisper", video: "local-frames-and-transcript", nativeReasoning: false, nativeBrowser: !!runtime.options.allowNativeBrowser, nativeSubagents: !!runtime.options.allowNativeSubagents, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: runtime.nativeSessions && runtime.options.reuseConversations !== false ? "completed-text-and-client-tools" : false, conversationReuse: runtime.options.reuseConversations !== false ? "live-process" : false, parallelTools: true, tokenCounting: "estimate", openai: ["chat-completions", "responses"], responseStorage: runtime.state ? "durable-30m-bounded" : "process-local-30m-bounded", toolResultRecovery: "history-replay", idleToolReclamation: true, maxTokens: "advisory", thinkingBudgets: runtime.options.adaptThinkingBudgets ? "approximate-gemini-effort" : false }, processes: runtime.runs.size, activeProcesses: [...runtime.runs.values()].filter(run => run.active).length, pendingToolProcesses: [...runtime.runs.values()].filter(run => run.delivered.length > 0).length, stateError: runtime.stateError, preparing: runtime.preparing, reclaimed: runtime.reclaimed, reused: runtime.reused, restored: runtime.restored, completed: runtime.completed, failed: runtime.failed })
+        return Response.json({ status: "healthy", version: config.version ?? "unknown", build: buildRuntime.info(config.version ?? "unknown"), backend: "antigravity", experimental: process.platform !== "darwin", support: { tier: process.platform === "darwin" ? "supported" : "preview", cliVersion: runtime.cliVersion, verifiedCliVersion: "1.2.7" }, mode: "passthrough", auth: { provider: "agy-account", verification: "cli-configuration" }, capabilities: { text: true, tools: !!runtime.options.allowToolBridge, images: !!runtime.options.allowToolBridge, urlImages: !!runtime.options.allowToolBridge, documents: "local-poppler", audio: "local-whisper", video: "local-frames-and-transcript", nativeReasoning: false, nativeBrowser: !!runtime.options.allowNativeBrowser, nativeSubagents: !!runtime.options.allowNativeSubagents, structuredOutput: true, stopSequences: "text", forcedToolChoice: !!runtime.options.allowToolBridge, persistentResume: runtime.nativeSessions && runtime.options.reuseConversations !== false ? "completed-text-and-client-tools" : false, conversationReuse: runtime.options.reuseConversations !== false ? "live-process" : false, parallelTools: true, tokenCounting: "estimate", openai: ["chat-completions", "responses"], responseStorage: runtime.state ? "durable-30m-bounded" : "process-local-30m-bounded", toolResultRecovery: "history-replay", idleToolReclamation: true, maxTokens: "advisory", thinkingBudgets: runtime.options.adaptThinkingBudgets ? "approximate-gemini-effort" : false }, processes: runtime.runs.size, activeProcesses: [...runtime.runs.values()].filter(run => run.active).length, pendingToolProcesses: [...runtime.runs.values()].filter(run => run.delivered.length > 0).length, stateError: runtime.stateError, preparing: runtime.preparing, reclaimed: runtime.reclaimed, reused: runtime.reused, restored: runtime.restored, completed: runtime.completed, failed: runtime.failed })
       }
       if (request.method === "GET" && path === "/v1/models") {
         const models = await runtime.availableModels()
@@ -356,6 +362,16 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       if (request.method === "POST" && ["/v1/messages", "/messages"].includes(path)) return await messages(request)
       return errorResponse(new AntigravityError("Endpoint unavailable on the Antigravity backend", 404, "not_found_error"))
     } catch (error) { return errorResponse(error) }
+  }
+  const fetch = async (request: Request): Promise<Response> => {
+    const response = await dispatch(request)
+    if (request.method !== "GET" || new URL(request.url).pathname !== "/health") return response
+    // Keep the provider's healthy/draining/error contract intact. Re-read
+    // consent after its asynchronous account check and JSON body have settled.
+    const payload = await response.json() as Record<string, unknown>
+    const headers = new Headers(response.headers)
+    headers.set("Cache-Control", "no-store")
+    return Response.json({ ...payload, ...healthHostname() }, { status: response.status, headers })
   }
   return {
     app: { fetch }, config, providerStatus,

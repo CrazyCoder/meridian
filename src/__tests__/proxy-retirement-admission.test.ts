@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { installSdkMock } from "./sdkMock"
@@ -52,7 +52,7 @@ const overrides = {
 
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "meridian-retirement-http-")))
-  for (const key of [...Object.keys(overrides), "MERIDIAN_WORKDIR", "MERIDIAN_CONFIG_DIR"]) savedEnv[key] = process.env[key]
+  for (const key of [...Object.keys(overrides), "MERIDIAN_WORKDIR", "MERIDIAN_CONFIG_DIR", "MERIDIAN_SESSION_PROFILE_COPY_PRUNE", "MERIDIAN_SESSION_PROFILE_COPY_GRACE_MS", "CLAUDE_PROXY_SESSION_PROFILE_COPY_PRUNE"]) savedEnv[key] = process.env[key]
   Object.assign(process.env, overrides, { MERIDIAN_WORKDIR: root, MERIDIAN_CONFIG_DIR: join(root, "config") })
   setSessionStoreDir(join(root, "sessions"))
   resetActiveProfile()
@@ -162,4 +162,26 @@ describe("profile switch admission with bounded retirement", () => {
     expect(firstResponse.status, await firstResponse.clone().text()).toBe(200)
     await firstResponse.text()
   })
+})
+
+
+describe("profile-copy pruning consent", () => {
+  for (const enabled of [undefined, "0", "false", "1"]) {
+    it(`only retires old mappings with explicit opt-in (${enabled ?? "unset"})`, async () => {
+      delete process.env.CLAUDE_PROXY_SESSION_PROFILE_COPY_PRUNE
+      if (enabled === undefined) delete process.env.MERIDIAN_SESSION_PROFILE_COPY_PRUNE
+      else process.env.MERIDIAN_SESSION_PROFILE_COPY_PRUNE = enabled
+      process.env.MERIDIAN_SESSION_PROFILE_COPY_GRACE_MS = "0"
+      const document = {
+        "personal:policy": { claudeSessionId: "older", createdAt: 1, lastUsedAt: 1, messageCount: 1 },
+        "work:policy": { claudeSessionId: "newer", createdAt: 2, lastUsedAt: 2, messageCount: 1 },
+      }
+      mkdirSync(join(root, "sessions"), { recursive: true })
+      writeFileSync(join(root, "sessions", "sessions.json"), JSON.stringify(document))
+      proxy = createProxyServer({ port: 0, host: "127.0.0.1", profiles: ["personal", "work"].map(id => ({ id, claudeConfigDir: join(root, id) })) })
+      await proxy.sweepSessionGc?.()
+      expect(Object.keys(readSessionStoreSnapshot()).sort()).toEqual(enabled === "1"
+        ? ["work:policy"] : ["personal:policy", "work:policy"])
+    })
+  }
 })

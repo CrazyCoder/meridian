@@ -50,10 +50,23 @@ try {
     )
     gate.spawnClaudeCodeProcess({
       command: process.execPath,
-      args: ["-e", "await Bun.sleep(1500)"],
+      args: ["-e", 'import { existsSync, writeFileSync } from "node:fs"; '
+        + 'writeFileSync(process.env.EXECUTOR_STARTED_FILE, "started"); '
+        + 'const deadline = Date.now() + 10_000; '
+        + 'while (!existsSync(process.env.EXECUTOR_RELEASE_FILE)) { '
+        + 'if (Date.now() >= deadline) throw new Error("executor release timed out"); '
+        + 'await Bun.sleep(10); }'],
       env: { ...process.env },
       signal: new AbortController().signal,
     })
+    // spawnClaudeCodeProcess returns before asynchronous gate publication.
+    // Killing this owner before the actual child starts would test an unopened
+    // wrapper's 60-second deadline, rather than an orphaned running executor.
+    const startupDeadline = Date.now() + 5_000
+    while (!existsSync(process.env.EXECUTOR_STARTED_FILE)) {
+      if (Date.now() >= startupDeadline) throw new Error("executor startup timed out")
+      await Bun.sleep(10)
+    }
     await event("ready", { token: lease.token, executorPid: gate.executor.pid })
     await Bun.sleep(10_000)
   } else if (process.env.MODE === "armed") {
@@ -152,6 +165,8 @@ function spawnLeaseWorker(
       LOCATOR: JSON.stringify(locator),
       EVENT_FILE: join(root, "events.jsonl"),
       RELEASE_FILE: releaseFile,
+      EXECUTOR_STARTED_FILE: join(root, "executor-started"),
+      EXECUTOR_RELEASE_FILE: join(root, "executor-release"),
       MODE: mode,
     },
     stdout: "ignore",
@@ -319,8 +334,9 @@ describe("session lifecycle leases across OS processes", () => {
       },
     })
 
-    // The gate starts its child asynchronously; its ready event does not start
-    // the child's 1.5-second lifetime. Observe exit rather than guess startup time.
+    // Release the exact running executor only after proving the dead owner's
+    // lease stayed fenced. Observe exit rather than guessing a child lifetime.
+    await writeFile(join(fixture.root, "executor-release"), "release")
     const exitDeadline = Date.now() + 10_000
     while (probeProcessIncarnation(executor) !== "dead" && Date.now() < exitDeadline) {
       await Bun.sleep(10)

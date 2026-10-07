@@ -41,7 +41,9 @@ const schema = z.object({
   model: z.string().min(1).max(200).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/),
   messages: z.array(message).min(1),
   system: z.union([z.string(), z.array(textBlock)]).optional(),
-  tools: z.array(z.object({ name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/), description: z.string().optional(), input_schema: z.record(z.string(), z.unknown()) })).max(128).default([]),
+  // A catalog is not an execution batch. The CLI accepts larger MCP catalogs;
+  // retain per-tool validation and the runtime's separate action limits.
+  tools: z.array(z.object({ name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/), description: z.string().optional(), input_schema: z.record(z.string(), z.unknown()) })).default([]),
   stream: z.boolean().default(false), max_tokens: z.number().int().positive().optional(),
   tool_choice: z.discriminatedUnion("type", [
     z.object({ type: z.enum(["auto", "any"]), disable_parallel_tool_use: z.boolean().optional() }).strict(),

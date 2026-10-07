@@ -14,6 +14,24 @@ let window: BrowserWindow | undefined
 let panel: BrowserWindow | undefined
 let manager: Manager
 let tray: Tray | undefined
+let lastHideDockIcon: boolean | undefined
+let lastDockHide = 0
+let dockTimer: ReturnType<typeof setTimeout> | undefined
+function updateDock(hide: boolean) {
+  if (process.platform !== 'darwin' || !tray || hide === lastHideDockIcon) return
+  lastHideDockIcon = hide
+  clearTimeout(dockTimer)
+  if (hide) {
+    const apply = () => { lastDockHide = Date.now(); app.dock?.hide() }
+    // Electron/macOS ignores hide calls within one second of the last hide.
+    const wait = Math.max(0, 1100 - (Date.now() - lastDockHide))
+    if (wait) dockTimer = setTimeout(apply, wait)
+    else apply()
+  } else void app.dock?.show().then(() => {
+    // A newer preference may have arrived while Dock activation was pending.
+    if (lastHideDockIcon) { lastHideDockIcon = undefined; updateDock(true) }
+  }).catch(error => { manager.log(`Could not show Dock icon: ${String(error)}`) })
+}
 let quitting = false
 let canQuit = false
 function show() { panel?.hide(); window?.show(); window?.focus() }
@@ -48,6 +66,7 @@ function showNotification(title: string, body: string) {
   manager.publish(); notification.show()
 }
 function updateTray(state: DesktopState) {
+  updateDock(state.preferences.hideDockIcon)
   tray?.setToolTip(`Meridian · ${state.running ? state.owned ? 'Managed' : 'Connected' : 'Stopped'}`)
 }
 function trayMenu() {
@@ -65,7 +84,7 @@ function trayMenu() {
 let timer: ReturnType<typeof setInterval> | undefined
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
-  app.on('second-instance', () => { window?.show(); window?.focus() })
+  app.on('second-instance', show)
   void app.whenReady().then(async () => {
     const entry = join(__dirname, 'index.html')
     const entryUrl = pathToFileURL(entry).href
@@ -110,6 +129,11 @@ else {
     ipcMain.handle('meridian:action', async (event, action: unknown, value: unknown) => {
       trusted(event)
       if (action === 'open-desktop') show()
+      else if (action === 'copy-profile-login') {
+        const profile = text(value)
+        if (!/^[a-zA-Z0-9_-]{1,64}$/.test(profile)) throw new Error('Use an account name containing letters, numbers, dashes or underscores.')
+        clipboard.writeText(`meridian profile login ${profile}`)
+      }
       else if (action === 'copy-client-setup') await clipboard.writeText(clientSetupClipboardCommand(manager.snapshot(), value))
       else if (action === 'close-panel') panel?.hide()
       else if (action === 'resize-panel') {
@@ -195,7 +219,7 @@ app.on('before-quit', event => {
   if (quitting) return
   quitting = true
   void manager.shutdown().then(() => {
-    clearInterval(timer); tray?.destroy(); canQuit = true; app.quit()
+    clearInterval(timer); clearTimeout(dockTimer); tray?.destroy(); canQuit = true; app.quit()
   }).catch(async error => {
     quitting = false
     await dialog.showMessageBox({ type: 'warning', message: 'Meridian is still running', detail: String(error) })

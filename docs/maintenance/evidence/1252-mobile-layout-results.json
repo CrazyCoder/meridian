@@ -1,0 +1,892 @@
+{
+  "sourceHead": "3d02224d891d839229ba0eb318b2e8e061d8b9e6",
+  "baselineHead": "e2b09669b9140ba0eb8ebbec54cc504907e82cad",
+  "browser": "Pylon native Chrome 152.0.7977.130 / Electron 44.4.2, macOS arm64",
+  "viewport": "Same-origin native-browser iframe; actual innerWidth asserted; native macOS scrollbars consume 15px",
+  "matrix": [
+    {
+      "view": "before/",
+      "header": {
+        "besideBrand": true,
+        "calm": null,
+        "commitLink": true,
+        "current": "current",
+        "form": null,
+        "height": 171,
+        "rightRows": 4,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          18,
+          20,
+          18,
+          20
+        ],
+        "cardWidth": 257,
+        "containerPadding": [
+          24,
+          24
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 320
+    },
+    {
+      "view": "after/",
+      "header": {
+        "besideBrand": true,
+        "calm": "hidden",
+        "commitLink": false,
+        "current": null,
+        "form": "version",
+        "height": 97,
+        "rightRows": 1,
+        "text": "v1.77.1",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          9,
+          10,
+          9,
+          10
+        ],
+        "cardWidth": 289,
+        "containerPadding": [
+          8,
+          8
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 320
+    },
+    {
+      "view": "before/settings",
+      "header": {
+        "besideBrand": true,
+        "calm": null,
+        "commitLink": true,
+        "current": "current",
+        "form": null,
+        "height": 169,
+        "rightRows": 4,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "pageOverflow": 0,
+      "pricing": {
+        "clippedValues": 0,
+        "inputWidths": [
+          84,
+          84,
+          84,
+          84
+        ],
+        "modelLines": [
+          5,
+          5,
+          5,
+          5,
+          6
+        ],
+        "tableScroll": 440
+      },
+      "width": 320
+    },
+    {
+      "view": "after/settings",
+      "header": {
+        "besideBrand": true,
+        "calm": "hidden",
+        "commitLink": false,
+        "current": null,
+        "form": "version",
+        "height": 95,
+        "rightRows": 1,
+        "text": "v1.77.1",
+        "title": true
+      },
+      "pageOverflow": 0,
+      "pricing": {
+        "clippedValues": 0,
+        "inputWidths": [
+          65,
+          65,
+          65,
+          65
+        ],
+        "modelLines": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "tableScroll": 509
+      },
+      "width": 320
+    },
+    {
+      "view": "before/",
+      "header": {
+        "besideBrand": true,
+        "calm": null,
+        "commitLink": true,
+        "current": "current",
+        "form": null,
+        "height": 127,
+        "rightRows": 2,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          18,
+          20,
+          18,
+          20
+        ],
+        "cardWidth": 312,
+        "containerPadding": [
+          24,
+          24
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 375
+    },
+    {
+      "view": "after/",
+      "header": {
+        "besideBrand": true,
+        "calm": "hidden",
+        "commitLink": false,
+        "current": null,
+        "form": "version",
+        "height": 97,
+        "rightRows": 1,
+        "text": "v1.77.1",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          9,
+          10,
+          9,
+          10
+        ],
+        "cardWidth": 344,
+        "containerPadding": [
+          8,
+          8
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 375
+    },
+    {
+      "view": "before/settings",
+      "header": {
+        "besideBrand": true,
+        "calm": null,
+        "commitLink": true,
+        "current": "current",
+        "form": null,
+        "height": 125,
+        "rightRows": 2,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "pageOverflow": 0,
+      "pricing": {
+        "clippedValues": 0,
+        "inputWidths": [
+          84,
+          84,
+          84,
+          84
+        ],
+        "modelLines": [
+          5,
+          5,
+          5,
+          5,
+          6
+        ],
+        "tableScroll": 385
+      },
+      "width": 375
+    },
+    {
+      "view": "after/settings",
+      "header": {
+        "besideBrand": true,
+        "calm": "hidden",
+        "commitLink": false,
+        "current": null,
+        "form": "version",
+        "height": 95,
+        "rightRows": 1,
+        "text": "v1.77.1",
+        "title": true
+      },
+      "pageOverflow": 0,
+      "pricing": {
+        "clippedValues": 0,
+        "inputWidths": [
+          65,
+          65,
+          65,
+          65
+        ],
+        "modelLines": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "tableScroll": 454
+      },
+      "width": 375
+    },
+    {
+      "view": "before/",
+      "header": {
+        "besideBrand": true,
+        "calm": null,
+        "commitLink": true,
+        "current": "current",
+        "form": null,
+        "height": 127,
+        "rightRows": 2,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          18,
+          20,
+          18,
+          20
+        ],
+        "cardWidth": 351,
+        "containerPadding": [
+          24,
+          24
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 414
+    },
+    {
+      "view": "after/",
+      "header": {
+        "besideBrand": true,
+        "calm": "hidden",
+        "commitLink": false,
+        "current": null,
+        "form": "run",
+        "height": 97,
+        "rightRows": 1,
+        "text": "v1.77.1-src",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          9,
+          10,
+          9,
+          10
+        ],
+        "cardWidth": 383,
+        "containerPadding": [
+          8,
+          8
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 414
+    },
+    {
+      "view": "before/settings",
+      "header": {
+        "besideBrand": true,
+        "calm": null,
+        "commitLink": true,
+        "current": "current",
+        "form": null,
+        "height": 125,
+        "rightRows": 2,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "pageOverflow": 0,
+      "pricing": {
+        "clippedValues": 0,
+        "inputWidths": [
+          84,
+          84,
+          84,
+          84
+        ],
+        "modelLines": [
+          5,
+          5,
+          5,
+          5,
+          6
+        ],
+        "tableScroll": 346
+      },
+      "width": 414
+    },
+    {
+      "view": "after/settings",
+      "header": {
+        "besideBrand": true,
+        "calm": "hidden",
+        "commitLink": false,
+        "current": null,
+        "form": "run",
+        "height": 95,
+        "rightRows": 1,
+        "text": "v1.77.1-src",
+        "title": true
+      },
+      "pageOverflow": 0,
+      "pricing": {
+        "clippedValues": 0,
+        "inputWidths": [
+          65,
+          65,
+          65,
+          65
+        ],
+        "modelLines": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "tableScroll": 415
+      },
+      "width": 414
+    },
+    {
+      "view": "before/",
+      "header": {
+        "besideBrand": false,
+        "calm": null,
+        "commitLink": true,
+        "current": "current",
+        "form": null,
+        "height": 84,
+        "rightRows": 1,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          18,
+          20,
+          18,
+          20
+        ],
+        "cardWidth": 345,
+        "containerPadding": [
+          24,
+          24
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 768
+    },
+    {
+      "view": "after/",
+      "header": {
+        "besideBrand": false,
+        "calm": "shown",
+        "commitLink": true,
+        "current": "current",
+        "form": "full",
+        "height": 84,
+        "rightRows": 1,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          18,
+          20,
+          18,
+          20
+        ],
+        "cardWidth": 345,
+        "containerPadding": [
+          24,
+          24
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 768
+    },
+    {
+      "view": "before/settings",
+      "header": {
+        "besideBrand": false,
+        "calm": null,
+        "commitLink": true,
+        "current": "current",
+        "form": null,
+        "height": 82,
+        "rightRows": 1,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "pageOverflow": 0,
+      "pricing": {
+        "clippedValues": 0,
+        "inputWidths": [
+          84,
+          84,
+          84,
+          84
+        ],
+        "modelLines": [
+          5,
+          4,
+          4,
+          4,
+          5
+        ],
+        "tableScroll": 0
+      },
+      "width": 768
+    },
+    {
+      "view": "after/settings",
+      "header": {
+        "besideBrand": false,
+        "calm": "shown",
+        "commitLink": true,
+        "current": "current",
+        "form": "full",
+        "height": 82,
+        "rightRows": 1,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "pageOverflow": 0,
+      "pricing": {
+        "clippedValues": 0,
+        "inputWidths": [
+          65,
+          65,
+          65,
+          65
+        ],
+        "modelLines": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "tableScroll": 61
+      },
+      "width": 768
+    },
+    {
+      "view": "before/",
+      "header": {
+        "besideBrand": true,
+        "calm": null,
+        "commitLink": true,
+        "current": "current",
+        "form": null,
+        "height": 50,
+        "rightRows": 1,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          18,
+          20,
+          18,
+          20
+        ],
+        "cardWidth": 448,
+        "containerPadding": [
+          24,
+          24
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 1280
+    },
+    {
+      "view": "after/",
+      "header": {
+        "besideBrand": true,
+        "calm": "shown",
+        "commitLink": true,
+        "current": "current",
+        "form": "full",
+        "height": 50,
+        "rightRows": 1,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          18,
+          20,
+          18,
+          20
+        ],
+        "cardWidth": 448,
+        "containerPadding": [
+          24,
+          24
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 1280
+    },
+    {
+      "view": "before/settings",
+      "header": {
+        "besideBrand": true,
+        "calm": null,
+        "commitLink": true,
+        "current": "current",
+        "form": null,
+        "height": 49,
+        "rightRows": 1,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "pageOverflow": 0,
+      "pricing": {
+        "clippedValues": 0,
+        "inputWidths": [
+          84,
+          84,
+          84,
+          84
+        ],
+        "modelLines": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "tableScroll": 0
+      },
+      "width": 1280
+    },
+    {
+      "view": "after/settings",
+      "header": {
+        "besideBrand": true,
+        "calm": "shown",
+        "commitLink": true,
+        "current": "current",
+        "form": "full",
+        "height": 49,
+        "rightRows": 1,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "pageOverflow": 0,
+      "pricing": {
+        "clippedValues": 0,
+        "inputWidths": [
+          65,
+          65,
+          65,
+          65
+        ],
+        "modelLines": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "tableScroll": 0
+      },
+      "width": 1280
+    }
+  ],
+  "desktopGeometry": {
+    "beforeCount": 169,
+    "afterCount": 169,
+    "differences": []
+  },
+  "warnings": {
+    "fullAccountInTitle": true,
+    "probe": {
+      "header": {
+        "besideBrand": true,
+        "calm": "hidden",
+        "commitLink": false,
+        "current": "3 builds behind",
+        "form": "version",
+        "height": 158,
+        "rightRows": 3,
+        "text": "v1.77.1",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          9,
+          10,
+          9,
+          10
+        ],
+        "cardWidth": 344,
+        "containerPadding": [
+          8,
+          8
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 375
+    },
+    "updateVisible": true,
+    "warningVisible": true
+  },
+  "resizeSequence": [
+    {
+      "header": {
+        "besideBrand": true,
+        "calm": "hidden",
+        "commitLink": false,
+        "current": null,
+        "form": "version",
+        "height": 97,
+        "rightRows": 1,
+        "text": "v1.77.1",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          9,
+          10,
+          9,
+          10
+        ],
+        "cardWidth": 344,
+        "containerPadding": [
+          8,
+          8
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 375
+    },
+    {
+      "header": {
+        "besideBrand": true,
+        "calm": "hidden",
+        "commitLink": false,
+        "current": null,
+        "form": "run",
+        "height": 97,
+        "rightRows": 1,
+        "text": "v1.77.1-src",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          9,
+          10,
+          9,
+          10
+        ],
+        "cardWidth": 383,
+        "containerPadding": [
+          8,
+          8
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 414
+    },
+    {
+      "header": {
+        "besideBrand": false,
+        "calm": "shown",
+        "commitLink": true,
+        "current": "current",
+        "form": "full",
+        "height": 84,
+        "rightRows": 1,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          18,
+          20,
+          18,
+          20
+        ],
+        "cardWidth": 345,
+        "containerPadding": [
+          24,
+          24
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 768
+    },
+    {
+      "header": {
+        "besideBrand": true,
+        "calm": "shown",
+        "commitLink": true,
+        "current": "current",
+        "form": "full",
+        "height": 50,
+        "rightRows": 1,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          18,
+          20,
+          18,
+          20
+        ],
+        "cardWidth": 448,
+        "containerPadding": [
+          24,
+          24
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 1280
+    },
+    {
+      "header": {
+        "besideBrand": false,
+        "calm": "shown",
+        "commitLink": true,
+        "current": "current",
+        "form": "full",
+        "height": 84,
+        "rightRows": 1,
+        "text": "v1.77.1 source run 3255c91",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          18,
+          20,
+          18,
+          20
+        ],
+        "cardWidth": 345,
+        "containerPadding": [
+          24,
+          24
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 768
+    },
+    {
+      "header": {
+        "besideBrand": true,
+        "calm": "hidden",
+        "commitLink": false,
+        "current": null,
+        "form": "run",
+        "height": 97,
+        "rightRows": 1,
+        "text": "v1.77.1-src",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          9,
+          10,
+          9,
+          10
+        ],
+        "cardWidth": 383,
+        "containerPadding": [
+          8,
+          8
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 414
+    },
+    {
+      "header": {
+        "besideBrand": true,
+        "calm": "hidden",
+        "commitLink": false,
+        "current": null,
+        "form": "version",
+        "height": 97,
+        "rightRows": 1,
+        "text": "v1.77.1",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          9,
+          10,
+          9,
+          10
+        ],
+        "cardWidth": 289,
+        "containerPadding": [
+          8,
+          8
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 320
+    },
+    {
+      "header": {
+        "besideBrand": true,
+        "calm": "hidden",
+        "commitLink": false,
+        "current": null,
+        "form": "version",
+        "height": 97,
+        "rightRows": 1,
+        "text": "v1.77.1",
+        "title": true
+      },
+      "home": {
+        "cardPadding": [
+          9,
+          10,
+          9,
+          10
+        ],
+        "cardWidth": 344,
+        "containerPadding": [
+          8,
+          8
+        ]
+      },
+      "pageOverflow": 0,
+      "width": 375
+    }
+  ]
+}

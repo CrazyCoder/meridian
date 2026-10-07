@@ -40,8 +40,10 @@ Environment variables, endpoints, authentication, SDK feature toggles, passthrou
 | `MERIDIAN_FOLLOW_ACTIVE` | `CLAUDE_PROXY_FOLLOW_ACTIVE` | unset | Base URL of another Meridian instance to take the active profile from, e.g. `http://127.0.0.1:3456`. For a development instance running beside a primary one — see [Following another instance's active profile](#following-another-instances-active-profile). |
 | `MERIDIAN_PASSTHROUGH_EARLY_STOP` | — | `1` | Set to `0` to disable [digest-turn elimination](#how-tool-calling-works-in-passthrough) and restore the old end-of-turn behavior |
 | `MERIDIAN_PASSTHROUGH_MAX_TURNS` | `CLAUDE_PROXY_PASSTHROUGH_MAX_TURNS` | *(unset — capped at 1)* | Pin the passthrough SDK turn budget. **Setting this opts out of [digest-turn elimination](#how-tool-calling-works-in-passthrough)** — an explicit value always wins over the cap, so a turn budget set to work around an older issue keeps paying for the discarded digest turn. Unset it unless you still need it. |
-| `MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY` | — | *(unset — confirmed CLI rejection only)* | In streaming passthrough, a capped turn with complete client-declared tool calls is returned as `tool_use` when every call has an ID-matched CLI `No such tool available` result; the rejected SDK session is evicted so the next client result replays against a fresh one. Set to `1` to **also** allow the experimental uncaptured abort-window recovery without an explicit dispatch rejection (no live positive gate yet). Set to `0` to disable both recoveries. Non-streaming responses are unaffected. Recovery requires `maxTurns=1`, a complete open envelope, and no cancellation. |
-| `MERIDIAN_SESSION_GC_LOCK_WAIT_MS` | `CLAUDE_PROXY_SESSION_GC_LOCK_WAIT_MS` | `2000` | External lifecycle-lock acquisition budget, starting only at the head of the local FIFO; minimum 100 ms. Local queue waiting does not consume this budget and is not bounded by two seconds. Each lock allows 256 waiting callers; a holder stalled for 60 seconds rejects queued/new callers without unlocking its transaction. Request cancellation removes queued work or cancels acquisition, never an executing durable transaction; cleanup remains uncanceled. External timeout, queue capacity and stalled-holder failures answer **503 `overloaded_error`** with distinct reasons. |
+| `MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY` | — | *(unset — confirmed CLI rejection only)* | In streaming passthrough, a capped turn with complete client-declared tool calls is returned as `tool_use` when every call has an ID-matched CLI `No such tool available` result; the rejected SDK session is evicted so the next client result replays against a fresh one. Set to `1` to **also** allow the experimental uncaptured abort-window recovery without an explicit dispatch rejection (no live positive gate yet). Set to `0` to disable both recoveries. Non-streaming responses are unaffected. The confirmed-rejection recovery applies at any turn budget, including the deferred-tools budget; the abort-window recovery requires `maxTurns=1`. Both require a complete open envelope and no cancellation. |
+| `MERIDIAN_SESSION_GC_LOCK_WAIT_MS` | `CLAUDE_PROXY_SESSION_GC_LOCK_WAIT_MS` | `2000` | External lifecycle-lock acquisition budget, starting only at the head of the local FIFO; minimum 100 ms. Local queue waiting does not consume this budget and is not bounded by two seconds. Each lock allows 256 waiting callers; a holder stalled for 60 seconds rejects queued/new callers without unlocking its transaction, unless the deadline itself ran late because the event loop was blocked. An answered turn whose terminal publication meets any of these errors is still delivered; its next turn replays history. Request cancellation removes queued work or cancels acquisition, never an executing durable transaction; cleanup remains uncanceled. External timeout, queue capacity and stalled-holder failures answer **503 `overloaded_error`** with distinct reasons. |
+| `MERIDIAN_SESSION_PROFILE_COPY_PRUNE` | `CLAUDE_PROXY_SESSION_PROFILE_COPY_PRUNE` | `0` | Opt in to removing stale cross-profile session mappings during GC. Off preserves native resume history. Returning to a pruned profile uses flattened, context-trimmed replay, which cannot restore SDK thinking. |
+| `MERIDIAN_SESSION_PROFILE_COPY_GRACE_MS` | `CLAUDE_PROXY_SESSION_PROFILE_COPY_GRACE_MS` | `86400000` (24 hours) | With several profiles, the same conversation gets its own stored session under each profile it has run on. When profile-copy pruning is enabled, on every session GC sweep a copy is removed once a newer copy of that conversation exists under another profile and the older copy has not been used for this many milliseconds. The newest copy, copies of a conversation with a request in flight, and mappings a priority route depends on are always kept. A conversation that returns to a profile while its copy exists resumes that profile's own session; after removal it is replayed into a fresh session on that account, as flattened history trimmed to the model's context window. The default covers an account's 5-hour usage window resetting and a day of switching back and forth. `0` keeps only the newest copy. Removal is paced to leave at least half of `MERIDIAN_SESSION_GC_MAX_PENDING` free for new requests, so a large store is trimmed over several sweeps. |
 | `MERIDIAN_SILENT_TURN_RECOVERY` | `CLAUDE_PROXY_SILENT_TURN_RECOVERY` | `1` | Set to `0` to stop spending a recovery turn on a [silent turn](#silent-turns). Detection and telemetry stay on either way |
 | `MERIDIAN_UPSTREAM_IDLE_MS` | `CLAUDE_PROXY_UPSTREAM_IDLE_MS` | `90000` | Milliseconds the upstream stream may go quiet before the turn is treated as stalled. Raise it for long-thinking turns that were being killed mid-flight; `0` disables the guard entirely. Applies to the recovery turn too. |
 | `MERIDIAN_UPSTREAM_IDLE_MAX_CONSECUTIVE` | `CLAUDE_PROXY_UPSTREAM_IDLE_MAX_CONSECUTIVE` | `3` | Consecutive idle stalls for the same request and session before returning a terminal error. Identical retries are then rejected before another SDK query for one idle window (at least 60 seconds). A changed request or completed turn resets the streak; rejected retries do not extend the pause. `0` disables this ceiling. Tracking is bounded and local to the proxy instance; requests without a correlatable session are not pooled. |
@@ -61,11 +63,12 @@ Environment variables, endpoints, authentication, SDK feature toggles, passthrou
 | `MERIDIAN_BETA_POLICY` | — | `allow-safe` | Client `anthropic-beta` header handling: `allow-safe`, `strip-all`, or `allow-all` |
 | `MERIDIAN_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` | — | canonical ids | Pin the model id the SDK resolves for each tier alias (e.g. `MERIDIAN_DEFAULT_OPUS_MODEL`) |
 | `MERIDIAN_SESSION_DIR` | `CLAUDE_PROXY_SESSION_DIR` | `~/.cache/meridian` | Directory for the persisted session store |
-| `MERIDIAN_NO_UPDATE_CHECK` | — | unset | Set to `1` to disable the once-a-day npm registry lookup that fills in `build.latest` on `/health`. No outbound request is made at all when set. See [Build provenance](#build-provenance-and-staying-current). |
+| `MERIDIAN_NO_UPDATE_CHECK` | — | unset | Set to `1` to force the update check off even when the `checkForUpdates` setting is on. No outbound request is made at all when set. See [Build provenance](#build-provenance-and-staying-current). |
 | `MERIDIAN_UPDATE_CHECK_URL` | — | npm dist-tags | Registry endpoint for the update check. Point it at a mirror on restricted networks; it must return `{"latest":"<version>"}`. |
 | `MERIDIAN_UPDATE_CHECK_PATH` | — | `~/.cache/meridian/update-check.json` | Where the update check caches its result. |
 | `MERIDIAN_BUILD_SOURCE` | — | *(derived from the install path)* | Overrides the `build.source` reported by `/health`: `npm`, `local`, or `dev`. Normally set by [`bin/meridian-launchd.sh`](#running-as-a-service-without-drift), not by hand. |
 | `MERIDIAN_BUILD_SHA`, `MERIDIAN_BUILD_BRANCH`, `MERIDIAN_BUILD_DIRTY` | — | unset | Optional commit stamps surfaced in `/health` `build`. Absent unless something sets them at launch. |
+| `MERIDIAN_ERROR_REPORTING_DSN` | — | unset | GlitchTip/Sentry DSN to report Meridian's own crashes to; `errorReportingDsn` in `settings.json` is the alternative, and the environment wins. Off when neither is set. See [Error reporting](#error-reporting). |
 | `MERIDIAN_DEBUG` | `CLAUDE_PROXY_DEBUG` | unset | Set to `1` for verbose request/session logging |
 | `MERIDIAN_SILENT` | `CLAUDE_PROXY_SILENT` | unset | Set to `1` to suppress startup output (used by embedding plugins) |
 | `MERIDIAN_ENFORCE_MAX_TOKENS` | `CLAUDE_PROXY_ENFORCE_MAX_TOKENS` | unset | Set to `1` to apply the client output budget; see [output limits](#known-limitations). |
@@ -151,7 +154,7 @@ second instance pointed at an empty directory starts genuinely empty:
 
 | File | Holds |
 |---|---|
-| `settings.json` | Active profile, routing mode, priority order |
+| `settings.json` | Active profile, routing mode, priority order, `checkForUpdates`, page `layout` |
 | `profiles.json` | Configured profiles ([Multi-Profile Support](profiles.md)) |
 | `profiles/<id>/` | Per-profile `CLAUDE_CONFIG_DIR` (credentials, SDK state) |
 | `adapter-instances.json` | [Adapter instances](agents.md#adapter-instances) |
@@ -280,6 +283,7 @@ adapter lets the subprocess run the built-in WebFetch at all.
 | `GET/POST /v1/design/*` | Claude Design MCP proxy (see [Claude Design MCP](agents.md#claude-design-mcp)) |
 | `GET/POST /design-login` | OAuth flow for the design scopes |
 | `GET /health` | Auth status, mode, plugin status |
+| `GET /inflight` | Client requests in flight per upstream; loopback clients only. See [Restarting when idle](#restarting-when-idle) |
 | `POST /auth/refresh` | Manually refresh the OAuth token |
 | `GET /telemetry` | Performance dashboard |
 | `GET /telemetry/requests` | Recent request metrics (JSON) |
@@ -289,9 +293,18 @@ adapter lets the subprocess run the built-in WebFetch at all.
 | `GET /profiles` | Profile management page |
 | `GET /profiles/list` | List profiles with auth status (JSON) |
 | `POST /profiles/active` | Switch the active profile |
+| `POST /profiles/login/start` | Begin an OAuth login for a profile — returns the authorize URL (see [Re-authenticating from the web UI](profiles.md#from-the-web-ui-re-authenticate-a-profile-without-a-terminal)) |
+| `GET /profiles/login/status` | Poll a started login: `waiting`, `completed` or `failed` |
+| `POST /profiles/login/complete` | Finish that login with the code the user pasted back |
+| `GET /callback` | Anthropic's OAuth redirect target. **Not** behind `MERIDIAN_API_KEY` — the redirect carries no key; acts only on a single-use `state` minted by `/profiles/login/start` |
+| `POST /profiles/add/start` | Begin creating a new profile — validates the name and returns the authorize URL (see [Adding from the web UI](profiles.md#from-the-web-ui-add-a-profile)) |
+| `POST /profiles/add/complete` | Finish that creation — writes the profile only once Anthropic returns credentials |
 | `GET /v1/usage/quota` | Usage windows for the active profile (JSON) |
 | `GET /v1/usage/quota/all` | Usage windows for every profile (JSON) |
-| `GET /settings` | SDK feature toggles + model pricing UI |
+| `GET /settings` | Routing, SDK feature toggles, model pricing, telemetry storage, update-check, site-header and page layout UI |
+| `GET/PUT /settings/api/updates` | Read or set `checkForUpdates` (JSON `{"checkForUpdates": true}`); takes effect on the running proxy |
+| `GET/PUT /settings/api/header` | Read or set `showHostname` (JSON `{"showHostname": true}`): name the machine beside the header's status; takes effect on the running proxy |
+| `GET/PUT /settings/api/layout` | Read or set the web pages' `layout`: `contained` (default, a centered column) or `wide` (spans the window, more cards per row). JSON `{"layout": "wide"}`, `null` to unset; applies on the next page load |
 | `GET /plugins` | Plugin management page (`/plugins/list`, `POST /plugins/reload` for JSON/actions) |
 
 Illustrative health response excerpt (versions and status vary by installation):
@@ -309,6 +322,69 @@ Illustrative health response excerpt (versions and status vary by installation):
 
 `plugin.opencode` is `"configured"` when `meridian setup` has been run, `"not-configured"` otherwise.
 
+With `"showHostname": true` in `settings.json` (or the switch under **Site
+Header** at `/settings`), `/health` also carries `"hostname"`, the machine's
+name as the OS reports it, and the site header shows it beside the status, e.g.
+`Operational · nwkr-desktop`. It is off by default because `/health` answers
+without the API key.
+
+This applies to Claude and standalone Antigravity health, including unhealthy
+and draining responses; their status codes and other fields stay intact.
+`/livez` and `/readyz` do not disclose the hostname. The header shows the first
+DNS label (or a whole IP address), with the complete name in its tooltip.
+
+`GET /settings/api/header` returns `{ "showHostname": false, "hostname":
+"<OS name>" }` when off. `PUT` accepts a boolean, `null` to remove the saved
+field, or an omitted field to preserve it; invalid values or bodies return
+400. Both routes use the existing `MERIDIAN_API_KEY` gate when configured.
+Health and header settings bypass caches, and disabling takes effect on
+responses assembled after the setting changes, including probes already
+waiting for auth. The UI permits one hostname save at a time and ignores
+older health polls when a newer refresh has started.
+
+Browser writes must originate from this server. HTTPS origins are also
+accepted across an internal HTTP TLS-termination hop with the same preserved
+public Host/port; explicit default 443 is equivalent to omitted HTTPS 443.
+Foreign, opaque, malformed or different-port origins return 403. Forwarding
+headers are not trusted. A reverse proxy that rewrites Host must preserve the
+public Host for this route. CLI writes without an `Origin` header continue to
+work through the API-key gate.
+
+## Error reporting
+
+Meridian can report its own uncaught exceptions and unhandled promise
+rejections to a self-hosted [GlitchTip](https://glitchtip.com) or a Sentry
+project. It is off unless you give it a DSN:
+
+```bash
+MERIDIAN_ERROR_REPORTING_DSN=https://<key>@glitchtip.example.com/<project-id> meridian
+```
+
+or `"errorReportingDsn": "https://<key>@glitchtip.example.com/<project-id>"` in
+`~/.config/meridian/settings.json` (the environment variable wins). The value is
+read once at startup.
+
+- **Errors only.** An event carries the exception, its `cause` chain, stack
+  frames, the Meridian release and the runtime name and version. No request
+  or response content, headers, session ids, environment variables, argv,
+  hostname, breadcrumbs, tracing or profiling. Token-shaped strings
+  (JWTs, `sk-…` keys, `Bearer` values, Google OAuth tokens, URL credentials
+  and query strings, `access_token=`-style pairs) are replaced with
+  `<redacted>` before anything is written.
+- **It never changes whether Meridian crashes.** A crash still exits exactly
+  as it would without reporting; an error Meridian recovers from is still
+  recovered from.
+- **A collector outage costs nothing but the events.** Each event is written
+  first to `<config dir>/error-reports/` (`0600` files, at most 500, dropped
+  after 7 days) and posted afterwards: at once by a process that survives the
+  error, by a short-lived detached child when the error ends the process, and
+  otherwise on the next start. Nothing blocks and nothing throws when the
+  collector is unreachable.
+
+To check the wiring, run `meridian test-error-report` with the same
+configuration. It crashes on purpose with a test error that shows up in the
+project within seconds.
+
 ## Build provenance and staying current
 
 `version` alone cannot tell you what an instance is running. It is read from
@@ -322,18 +398,66 @@ indistinguishable from one serving the published version.
 |-------|---------|
 | `source` | `npm` — resolved from a `node_modules` install, so `version` is trustworthy. `local` — running from a checkout or a build next to sources. `dev` — explicitly stamped as a development build. |
 | `version` | The `package.json` version. Proof of what is running **only** when `source` is `npm`. |
-| `sha`, `branch`, `dirty` | Present only when the launcher stamped them. `dirty` means uncommitted changes were in the tree. |
+| `sha`, `branch`, `dirty` | Captured from the local tree at build/startup, or from launcher stamps when no Git snapshot is available. `dirty` describes that captured tree, not later edits. |
+| `kind` | Local execution: `artifact` for bundled output, `source` for direct TypeScript execution. |
+| `releaseVersion` | Reachable release tag at build/startup, when available and not older than `package.json` (an older one means newer tags were never fetched). Never an invented next release. |
+| `counter`, `counterScope` | Successful local build ordinal and its worktree-specific history ID. Absent for source runs or unverifiable artifacts. Compare counters only within the same scope. |
+| `attemptId`, `certification` | Embedded artifact identity and its verification result. A process never adopts a newer artifact's identity after startup. |
+| `branchUrl`, `commitUrl` | Public GitHub/GitLab links derived from the checkout's origin, without credentials, query strings or fragments. A dirty build links to its base commit, not its uncommitted edits. |
 | `latest` | Newest published version, from the cached registry check. Absent until the check resolves, and on the first run of a fresh install. |
 | `updateAvailable` | `latest` is strictly newer than `version`. Absent — not `false` — while `latest` is unknown, because "not checked" and "current" are different claims. |
 
-The site header renders this: a blue chip links to the releases page when an
-update is available, and a violet chip marks a non-npm build.
+The site header always shows the running npm version. Local builds show their
+release base, build number (or explicit source/unnumbered status), branch, short
+commit and dirty marker. Branch/commit links are blue; metadata is violet.
 
-**The update check** runs once a day, caches to
+`GET /build-status` is available only for local/dev execution and uses the
+existing optional API-key protection. It returns `{runtime, latest?, state,
+buildsBehind?}` with `Cache-Control: no-store`. Runtime identity is immutable;
+disk state is refreshed separately in a bounded worker, shared across requests
+and refreshed on demand at most every ten seconds. An initial reading may be
+`unknown` until the worker finishes. `behind` reports the difference between
+successful build counters, for example `3 builds behind`. `current`, `rollback`,
+`incomparable`, `source-changed`, `building`, `missing`, `invalid` and `unknown`
+distinguish other outcomes rather than claiming an update without evidence.
+Source edits alone never count as completed builds. npm installs return 404.
+
+`npm run build` certifies output only after bundling, declarations, export fixes
+and Node entrypoint checks succeed. Local records live under the worktree's
+Git directory in `meridian-builds/`; deleting `dist` does not reset the counter.
+Separate worktrees have separate histories. The runtime checks its embedded
+identity against the success record and artifact hashes; missing or altered
+evidence produces an unnumbered artifact, not a guessed number. Git-less source
+archives still build but do not receive local counters.
+
+Builds use owner-PID claim directories under `meridian-builds/`; competing builds
+wait briefly or report contention. Claims belonging to exited processes are
+reclaimed, never by age alone. An unreaped or reused PID can require operator
+inspection. Source changes during a build prevent certification. This is local integrity checking,
+not signed attestation or atomic deployment: do not replace a live `dist` while
+it may still need to load chunks. Direct `bun run bin/cli.ts` execution is labeled
+`source run`, with source drift rather than a build count. Unstamped archive
+builds retain the existing local-build display and cannot claim disk freshness.
+Unavailable Git before certification falls back to an uncertified archive build;
+failed build gates never fall back or consume a successful-build number.
+
+**The update check is off by default.** Nothing contacts the registry until you
+turn it on, either in the **Updates** section of `/settings` or in
+`settings.json`:
+
+```json
+{ "checkForUpdates": true }
+```
+
+Once on, it asks the npm registry's `dist-tags` endpoint (the same source
+`npm install -g @rynfar/meridian@latest` resolves) once a day, caches to
 `~/.cache/meridian/update-check.json`, times out after 5s, and never touches
 the request path. If the registry is unreachable it keeps reporting the last
-version it saw rather than dropping the field. Set `MERIDIAN_NO_UPDATE_CHECK=1`
-to turn it off entirely.
+version it saw rather than dropping the field. Toggling it in the UI applies to
+the running proxy; switching it off also clears `build.latest`.
+`MERIDIAN_NO_UPDATE_CHECK=1` forces it off regardless of the setting, so a
+fleet can refuse the call in one place. The launcher script's own install-time
+check below is separate and has its own switch.
 
 ### Running as a service without drift
 
@@ -411,6 +535,51 @@ Restart=no
 ```
 
 The idle exit setting is optional. It starts a graceful shutdown after the configured period without a model request; the socket unit starts a new process on the next connection. The inherited fd is not passed on to the SDK subprocess. [E59](../E2E.md#e59-node-socket-activation-and-idle-exit) describes the process-level probe.
+
+## Restarting when idle
+
+`GET /inflight` lets a supervisor on the same host observe admitted client
+HTTP requests before requesting a graceful shutdown:
+
+```json
+{
+  "scope": "client-http",
+  "at": "2026-09-28T11:02:03.456Z",
+  "total": 3,
+  "oldestStartedAt": "2026-09-28T11:01:40.012Z",
+  "upstreams": {
+    "claude": { "streams": 1, "requests": 0, "queued": 2 },
+    "antigravity": { "streams": 0, "requests": 0, "queued": 0 }
+  }
+}
+```
+
+- `scope` is `"client-http"`. `total` counts admitted Claude Messages requests
+  (including internal OpenAI translations) and combined Antigravity POSTs; zero
+  means that none of those requests is currently admitted. It does not mean
+  that restarting will interrupt no work. Each request counts once: in `queued`
+  while it waits for its session's turn or a free SDK slot, otherwise in
+  `streams` or `requests` by whether the client asked for a stream. A request
+  stays counted until its application response body is consumed by the HTTP
+  adapter, cancelled or failed. This is not an acknowledgement of remote receipt.
+- `oldestStartedAt` is when the longest-running of them arrived, or `null`.
+- `antigravity` appears only with `MERIDIAN_BACKEND=combined` and counts
+  `POST /antigravity/*` requests. Background Responses jobs that keep running
+  after their `POST` returned and processes waiting for a client tool result
+  are not counted. The standalone
+  `MERIDIAN_BACKEND=antigravity` server does not serve `/inflight`.
+- Meridian's own background work (token refresh, usage polling, session
+  cleanup) is never counted.
+- Only a loopback peer (`127.0.0.0/8`, `::1`) gets an answer, and not through a
+  proxy: a request with `Forwarded`, `X-Forwarded-For` or `X-Real-IP` gets
+  `403`, as does any other address. No API key is needed. The response holds
+  counts only: no session ids, prompts, profiles or accounts.
+
+A request arriving between a probe and the restart is not covered by the
+probe. Use the [graceful shutdown](#graceful-shutdown) drain; this endpoint
+is not an admission barrier. Background Responses jobs are not restart
+resumable, so a supervisor must also wait for those jobs and pending client
+tool continuations to finish through their own lifecycle APIs.
 
 ## Graceful shutdown
 
@@ -767,6 +936,7 @@ ANTHROPIC_API_KEY=your-secret-key ANTHROPIC_BASE_URL=http://meridian-host:3456 o
 | `meridian profile login <name> [--headless]` | Re-authenticate an expired profile, adding it first if that name has no profile yet (browser-login profiles only); `--headless` uses the URL/code flow |
 | `meridian profile remove <name>` | Remove a profile and its credentials |
 | `meridian refresh-token` | Manually refresh the Claude OAuth token (exits 0/1) |
+| `meridian test-error-report` | Crash on purpose so the configured [error-reporting](#error-reporting) collector receives a test issue. Always exits 1; when reporting is off it only prints how to turn it on |
 
 ## SDK Feature Toggles (Experimental)
 
@@ -982,3 +1152,11 @@ $env:ANTHROPIC_API_KEY = "x" # Use your Meridian API key if protection is enable
 
 Then follow the [setup instructions for your client](agents.md). The desktop app
 is currently a Mac preview; it is not required for Windows headless use.
+
+Local provenance verification accepts complete fingerprints only. Source and
+artifact scans allow at most 64 MiB per file, 256 MiB total, 10,000 entries,
+and two seconds of scan work; artifact traversal additionally caps depth at 32.
+Git output is capped at 2 MiB, metadata at 4 MiB (package metadata 1 MiB).
+Oversized or unavailable inputs report unavailable/invalid provenance rather
+than certifying a partial hash. A local certified build refuses such inputs;
+Git-less archives retain their uncertified build path.

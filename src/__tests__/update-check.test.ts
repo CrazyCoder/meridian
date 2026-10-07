@@ -4,13 +4,20 @@
  * The properties that matter are all about restraint: it must not hit the
  * network more than once a day, must not fail a start when the network is
  * gone, must not let a stale mirror walk the known-latest backwards, and must
- * not run at all when the operator opted out.
+ * not run at all unless someone asked for it.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { checkForUpdate, getLatestVersion, startUpdateCheck, stopUpdateCheck } from "../proxy/updateCheck"
+import { setSetting } from "../settings"
+import {
+  checkForUpdate,
+  getLatestVersion,
+  isUpdateCheckEnabled,
+  startUpdateCheck,
+  stopUpdateCheck,
+} from "../proxy/updateCheck"
 
 let dir: string
 let cachePath: string
@@ -18,6 +25,9 @@ const savedOptOut = process.env.MERIDIAN_NO_UPDATE_CHECK
 
 beforeEach(async () => {
   delete process.env.MERIDIAN_NO_UPDATE_CHECK
+  // The check is off by default, so every test that expects it to run turns
+  // it on here rather than each repeating the same setup.
+  setSetting("checkForUpdates", true)
   dir = await mkdtemp(join(tmpdir(), "meridian-update-check-"))
   cachePath = join(dir, "update-check.json")
   stopUpdateCheck()
@@ -25,6 +35,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   stopUpdateCheck()
+  setSetting("checkForUpdates", undefined)
   if (savedOptOut === undefined) delete process.env.MERIDIAN_NO_UPDATE_CHECK
   else process.env.MERIDIAN_NO_UPDATE_CHECK = savedOptOut
   await rm(dir, { recursive: true, force: true })
@@ -43,6 +54,13 @@ function countingFetch(value: string | undefined) {
 }
 
 describe("checkForUpdate", () => {
+  test("disabling while the disk cache is being read prevents a later network request", async () => {
+    const { state, fetchLatest } = countingFetch("1.99.0")
+    const pending = checkForUpdate({ cachePath, fetchLatest })
+    setSetting("checkForUpdates", false)
+    expect(await pending).toBeUndefined()
+    expect(state.calls).toBe(0)
+  })
   test("fetches and caches on a cold start", async () => {
     const { state, fetchLatest } = countingFetch("1.63.0")
     expect(await checkForUpdate({ cachePath, fetchLatest })).toBe("1.63.0")
@@ -138,7 +156,84 @@ describe("checkForUpdate", () => {
   })
 })
 
+describe("isUpdateCheckEnabled", () => {
+  test("off until the setting turns it on", () => {
+    setSetting("checkForUpdates", undefined)
+    expect(isUpdateCheckEnabled()).toBe(false)
+    setSetting("checkForUpdates", false)
+    expect(isUpdateCheckEnabled()).toBe(false)
+    setSetting("checkForUpdates", true)
+    expect(isUpdateCheckEnabled()).toBe(true)
+  })
+
+  test("the env opt-out wins over an enabled setting", () => {
+    process.env.MERIDIAN_NO_UPDATE_CHECK = "1"
+    expect(isUpdateCheckEnabled()).toBe(false)
+  })
+})
+
+describe("no network while off", () => {
+  // Spies on the real global fetch and leaves fetchLatest at its default, so
+  // this covers the registry path an actual install takes rather than a stub.
+  const realFetch = globalThis.fetch
+  let requested: string[]
+
+  beforeEach(() => {
+    requested = []
+    globalThis.fetch = Object.assign(
+      async (input: string | URL | Request) => {
+        requested.push(String(input instanceof Request ? input.url : input))
+        return Response.json({ latest: "1.99.0" })
+      },
+      { preconnect: realFetch.preconnect },
+    )
+  })
+
+  afterEach(() => {
+    globalThis.fetch = realFetch
+  })
+
+  test("an unset setting makes no request, from start or from a direct check", async () => {
+    setSetting("checkForUpdates", undefined)
+    await startUpdateCheck({ cachePath })
+    expect(await checkForUpdate({ cachePath })).toBeUndefined()
+
+    expect(requested).toEqual([])
+    expect(getLatestVersion()).toBeUndefined()
+  })
+
+  test("an explicit false makes no request either", async () => {
+    setSetting("checkForUpdates", false)
+    await startUpdateCheck({ cachePath })
+    expect(requested).toEqual([])
+  })
+
+  test("the same path does reach the registry once switched on", async () => {
+    // The control for the two tests above: without it, a spy that never
+    // fires would pass them for the wrong reason.
+    await startUpdateCheck({ cachePath })
+    expect(requested).toEqual(["https://registry.npmjs.org/-/package/@rynfar/meridian/dist-tags"])
+    expect(getLatestVersion()).toBe("1.99.0")
+  })
+})
+
 describe("startUpdateCheck", () => {
+  test("a check still in flight when switched off does not publish afterwards", async () => {
+    let release: (value: string) => void = () => {}
+    let asked: () => void = () => {}
+    const fetching = new Promise<void>((resolve) => { asked = resolve })
+    const pending = startUpdateCheck({
+      cachePath,
+      fetchLatest: () => new Promise<string>((resolve) => { release = resolve; asked() }),
+    })
+    await fetching
+    stopUpdateCheck()
+    release("1.99.0")
+    await pending
+
+    expect(getLatestVersion()).toBeUndefined()
+  })
+
   test("publishes the resolved version and notifies once", async () => {
     const seen: string[] = []
     await startUpdateCheck({ cachePath, fetchLatest: async () => "1.63.0", onResolved: (v) => seen.push(v) })

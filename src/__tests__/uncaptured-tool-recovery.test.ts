@@ -74,6 +74,20 @@ describe("canRecoverUncapturedToolUses", () => {
     expect(canRecoverUncapturedToolUses({ ...eligibleBase, earlyStopFired: true })).toBe(false)
   })
 
+  it("accepts explicit CLI rejection at the deferred-tools budget, despite hidden-digest drops", () => {
+    const confirmed = { ...eligibleBase, uncapturedRecoveryEnabled: false, confirmedToolUnavailable: true, earlyStopFired: true }
+    expect(canRecoverUncapturedToolUses({ ...confirmed, attemptedMaxTurns: 4 })).toBe(true)
+    expect(canRecoverUncapturedToolUses({ ...confirmed, attemptedMaxTurns: 4, droppedToolUseIds: 2 })).toBe(true)
+    expect(canRecoverUncapturedToolUses({ ...confirmed, attemptedMaxTurns: undefined })).toBe(false)
+    expect(canRecoverUncapturedToolUses({ ...confirmed, attemptedMaxTurns: 4, capturedToolUses: 1 })).toBe(false)
+    expect(canRecoverUncapturedToolUses({ ...confirmed, attemptedMaxTurns: 4, forceSingleToolUse: true })).toBe(false)
+  })
+
+  it("keeps the unproven opt-in path at the one-turn cap with no drops", () => {
+    expect(canRecoverUncapturedToolUses({ ...eligibleBase, attemptedMaxTurns: 4 })).toBe(false)
+    expect(canRecoverUncapturedToolUses({ ...eligibleBase, droppedToolUseIds: 1 })).toBe(false)
+  })
+
   it("accepts explicit CLI rejection despite an early-stop signal", () => {
     expect(canRecoverUncapturedToolUses({
       ...eligibleBase,

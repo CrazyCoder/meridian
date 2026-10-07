@@ -1,0 +1,68 @@
+{
+  "sourceHead": "a9abcce8c693dae018ff73872051a9dfeabe21b6",
+  "automaticReauthentication": {
+    "result": "PASS",
+    "nativeStore": "macOS Keychain",
+    "mappingUnchanged": true,
+    "accessGrantChanged": true,
+    "refreshGrantChanged": true,
+    "freshExpiry": true,
+    "credentialFileAbsent": true,
+    "automaticCallback": true
+  },
+  "postGrantClient": {
+    "result": "PASS",
+    "platform": "darwin/arm64",
+    "bun": "1.3.14",
+    "opencode": "1.18.34",
+    "sdk": "0.2.141",
+    "packagedClaudeCode": "2.1.284",
+    "claudeCode": "2.1.289 (Claude Code)",
+    "model": "claude-opus-5-5",
+    "firstExit": 0,
+    "continuedExit": 0,
+    "firstHasSession": true,
+    "toolCalls": 1,
+    "firstReceipt": true,
+    "continuedReceipt": true,
+    "allQueriesUseIntendedAccount": true,
+    "allQueriesUseReportedExecutable": true,
+    "servedModels": [
+      "claude-opus-5-5"
+    ],
+    "realSdkQueries": 4,
+    "sdkIteratorsStarted": 4,
+    "sdkIteratorsCompleted": 4,
+    "closeJoined": true,
+    "resumed": true,
+    "scrub": "0.2.3"
+  },
+  "nodeHeaderControls": {
+    "before": {
+      "cookieBytes": 20486,
+      "liveStatus": 431,
+      "callbackStatus": 431
+    },
+    "after": {
+      "cookieBytes": 20486,
+      "liveStatus": 200,
+      "callbackStatus": 410
+    },
+    "ordinaryStatus": 200,
+    "aboveBudget40KiBStatus": 431
+  },
+  "consentRedirectBefore": {
+    "challengeMatches": true,
+    "stateMatches": true,
+    "redirectMatches": false,
+    "mintedHost": "127.0.0.1",
+    "consentHost": "localhost"
+  },
+  "consentRedirectAfter": {
+    "challengeMatches": true,
+    "stateMatches": true,
+    "redirectMatches": true,
+    "mintedHost": "localhost",
+    "consentHost": "localhost"
+  }
+}

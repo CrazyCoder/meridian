@@ -29,6 +29,7 @@ Commands:
   setup            Configure client integrations (run once after install)
   profile          Manage Claude account profiles (add, list, switch, remove)
   refresh-token    Refresh the Claude Code OAuth token
+  test-error-report  Crash with a test error to check error reporting reaches the collector
 
 Setup options:
   --antigravity                Configure Pi or OpenCode V1 for Antigravity
@@ -67,6 +68,7 @@ Environment variables:
   MERIDIAN_IDLE_EXIT_SECONDS        Exit after this many seconds without a model request (opt-in)
   MERIDIAN_PLUGIN_DIR               Plugin auto-discovery directory (default: ~/.config/meridian/plugins)
   MERIDIAN_PLUGIN_CONFIG            Plugin manifest path (default: ~/.config/meridian/plugins.json)
+  MERIDIAN_ERROR_REPORTING_DSN      Report Meridian's own crashes to this GlitchTip/Sentry DSN (off when unset)
 
 See https://github.com/rynfar/meridian for full documentation.`)
   process.exit(0)
@@ -223,6 +225,19 @@ if (args[0] === "refresh-token") {
   }
 }
 
+if (args[0] === "test-error-report") {
+  const { installErrorReporter } = await import("../src/errorReporting")
+  if (!installErrorReporter({ version })) {
+    console.error("Error reporting is off. Set MERIDIAN_ERROR_REPORTING_DSN, or errorReportingDsn in settings.json.")
+    process.exit(1)
+  }
+  console.error("Crashing on purpose with a test error; the configured collector receives it within seconds.")
+  // Thrown at top level rather than from a timer held open by a pending
+  // top-level await: Bun does not exit on an uncaught timer exception while a
+  // top-level await is outstanding, so that form would hang instead of crash.
+  throw new Error("Meridian error-reporting test (meridian test-error-report)")
+}
+
 const exec = promisify(execCallback)
 const execFile = promisify(execFileCallback)
 
@@ -302,6 +317,11 @@ export async function runCli(
     return execFile(claudePath, ["auth", "status"], { timeout: 5000 })
   }
 ) {
+  // First, so a failure anywhere in startup is reported too. Off unless an
+  // error-reporting DSN is configured; see src/errorReporting/index.ts.
+  const { installErrorReporter } = await import("../src/errorReporting")
+  installErrorReporter({ version })
+
   if (process.env.MERIDIAN_BACKEND !== "antigravity") {
     // Plugin check — warn if OpenCode config exists but meridian plugin is missing
     try {

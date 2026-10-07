@@ -67,7 +67,10 @@ requested in the UI.
 **Close window** keeps the service running in the menu bar. **Quit app** drains
 and stops its owned process. Unexpected child exits trigger up to three recovery
 attempts. Settings can start managed Meridian when the app opens; the packaged
-Mac app can also open at login.
+Mac app can also open at login. On macOS, enable **Settings → Background →
+Hide Dock icon** to keep the app exclusively in the menu bar. This applies
+immediately and persists across launches; the menu-bar controls still open the
+dashboard. Disable it to restore the Dock icon.
 
 Version activation drains the old child, starts the selected CLI, and rolls back
 the selection/process if startup fails. Installed older versions remain available
@@ -82,6 +85,20 @@ The handoff only considers direct, current-user, loopback CLI jobs
 with a sufficiently long drain timeout and unchanged plist. Its encrypted
 recovery journal is written before supervisor changes. Wrapper scripts,
 containers, system services and declarative installations stay externally owned.
+
+## Sign in to Claude accounts
+
+In **Usage & accounts**, give a new account a short name and choose **Continue
+to sign-in**, or use **Sign in** on an existing account. The sign-in panel names
+the account, prepares a browser link, and guides you through copying Claude’s
+authorization code back into Meridian. Check the account selected in your browser
+before authorizing. Meridian shows progress and a persistent success or retry
+result; cancelling does not report an authentication failure.
+
+For externally managed services, **Copy sign-in command** provides the command
+to run in Terminal on the service’s host. Return to the desktop and refresh after
+completing sign-in. Connecting to a service does not give the desktop ownership
+of its account files.
 
 ## Install scrub plugins
 

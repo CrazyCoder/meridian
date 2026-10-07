@@ -2,6 +2,28 @@
 import { sanitizeAssistantText } from "./sanitize"
 import { describeToolCall, MULTIMODAL_TYPES, REPLAY_CONTEXT_OPEN, REPLAY_CONTEXT_CLOSE, type ToolCallInfo } from "./messages"
 
+interface ReplayMessage {
+  role: string
+  content: unknown
+}
+
+/** Trailing client metadata belongs to the immediately preceding live user
+ * turn. Keep it in that turn when framing replay, without making it an SDK
+ * system instruction or changing the original messages used for lineage. */
+export function coalesceTrailingSystemReminders(messages: readonly ReplayMessage[]): ReplayMessage[] {
+  let boundary = messages.length - 1
+  while (boundary >= 0 && messages[boundary]?.role === "system") boundary--
+  if (boundary < 0 || boundary === messages.length - 1 || messages[boundary]?.role !== "user") return [...messages]
+  const current = messages[boundary]!
+  const currentAndReminders = messages.slice(boundary)
+  if (!currentAndReminders.every(message => typeof message.content === "string" || Array.isArray(message.content))) return [...messages]
+  const content = currentAndReminders.every(message => typeof message.content === "string")
+    ? currentAndReminders.map(message => message.content).join("\n\n")
+    : currentAndReminders.flatMap(message => Array.isArray(message.content)
+      ? message.content : [{ type: "text", text: message.content }])
+  return [...messages.slice(0, boundary), { ...current, content }]
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }

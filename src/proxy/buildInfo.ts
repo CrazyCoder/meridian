@@ -27,6 +27,17 @@
 export type BuildSource = "npm" | "local" | "dev"
 
 export interface BuildInfo {
+  kind?: "artifact" | "source"
+  releaseVersion?: string
+  counter?: number
+  counterScope?: string
+  attemptId?: string
+  branchUrl?: string
+  commitUrl?: string
+  displayVersion?: string
+  sourceHash?: string
+  builtAt?: string
+  certification?: "verified" | "unknown"
   source: BuildSource
   /**
    * package.json version. Proof of what is running ONLY when source is "npm" —

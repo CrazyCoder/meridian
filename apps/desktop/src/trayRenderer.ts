@@ -3,6 +3,7 @@ import { sortProfilesByConfiguredOrder } from './uiData'
 import type { Action, DesktopState } from './contracts'
 const root = document.getElementById('panel')!
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
+const compact = (value: number) => new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 const pct = (value: unknown) => number(value) === undefined ? '—' : `${Math.round(Number(value) * 100)}%`
 let pending = false
 let error = ''
@@ -14,6 +15,7 @@ function render(state: DesktopState) {
   const focus = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.key : undefined
   if (focus) focusedKey = focus
   const scroll = root.querySelector('.accounts')?.scrollTop ?? 0
+  const expanded = new Set([...root.querySelectorAll<HTMLDetailsElement>('details[open][data-limits]')].map(detail => detail.dataset.limits))
   document.documentElement.classList.toggle('native-glass', state.glass === 'Native Liquid Glass')
   const summary = object(state.summary), tokens = object(summary.tokenUsage), health = object(state.health)
   const active = text(object(state.profiles).activeProfile)
@@ -29,18 +31,18 @@ function render(state: DesktopState) {
     ? orderedIds
     : orderedIds.sort((a, b) => a === active ? -1 : b === active ? 1 : a.localeCompare(b))
   const busy = Boolean(state.busy) || pending
-  const button = (action: Action, label: string, value = '', disabled = false) => `<button data-action="${action}" data-value="${esc(value)}" data-key="${action}:${esc(value)}" ${disabled || busy ? 'disabled' : ''}>${label}</button>`
+  const button = (action: Action, label: string, value = '', disabled = false) => `<button data-action="${action}" data-value="${esc(value)}" data-key="${action}:${esc(value)}" ${action === 'switch-profile' ? `aria-label="Use ${esc(value)} account"` : ''} ${disabled || busy ? 'disabled' : ''}>${label}</button>`
   const providerTotals = state.providers?.providers.filter(p => p.enabled && p.activity).reduce((sum,p) => ({requests:sum.requests + p.activity!.requests,tokens:sum.tokens + p.activity!.inputTokens + p.activity!.outputTokens,errors:sum.errors + p.activity!.errors}),{requests:0,tokens:0,errors:0})
   const populated = (number(summary.totalRequests) ?? 0) > 0
   const latency = number(object(summary.ttfb).p50)
   const status = state.running ? health.status === 'healthy' ? 'Connected' : 'Needs attention' : state.preferences.mode === 'managed' ? 'Stopped' : 'Disconnected'
   const stopped = !state.running && state.preferences.mode === 'managed' && !state.busy
   const issue = state.error || (stopped ? '' : !state.running && state.preferences.mode === 'attached' ? 'Cannot reach the external service.' : state.dataErrors.length ? 'Some live data is unavailable.' : '')
-  const html = `<header><div><strong>Meridian</strong><small><span class="dot ${state.running ? health.status === 'healthy' ? 'good' : 'warn' : ''}"></span>${status} · ${state.owned || state.preferences.mode === 'managed' ? 'App managed' : 'External'}</small></div>${button('open-desktop', 'Open dashboard')}</header>
-    ${providerTotals ? `<section class="metrics" aria-label="All provider activity"><div class="hero"><small>Requests</small><strong>${providerTotals.requests.toLocaleString()}</strong></div><div><small>Tokens</small><strong>${providerTotals.tokens.toLocaleString()}</strong></div><div><small>Errors</small><strong>${providerTotals.errors.toLocaleString()}</strong></div></section><small>All providers · past hour${state.providers?.providers.some(p => p.enabled && !p.activity) ? ' · partial data' : ''}</small>` : `<section class="metrics" aria-label="Telemetry summary"><div class="hero"><small>Cache reuse</small><strong>${populated ? pct(tokens.avgCacheHitRate) : '—'}</strong></div><div><small>Requests</small><strong>${number(summary.totalRequests)?.toLocaleString() ?? '—'}</strong></div><div><small>First token</small><strong>${populated && latency !== undefined ? `${(latency / 1000).toFixed(1)}s` : '—'}</strong></div></section>
+  const html = `<header><div><strong>Meridian</strong><small><span class="dot ${state.running ? health.status === 'healthy' ? 'good' : 'warn' : ''}"></span>${status} · ${state.owned || state.preferences.mode === 'managed' ? 'App managed' : 'External'}</small></div>${button('open-desktop', 'Dashboard ↗')}</header>
+    ${providerTotals ? `<section class="metrics" aria-label="All provider activity"><div><small>Requests</small><strong title="${providerTotals.requests.toLocaleString()}">${compact(providerTotals.requests)}</strong></div><div><small>Tokens</small><strong title="${providerTotals.tokens.toLocaleString()}">${compact(providerTotals.tokens)}</strong></div><div><small>Errors</small><strong title="${providerTotals.errors.toLocaleString()}">${compact(providerTotals.errors)}</strong></div></section><small class="metrics-caption">All providers · past hour${state.providers?.providers.some(p => p.enabled && !p.activity) ? ' · partial data' : ''}</small>` : `<section class="metrics" aria-label="Telemetry summary"><div class="hero"><small>Cache reuse</small><strong>${populated ? pct(tokens.avgCacheHitRate) : '—'}</strong></div><div><small>Requests</small><strong>${number(summary.totalRequests)?.toLocaleString() ?? '—'}</strong></div><div><small>First token</small><strong>${populated && latency !== undefined ? `${(latency / 1000).toFixed(1)}s` : '—'}</strong></div></section>
     <small>${number(summary.windowMs) ? `Last ${Math.round(Number(summary.windowMs) / 60000)} minutes` : 'Current telemetry window'} · ${number(summary.errorCount) ?? '—'} errors</small>`}
     ${issue ? `<div class="notice">${esc(issue)}</div>` : ''}${error ? `<p class="error" role="alert">${esc(error)}</p>` : ''}
-    <h2>${health.backend === 'antigravity' ? '' : 'Claude accounts'} <span class="limits-caption">Limits used</span></h2><div class="accounts">${ids.map(id => {
+    ${health.backend === 'antigravity' ? '' : '<h2>Claude accounts <span class="limits-caption">Limits used</span></h2>'}<div class="accounts">${ids.map(id => {
       const quota = quotas.find(profile => profile.id === id) ?? {}
       const account = rows(object(state?.profiles).profiles).find(profile => profile.id === id) ?? {}
       const fetched = number(quota.fetchedAt)
@@ -50,35 +52,37 @@ function render(state: DesktopState) {
       const isStale = Boolean(quota.stale) || (!fetched || Date.now() - fetched > 90_000)
       const needsLogin = account.loggedIn === false || quota.error === 'no_token' || failureReason === 'auth_failure'
       const unavailable = needsLogin || (!windows.length && (quota.error || !fetched))
-      const label = (type: unknown) => text(type).replace(/^five_hour$/, '5h').replace(/^seven_day/, '7d').replaceAll('_', ' ')
+      const label = (type: unknown) => text(type).replace(/^five_hour$/, '5 hours').replace(/^seven_day$/, 'Weekly').replace(/^seven_day_/, 'Weekly · ').replaceAll('_', ' ')
       const nextReset = windows.filter(window => (number(window.resetsAt) ?? 0) > Date.now()).sort((a, b) => Number(a.resetsAt) - Number(b.resetsAt))[0]
       const plan = text(account.subscriptionType)
       const allowance = text(account.allowance)
       const planLabel = text(account.planLabel)
       const rateLimitTier = text(account.rateLimitTier)
       const allowanceTitle = (planLabel || '') + (rateLimitTier ? ` · ${rateLimitTier}` : '')
-      const allowanceTag = allowance ? `<span class="tray-plan" style="color:var(--accent2, #58a6ff);" title="${esc(allowanceTitle)}">${esc(allowance)}</span>` : ''
-      const planTag = plan ? `<span class="tray-plan">${esc(plan.toUpperCase())}</span>` : ''
+      const metadata = [plan, allowance].filter(Boolean).join(' · ')
       const org = text(account.organizationName)
-      const orgTag = org ? `<span class="tray-plan" style="color:var(--muted);font-size:10px;" title="Organization: ${esc(org)}">${esc(org)}</span>` : ''
       const nameTitle = org ? `${id} (${org})` : id
       const spentObj = quota.spent && typeof quota.spent === 'object' ? quota.spent as Record<string, unknown> : null
       const isSpent = Boolean(spentObj && (!spentObj.until || Number(spentObj.until) > Date.now()))
       const spentDiagnosis = spentObj?.diagnosis && typeof spentObj.diagnosis === 'object' ? spentObj.diagnosis as Record<string, unknown> : null
       const spentBucket = spentDiagnosis ? text(spentDiagnosis.bucket) : ''
       const spentBucketLabel = spentBucket ? (spentBucket === 'five_hour' ? '5h' : spentBucket.replace(/^seven_day/, '7d').replaceAll('_', ' ')) : 'limit'
-      const spentBadge = isSpent ? `<span class="needs-login-label" style="background:#ef4444;color:white;" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Refusing')}">Refusing (${esc(spentBucketLabel)})</span>` : ''
-      return `<article class="account ${active === id ? 'active' : ''}"><div class="line"><strong class="account-name" title="${esc(nameTitle)}">${esc(id)}</strong>${planTag}${allowanceTag}${orgTag}${active === id ? `<span class="active-label">${follow ? `Following ${esc(text(follow.url))}` : 'Active'}</span>${spentBadge ? ` ${spentBadge}` : ''}` : isSpent ? spentBadge : needsLogin ? '<span class="needs-login-label">Needs login</span>' : follow ? `<span class="tray-plan" title="Switching controlled by ${esc(text(follow.url))}">Followed</span>` : button('switch-profile', 'Use account', id, !state.running)}</div>${needsLogin ? '<p>Sign-in required</p>' : unavailable ? '<p>Usage unavailable</p>' : `<div class="account-limits">${windows.map(window => {
+      const spentBadge = isSpent ? `<span class="needs-login-label" title="${esc(spentDiagnosis ? text(spentDiagnosis.rationale) : 'Refusing')}">Refusing (${esc(spentBucketLabel)})</span>` : ''
+      const renderQuota = (window: Record<string, unknown>) => {
         const utilization = number(window.utilization), reset = number(window.resetsAt)
         const fresh = reset !== undefined && reset > Date.now()
         const resetText = fresh ? `Resets ${new Date(reset).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'})}` : 'Awaiting usage update'
         const description = `${id} · ${label(window.type)} · ${fresh ? pct(utilization) : '—'} used · ${resetText}${isStale ? ' (cached)' : ''}`
         return `<div class="quota" title="${esc(description)}"><div class="line"><span>${esc(label(window.type))}</span><strong>${fresh ? pct(utilization) : '—'}${isStale ? '<small class="tray-stale-tag">cached</small>' : ''}</strong></div>${fresh && utilization !== undefined ? `<progress max="1" value="${Math.max(0, Math.min(1, utilization))}" class="${utilization >= .95 ? 'danger' : ''}" aria-label="${esc(description)}"></progress>` : ''}</div>`
-      }).join('') || '<p>No usage windows available</p>'}</div>${active === id && nextReset ? `<small class="next-reset">${esc(label(nextReset.type))} resets ${esc(new Date(Number(nextReset.resetsAt)).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}))}</small>` : ''}`}</article>`
+      }
+      const primary = windows.filter(window => ['five_hour', 'seven_day'].includes(text(window.type)))
+      const additional = windows.filter(window => !['five_hour', 'seven_day'].includes(text(window.type)))
+      const limits = `<div class="account-limits">${primary.map(renderQuota).join('')}</div>${additional.length ? `<details class="more-limits" data-limits="${esc(id)}" ${expanded.has(id) ? 'open' : ''}><summary>${additional.length} more ${additional.length === 1 ? 'limit' : 'limits'}</summary><div class="account-limits">${additional.map(renderQuota).join('')}</div></details>` : ''}`
+      return `<article class="account ${active === id ? 'active' : ''}"><div class="account-heading"><div class="account-identity"><strong class="account-name" title="${esc(nameTitle)}">${esc(id)}</strong>${metadata ? `<small class="account-meta" title="${esc(allowanceTitle)}">${esc(metadata)}</small>` : ''}</div><div class="account-state">${active === id ? `<span class="active-label" title="${follow ? `Following ${esc(text(follow.url))}` : 'Active'}">${follow ? 'Following' : 'Active'}</span>${spentBadge ? ` ${spentBadge}` : ''}` : isSpent ? spentBadge : needsLogin ? '<span class="needs-login-label">Needs login</span>' : follow ? `<span class="active-label" title="Switching controlled by ${esc(text(follow.url))}">Followed</span>` : button('switch-profile', 'Use', id, !state.running)}</div></div>${org ? `<small class="account-org" title="Organization: ${esc(org)}">${esc(org)}</small>` : ''}${needsLogin ? '<p>Sign-in required</p>' : unavailable ? '<p>Usage unavailable</p>' : `${windows.length ? limits : '<p>No usage windows available</p>'}${active === id && nextReset ? `<small class="next-reset">${esc(label(nextReset.type))} resets ${esc(new Date(Number(nextReset.resetsAt)).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}))}</small>` : ''}`}</article>`
     }).join('') || (health.backend === 'antigravity' ? '' : stopped ? '<p>Start Meridian to load accounts and usage.</p>' : '<p>No accounts available. Open the dashboard to connect.</p>')}</div>
-    ${state.providers?.providers.filter(p => p.id === 'antigravity' && p.enabled).map(p => `<h2>Antigravity <span class="limits-caption">Google subscription</span></h2><div class="accounts">${p.accounts.map(account => `<article class="account"><div class="line"><strong>${esc(account.id)}</strong><small>${esc(p.status)}</small></div>${account.error ? `<p>${esc(account.error)}</p>` : ''}<div class="account-limits agy-limits">${account.windows.map(w => `<div class="quota"><div class="line"><span title="${esc(w.group)} · ${esc(w.type)}">${esc(w.group)} · ${w.type.endsWith('-5h') ? '5h' : '7d'}</span><strong>${pct(w.utilization)}${account.error || !account.fetchedAt || Date.now() - account.fetchedAt > 90000 || w.resetsAt <= Date.now() ? '<small class="tray-stale-tag">cached</small>' : ''}</strong></div><progress max="1" value="${w.utilization}" class="${account.error ? 'stale' : w.utilization >= .85 ? 'danger' : w.utilization >= .6 ? 'warning' : ''}" aria-label="${esc(w.group)} ${esc(w.type)} usage"></progress></div>`).join('') || '<p>Usage unavailable</p>'}</div></article>`).join('')}</div>`).join('') || ''}
+    ${state.providers?.providers.filter(p => p.id === 'antigravity' && p.enabled).map(p => `<h2>Antigravity <span class="limits-caption">Google subscription</span></h2><div class="accounts">${p.accounts.map(account => `<article class="account"><div class="account-heading"><strong class="account-name" title="${esc(account.id)}">${esc(account.id)}</strong><small class="account-state">${esc(p.status)}</small></div>${account.error ? `<p>${esc(account.error)}</p>` : ''}<div class="account-limits agy-limits">${account.windows.map(w => `<div class="quota"><div class="line"><span title="${esc(w.group)} · ${esc(w.type)}">${esc(w.group)} · ${w.type.endsWith('-5h') ? '5h' : '7d'}</span><strong>${pct(w.utilization)}${account.error || !account.fetchedAt || Date.now() - account.fetchedAt > 90000 || w.resetsAt <= Date.now() ? '<small class="tray-stale-tag">cached</small>' : ''}</strong></div><progress max="1" value="${w.utilization}" class="${account.error ? 'stale' : w.utilization >= .85 ? 'danger' : w.utilization >= .6 ? 'warning' : ''}" aria-label="${esc(w.group)} ${esc(w.type)} usage"></progress></div>`).join('') || '<p>Usage unavailable</p>'}</div></article>`).join('')}</div>`).join('') || ''}
     <div class="controls">${state.owned ? button('restart', 'Restart') + button('stop', 'Stop') : state.preferences.mode === 'managed' ? button('start', 'Start Meridian', '', !state.preferences.selected) : '<small>Service managed externally</small>'}</div>
-    <footer>${button('toggle-snooze', state.preferences.quietUntil > Date.now() ? 'Resume alerts' : 'Pause alerts 1h', '', !state.preferences.notifications)}${button('refresh', 'Refresh')}${button('quit-app', 'Quit')}</footer><small>${state.busy ? esc(state.busy) : state.lastChecked ? `Updated ${esc(new Date(state.lastChecked).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}))}` : stopped ? 'Service stopped' : 'Awaiting connection'}</small>`
+    <footer>${button('toggle-snooze', state.preferences.quietUntil > Date.now() ? 'Resume alerts' : 'Pause alerts', '', !state.preferences.notifications)}${button('refresh', 'Refresh')}${button('quit-app', 'Quit')}</footer><small class="updated">${state.busy ? esc(state.busy) : state.lastChecked ? `Updated ${esc(new Date(state.lastChecked).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}))}` : stopped ? 'Service stopped' : 'Awaiting connection'}</small>`
   if (html === rendered) return
   rendered = html; root.innerHTML = html
   const list = root.querySelector('.accounts'); if (list) list.scrollTop = scroll
@@ -97,4 +101,12 @@ window.meridian.subscribe(render)
 void window.meridian.state().then(render).catch(caught => { root.textContent = `Could not load Meridian: ${String(caught)}` })
 document.addEventListener('keydown', event => { if (event.key === 'Escape') void window.meridian.action('close-panel') })
 
-new ResizeObserver(() => { void window.meridian.action('resize-panel', root.getBoundingClientRect().height).catch(caught => console.error('Panel sizing failed', caught)) }).observe(root)
+function resizePanel() {
+  const clippedAccounts = [...root.querySelectorAll<HTMLElement>('.accounts')].reduce((extra, list) => {
+    const limit = parseFloat(getComputedStyle(list).maxHeight)
+    return extra + Math.max(0, Math.min(list.scrollHeight, limit) - list.clientHeight)
+  }, 0)
+  void window.meridian.action('resize-panel', root.scrollHeight + clippedAccounts + 2).catch(caught => console.error('Panel sizing failed', caught))
+}
+new ResizeObserver(resizePanel).observe(root)
+root.addEventListener('toggle', resizePanel, true)

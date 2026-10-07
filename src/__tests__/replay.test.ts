@@ -1,5 +1,47 @@
 import { describe, expect, it } from "bun:test"
-import { flattenAssistantContent, normalizeStructuredUserContent, replayToolResultHeader, frameStructuredReplay, coalesceStructuredUserMessages } from "../proxy/replay"
+import { flattenAssistantContent, normalizeStructuredUserContent, replayToolResultHeader, frameStructuredReplay, coalesceStructuredUserMessages, coalesceTrailingSystemReminders } from "../proxy/replay"
+
+describe("trailing system reminders in a live user turn", () => {
+  it("keeps earlier history and combines multiple terminal reminders in order without editing input", () => {
+    const messages = Object.freeze([
+      Object.freeze({ role: "system", content: "EARLIER_METADATA" }),
+      Object.freeze({ role: "user", content: "EARLIER_USER" }),
+      Object.freeze({ role: "assistant", content: "EARLIER_ANSWER" }),
+      Object.freeze({ role: "user", content: "CURRENT_USER" }),
+      Object.freeze({ role: "system", content: "FIRST_REMINDER" }),
+      Object.freeze({ role: "system", content: "SECOND_REMINDER" }),
+    ])
+    const before = JSON.stringify(messages)
+    expect(coalesceTrailingSystemReminders(messages)).toEqual([
+      ...messages.slice(0, 3), { role: "user", content: "CURRENT_USER\n\nFIRST_REMINDER\n\nSECOND_REMINDER" },
+    ])
+    expect(JSON.stringify(messages)).toBe(before)
+  })
+
+  it("keeps current media and a completed tool result in the current turn, ahead of reminder text", () => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "fixture" } }
+    const result = { type: "tool_result", tool_use_id: "current-call", content: "CURRENT_RESULT" }
+    const messages = [
+      { role: "user", content: [image, result] },
+      { role: "system", content: "CURRENT_REMINDER" },
+    ]
+    const merged = coalesceTrailingSystemReminders(messages)
+    expect(merged).toEqual([{ role: "user", content: [image, result, { type: "text", text: "CURRENT_REMINDER" }] }])
+    const framed = frameStructuredReplay(merged.map(message => ({ message: { content: message.content } })))
+    expect(framed).toHaveLength(1)
+    expect(JSON.stringify(framed)).not.toContain("Historical image")
+    expect(JSON.stringify(framed)).not.toContain("<conversation_history>")
+    expect(messages[0]!.content).toEqual([image, result])
+  })
+
+  it("leaves assistant-ending history, system-only input, and middle reminders alone", () => {
+    for (const messages of [
+      [{ role: "user", content: "BEFORE" }, { role: "assistant", content: "ANSWER" }, { role: "system", content: "METADATA" }],
+      [{ role: "system", content: "METADATA" }],
+      [{ role: "user", content: "BEFORE" }, { role: "system", content: "METADATA" }, { role: "user", content: "CURRENT" }],
+    ]) expect(coalesceTrailingSystemReminders(messages)).toEqual(messages)
+  })
+})
 
 const call = { type: "tool_use", id: "call-one", name: "write", input: { path: "a.txt", content: "complete\ncontents" } }
 const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "pixels" } }

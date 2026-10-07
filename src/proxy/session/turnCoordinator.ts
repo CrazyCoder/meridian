@@ -45,6 +45,11 @@ export class SessionTurnCoordinator {
     return this.turns.size
   }
 
+  /** True from a request's arrival until the last lease for the key is released. */
+  isActive(key: string): boolean {
+    return this.turns.has(key)
+  }
+
   acquire(key: string, signal?: AbortSignal): Promise<SessionTurnLease> {
     if (signal?.aborted) return Promise.reject(cancellationError(signal.reason))
 

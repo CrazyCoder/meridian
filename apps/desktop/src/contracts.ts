@@ -7,8 +7,8 @@ export interface DesktopState {
   providers?: import('../../../src/telemetry/providerView').ProviderSnapshot;
   catalog?: CatalogRelease[];
   loginAtStartup?: boolean; notificationStatus?: string;
-  migration?: { label: string; canAdopt: boolean; adopted: boolean }; dataErrors: string[]; incidents: Incident[]; serviceLog: string[]; lastChecked?: number; login?: { output: string; url?: string };
+  migration?: { label: string; canAdopt: boolean; adopted: boolean }; dataErrors: string[]; incidents: Incident[]; serviceLog: string[]; lastChecked?: number; login?: { profile: string; phase: 'starting' | 'waiting' | 'verifying' | 'cancelling' | 'success' | 'error' | 'cancelled'; output: string; url?: string };
 }
-export type Action = 'copy-client-setup' | 'resize-panel' | 'open-desktop' | 'close-panel' | 'quit-app' | 'toggle-snooze' | 'test-notification' | 'refresh' | 'check-updates' | 'install' | 'activate' | 'start' | 'stop' | 'restart' | 'save-preferences' | 'switch-profile' | 'rename-profile' | 'add-profile' | 'login-profile' | 'login-code' | 'reload-plugins' | 'check-plugins' | 'install-plugin' | 'set-features' | 'open-page' | 'release-notes' | 'export-diagnostics' | 'acknowledge' | 'login-at-startup' | 'take-ownership' | 'return-headless' | 'open-login'
+export type Action = 'copy-profile-login' | 'copy-client-setup' | 'resize-panel' | 'open-desktop' | 'close-panel' | 'quit-app' | 'toggle-snooze' | 'test-notification' | 'refresh' | 'check-updates' | 'install' | 'activate' | 'start' | 'stop' | 'restart' | 'save-preferences' | 'switch-profile' | 'rename-profile' | 'add-profile' | 'login-profile' | 'login-code' | 'reload-plugins' | 'check-plugins' | 'install-plugin' | 'set-features' | 'open-page' | 'release-notes' | 'export-diagnostics' | 'acknowledge' | 'login-at-startup' | 'take-ownership' | 'return-headless' | 'open-login'
 export interface DesktopApi { state(): Promise<DesktopState>; action(action: Action, value?: unknown): Promise<DesktopState>; subscribe(callback: (state: DesktopState) => void): () => void }
 declare global { interface Window { meridian: DesktopApi } }

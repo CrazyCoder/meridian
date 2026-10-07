@@ -16,12 +16,15 @@
  * because "I last saw 1.62.7" is more useful than nothing and cannot be
  * mistaken for "you are current".
  *
- * Opt out entirely with `MERIDIAN_NO_UPDATE_CHECK=1`.
+ * The background check is off until the `checkForUpdates` setting turns it on,
+ * and `MERIDIAN_NO_UPDATE_CHECK=1` forces it off whatever the setting says.
+ * While it is off, nothing here opens a connection.
  */
 import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { env, envBool } from "../env"
+import { getSetting } from "../settings"
 import { compareVersions } from "./buildInfo"
 
 const PACKAGE_NAME = "@rynfar/meridian"
@@ -91,12 +94,15 @@ async function writeCache(path: string, value: CacheFile): Promise<void> {
  * module header for why that beats returning nothing.
  */
 export async function checkForUpdate(options: UpdateCheckOptions = {}): Promise<string | undefined> {
-  if (envBool("NO_UPDATE_CHECK")) return undefined
+  if (!isUpdateCheckEnabled()) return undefined
 
   const cachePath = options.cachePath ?? defaultCachePath()
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS
   const now = options.now ?? Date.now
   const cached = await readCache(cachePath)
+  // The operator can disable the check while filesystem I/O is pending.
+  // Recheck before either returning cache state or starting a new connection.
+  if (!isUpdateCheckEnabled()) return undefined
 
   if (cached && now() - cached.checkedAt < ttlMs && now() >= cached.checkedAt) {
     return cached.latest
@@ -117,10 +123,26 @@ export async function checkForUpdate(options: UpdateCheckOptions = {}): Promise<
 
 let latestVersion: string | undefined
 let refreshTimer: ReturnType<typeof setInterval> | undefined
+// Bumped by every stop, so a check still in flight when the operator switches
+// the setting off cannot publish its answer afterwards.
+let generation = 0
 
 /** The last resolved published version, or undefined if not yet known. */
 export function getLatestVersion(): string | undefined {
   return latestVersion
+}
+
+/**
+ * May the check run?
+ *
+ * Off unless asked for: an instance that talks to a third party on a timer
+ * should do it because someone turned it on, not because nobody found the
+ * switch. The env opt-out stays authoritative so an operator can forbid the
+ * call for a whole fleet without editing every settings file.
+ */
+export function isUpdateCheckEnabled(): boolean {
+  if (envBool("NO_UPDATE_CHECK")) return false
+  return getSetting("checkForUpdates") === true
 }
 
 /**
@@ -132,10 +154,12 @@ export function getLatestVersion(): string | undefined {
  * a short-lived embedder's process alive.
  */
 export function startUpdateCheck(options: UpdateCheckOptions = {}): Promise<void> {
-  if (envBool("NO_UPDATE_CHECK") || refreshTimer) return Promise.resolve()
+  if (!isUpdateCheckEnabled() || refreshTimer) return Promise.resolve()
 
+  const started = generation
   const run = () =>
     checkForUpdate(options).then((latest) => {
+      if (started !== generation) return
       if (!latest || latest === latestVersion) return
       latestVersion = latest
       options.onResolved?.(latest)
@@ -153,4 +177,5 @@ export function stopUpdateCheck(): void {
   if (refreshTimer) clearInterval(refreshTimer)
   refreshTimer = undefined
   latestVersion = undefined
+  generation++
 }

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test"
+import { resolve } from "node:path"
 
-const { guardUpstreamIdle, UpstreamIdleError } = await import("../proxy/streamIdleGuard")
-import type { IdleGuardClock } from "../proxy/streamIdleGuard"
+const { guardUpstreamIdle, UpstreamIdleError, IDLE_DEADLINE_LATE_MS } = await import("../proxy/streamIdleGuard")
+import type { IdleGuardClock, LateIdleDeadline } from "../proxy/streamIdleGuard"
 
 type IdleTimerHandle = ReturnType<typeof setTimeout> | number
 
@@ -123,6 +124,177 @@ describe("guardUpstreamIdle", () => {
     expect(err).toBeInstanceOf(UpstreamIdleError)
     expect(returned).toBe(true)
   })
+
+  it("does not let SDK stream pings extend the idle deadline", async () => {
+    const src = makeSource<{ type: string; event?: { type: string } }>()
+    const clock = makeFakeClock()
+    const stalls: number[] = []
+    const output: unknown[] = []
+    let error: unknown
+    const pending = (async () => {
+      for await (const message of guardUpstreamIdle(src.iterable, 90, ms => stalls.push(ms), clock.clock)) output.push(message)
+    })().catch(caught => { error = caught })
+    try {
+      await clock.waitForScheduled(1)
+      for (let i = 0; i < 2; i++) {
+        clock.advance(30)
+        src.push({ type: "stream_event", event: { type: "ping" } })
+        await clock.waitForScheduled(i + 2)
+      }
+      clock.advance(30)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(error).toBeInstanceOf(UpstreamIdleError)
+      expect(stalls).toEqual([90])
+      expect(output).toEqual([])
+    } finally {
+      src.finish()
+      await pending
+    }
+  })
+
+  it("resets the deadline for model progress between pings", async () => {
+    const src = makeSource<{ type: string; event: { type: string } }>()
+    const clock = makeFakeClock()
+    const content = { type: "stream_event", event: { type: "content_block_delta" } }
+    const output: unknown[] = []
+    let error: unknown
+    const pending = (async () => {
+      for await (const message of guardUpstreamIdle(src.iterable, 90, undefined, clock.clock)) output.push(message)
+    })().catch(caught => { error = caught })
+    try {
+      await clock.waitForScheduled(1)
+      clock.advance(60)
+      src.push(content)
+      await clock.waitForScheduled(2)
+      clock.advance(60)
+      src.push({ type: "stream_event", event: { type: "ping" } })
+      await clock.waitForScheduled(3)
+      expect(error).toBeUndefined()
+      clock.advance(30)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(error).toBeInstanceOf(UpstreamIdleError)
+      expect(output).toEqual([content])
+    } finally {
+      src.finish()
+      await pending
+    }
+  })
+
+  it("passes nested pings through when disabled and preserves other event shapes", async () => {
+    const ping = { type: "stream_event", event: { type: "ping" } }
+    const ordinary = [null, { type: "ping" }, { type: "keep_alive" },
+      { type: "stream_event", event: null }, { type: "stream_event", event: { type: "message_start" } }]
+    async function* source(values: unknown[]) { yield* values }
+    const disabled: unknown[] = []
+    for await (const event of guardUpstreamIdle(source([ping, ...ordinary]), 0)) disabled.push(event)
+    expect(disabled).toEqual([ping, ...ordinary])
+    const enabled: unknown[] = []
+    for await (const event of guardUpstreamIdle(source([ping, ...ordinary]), 500)) enabled.push(event)
+    expect(enabled).toEqual(ordinary)
+  })
+
+  // A blocked event loop (a synchronous fsync, say) makes the idle timer fire
+  // late. The upstream kept sending meanwhile, but when the loop resumes the
+  // expired timer runs before the I/O poll that delivers the waiting bytes.
+  // setImmediate(push) models those bytes: they are delivered on the next
+  // event-loop turn, after the timer callback.
+  function runGuarded(idleMs: number, clock: ReturnType<typeof makeFakeClock>, src: ReturnType<typeof makeSource<number>>) {
+    const out: number[] = []
+    const stalls: number[] = []
+    const lates: LateIdleDeadline[] = []
+    const done = (async () => {
+      for await (const v of guardUpstreamIdle(src.iterable, idleMs, (ms) => stalls.push(ms), clock.clock, (late) => lates.push(late))) out.push(v)
+    })()
+    return { out, stalls, lates, done }
+  }
+
+  it("a late deadline with upstream data waiting behind it does not stall", async () => {
+    const src = makeSource<number>()
+    const clock = makeFakeClock()
+    const run = runGuarded(90_000, clock, src)
+    await clock.waitForScheduled(1)
+    setImmediate(() => src.push(1))
+    clock.advance(105_131)
+    // Chunk 1 reached the consumer and a fresh deadline was armed for the next.
+    await clock.waitForScheduled(2)
+    src.finish()
+    await run.done
+    expect(run.out).toEqual([1])
+    expect(run.stalls).toEqual([])
+    expect(run.lates).toEqual([{ lateMs: 15_131, sinceLastMs: 105_131, resumed: true }])
+  })
+
+  it("a late deadline on a silent stream still stalls", async () => {
+    const src = makeSource<number>()
+    const clock = makeFakeClock()
+    const run = runGuarded(90_000, clock, src)
+    await clock.waitForScheduled(1)
+    clock.advance(105_131)
+    let err: unknown
+    try { await run.done } catch (e) { err = e }
+    expect(err).toBeInstanceOf(UpstreamIdleError)
+    expect((err as InstanceType<typeof UpstreamIdleError>).sinceLastMs).toBe(105_131)
+    expect(run.stalls).toEqual([105_131])
+    expect(run.lates).toEqual([{ lateMs: 15_131, sinceLastMs: 105_131, resumed: false }])
+  })
+
+  it("a late deadline permits queued completion even when its observer throws", async () => {
+    const src = makeSource<number>()
+    const clock = makeFakeClock()
+    const stalls: number[] = []
+    let observed = false
+    const done = (async () => {
+      for await (const _ of guardUpstreamIdle(src.iterable, 90_000, ms => stalls.push(ms), clock.clock, late => {
+        observed = late.resumed
+        throw new Error("late observer failed")
+      })) { throw new Error("completion must not produce a value") }
+    })()
+    await clock.waitForScheduled(1)
+    setImmediate(() => src.finish())
+    clock.advance(105_131)
+    await done
+    expect(observed).toBe(true)
+    expect(stalls).toEqual([])
+  })
+
+  it("an on-time deadline stalls at once, without yielding for queued data", async () => {
+    const src = makeSource<number>()
+    const clock = makeFakeClock()
+    const run = runGuarded(90_000, clock, src)
+    await clock.waitForScheduled(1)
+    setImmediate(() => src.push(1))
+    clock.advance(90_000 + IDLE_DEADLINE_LATE_MS)
+    let err: unknown
+    try { await run.done } catch (e) { err = e }
+    expect(err).toBeInstanceOf(UpstreamIdleError)
+    expect((err as InstanceType<typeof UpstreamIdleError>).sinceLastMs).toBe(90_000 + IDLE_DEADLINE_LATE_MS)
+    expect(run.out).toEqual([])
+    expect(run.stalls).toEqual([90_000 + IDLE_DEADLINE_LATE_MS])
+    expect(run.lates).toEqual([])
+  })
+
+  it("independent upstream progress survives a frozen consumer on real sockets", async () => {
+    const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../../scripts/e2e-late-idle-sockets.mjs")], {
+      cwd: resolve(import.meta.dir, "../.."),
+      env: { ...process.env, E2E_IDLE_GUARD_MODULE: resolve(import.meta.dir, "../proxy/streamIdleGuard.ts") },
+      stdout: "pipe", stderr: "pipe",
+    })
+    const timeout = setTimeout(() => child.kill(), 20_000)
+    try {
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+      ])
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" })
+      const rows = stdout.trim().split("\n").map(line => JSON.parse(line))
+      expect(rows.at(-1).result).toBe("PASS")
+      expect(rows.at(-1).independentUpstream).toBe(true)
+      expect(rows[0].count).toBe(12)
+      expect(rows[0].late[0].resumed).toBe(true)
+      expect(rows[2].mode).toBe("ping")
+      expect(rows[2].errorName).toBe("UpstreamIdleError")
+      expect(rows[2].late[0].resumed).toBe(false)
+    } finally { clearTimeout(timeout) }
+  }, 25_000)
 
   it("idleMs<=0 disables the guard (pure pass-through)", async () => {
     const src = makeSource<number>()

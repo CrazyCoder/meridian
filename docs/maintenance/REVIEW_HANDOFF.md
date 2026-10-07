@@ -1,5 +1,789 @@
 # Upstream review handoff
 
+## Current continuation — 2026-10-07
+
+Pi continuation #1290/#1289 was delivered by [#1296](https://github.com/rynfar/meridian/pull/1296),
+merged `133bb918e02c7cf3a3a2ed4fb212df47a1c6895b` with the exact validated tree,
+verified contributor credit, and unchanged source/issue closure.
+[Meridian 1.80.0](https://github.com/rynfar/meridian/releases/tag/meridian-v1.80.0)
+is published from `c2052aac759c74d8ab0910809009b478ddfce243` through the normal
+Release Please workflow. npm integrity/provenance, versioned Docker platforms,
+mac-arm64 desktop assets and fresh registry-installed actual Pi/Opus behavior
+are verified; complete receipts and runnable harness are in
+[release PR #1202](https://github.com/rynfar/meridian/pull/1202).
+
+[Source #1295](https://github.com/rynfar/meridian/pull/1295) was delivered by
+[#1298](https://github.com/rynfar/meridian/pull/1298), normally squash-merged as
+`097530c824c7c2096c82b89de85fd6550479b603`. Landed tree
+`b5c452be66706875bc848b9887e29ca6f403cb38` equals the validated tree;
+Nowaker credit is verified and unchanged source `9d932c846afbb19b92d1a8f516772b3cd2552491`
+was closed. [Qualified local and live proof](evidence/1295-live.md) covers actual
+Linux JSON/SSE before/after, all four E41 modes, concurrent publication lifetime,
+real/recurrent timer controls and built native OpenCode with both plugins.
+Required final-head CI passed; the closed PR's final body retains the receipt.
+
+Current delivery: [source #1285](https://github.com/rynfar/meridian/pull/1285),
+unchanged `08ddd8b061a2d271f8af397b83baf2a33f4deb4c`. The authored incorporation
+is `b67c2f8a6e20aaa3e0ee0b7aa0ea792f1d09351b`, with separate maintainer
+ownership/resolver/diagnostic corrections. Tested executable `065e7c7f620f871774a4fe0caa2497950818fd6e`
+passes npm **5,433 / 35 skip / 0 fail**, standalone typecheck/build, both same-native
+baseline REDs, eight actual source controls and seven independently installed
+package controls. [Durable proof and limitations](evidence/1285-auth-status.md)
+include the committed auth-only harness, Darwin arm64 CLI 2.1.284/SDK 0.2.141
+identity, joined cleanup and retained first failures. Independent scoped review
+accepts the production, source/package proof, final local checks and documents
+with no remaining material finding. Required delivery-head CI remains before
+credited integration and fresh unchanged-source closure. This auth-only flow makes no model/client claim;
+older whole-OS/controller holds are separate.
+
+[Transcript source #1261](https://github.com/rynfar/meridian/pull/1261) remains
+deferred at unchanged `7475d08c652332aa1b9b23cbc525024bef83ab28`, despite green CI:
+[the concrete review](evidence/1261-transcript-sweep-review.md) retains pin/lease,
+admission-race and destructive-child join findings. Revisit a corrected ownership,
+pin/admission/join design with real affected-flow proof. Its watcher is removed.
+Other historical Sonnet/MCP/SQLite/backlog holds retain their own scopes;
+preparation completion does not grant their outstanding live acceptance.
+
+## Current continuation — 2026-10-06 (delivery)
+
+[The current delivery record](BACKLOG_DELIVERY_2026-10-06.md) records #1223's
+unchanged-head closure and #1286's authored integration with startup/profile
+timing corrections. It supersedes earlier recommendations to retain #1223's
+excluded recovery as an open PR; the underlying crash problem remains unresolved.
+#1286's actual native timing proof and independent review pass; typecheck/build
+pass. Its full local run retains an unchanged store benchmark failure, with
+byte-identical baseline/current checks and the remaining stages completed.
+Delivery [PR #1287](https://github.com/rynfar/meridian/pull/1287) passed all
+executed final-head checks, including `test`, and merged as
+`ca6a5c0a4eddb87da52d83993f8f9e105712f0f6`. Its tree matches the validated
+head exactly, human contributor credit is present, and unchanged source #1286
+was closed as incorporated. The current focused delivery is #1290/#1289;
+its production review corrections, actual Pi/Opus and four-mode E41 evidence
+are complete. Final evidence review and final-head CI remain before merge;
+#1295 is being corrected in parallel. See the linked delivery record and
+its durable evidence receipts.
+Other historical dispositions below remain qualified by
+their own recorded scopes and dates.
+
+## Current continuation — 2026-10-04 (complete SQLite review)
+
+The [new review checkpoint](BACKLOG_SQLITE_REVIEW_2026-10-04.md) records #1274's
+verified merge, Sonnet #1267's fresh passing local gates and pushed `fe93ce44`,
+and the bounded post-merge paginated queue refresh. Earlier Sonnet local-suite
+running/push-pending statements are historical; its real Linux/OpenCode/Sonnet
+baseline/fixed/resume gate remains open despite actual Meridian V2 plugin proof.
+
+[Complete SQLite review and durable probes](evidence/sqlite-semantic-review-20261004/README.md)
+cover all 176 #1219 paths and all 38 #1243 SQL-delta paths. Whole semantic review
+is complete for the recorded immutable scopes; both submitted heads are deferred
+for material corrections, native-engine/topology compatibility and actual
+accepted-flow evidence. Review completion is not implementation acceptance.
+
+The owner approved the SQL public/operator contract on **2026-10-04** in
+[#1277](https://github.com/rynfar/meridian/issues/1277): explicit opt-in, JSON
+default, opaque embedding ownership, truthful joined close and guarded offline
+migration/latest-state export/rollback. Approval authorizes a corrected opt-in
+implementation; both submitted heads remain held for corrections and native
+engine/platform/actual-flow proof. #1244's async cleanup remains already
+approved. Source PRs/issues remain open; release and
+community-comment authorization remain absent. Earlier extraction-only and
+no-contract-issue or approval-pending statements are superseded only by this
+exact review/approved issue.
+
+[Review delivery #1278](https://github.com/rynfar/meridian/pull/1278) at former
+head `4477a61245c146e4231d4d9ade510cc93fef476c` passed all six executed CI
+checks, including [required test](https://github.com/rynfar/meridian/actions/runs/37249439495),
+plus the expected changelog skip. Those checks cover that former head only;
+this status correction requires new final-head CI and independent review.
+
+
+## Current continuation — 2026-10-04 (after #1269)
+
+The [current continuation record](BACKLOG_CONTINUATION_2026-10-04.md) supersedes
+specific earlier October 4 statuses while preserving the logs below. Root remains
+the sole queue owner; no release or community-comment authority is inferred.
+
+[Checkpoint #1269](https://github.com/rynfar/meridian/pull/1269) merged as
+`0369441786b082aadeb31689dcbce41d7e8574d9`, validated head
+`65b7793001e9982296459a7e33b85813bc2e8509`, matching tree
+`e6ea7edcea9a81aeba9dd7b13cfed32f60eef4a2`; required
+[test run 37238890010](https://github.com/rynfar/meridian/actions/runs/37238890010)
+passed. #1228 closed at unchanged `cee10174` at 22:45 UTC because its private
+SDK transcript mutation is declined; the original symptom remains unresolved.
+
+The owner approved #1270's four current-expiry fields and shared UI; #1260
+remains open with its five history fields/storage/listeners/auth logs excluded.
+The [bounded #1219 record](evidence/1219-sqlite-scope-review.md) resolves complete
+extraction, not whole-stack semantic review or SQL contract approval. #1244's
+async cleanup approval already exists; its implementation evidence stays open.
+
+Draft #1271 (`7de8cf5f`) retains safe fsync/publication durability, separate
+maintainer corrections and Nowaker credit; historical full suite is
+5,349 pass / 35 skips / 0 failures. Independent review passes, but live/native
+proof remains required; submitted-head CI passes. #1223's excluded recovery stays open.
+Draft [SSE #1273](https://github.com/rynfar/meridian/pull/1273), final `8e1bf53b`,
+retains fully tested product `bb33d26d`: 5,406 / 35 skips / 0 failures across
+19 stages. Test-only synchronization at `dabb2165` has discriminating controls
+and typecheck/build; final evidence-only commit preserves product/harness blobs.
+Native flow evidence remains open; submitted-head CI passes.
+
+E41 [#1272](https://github.com/rynfar/meridian/pull/1272) merged as `d3be0c62`
+from exact reviewed `8a08d3d4` after all six executed CI checks passed, including
+test, plus the expected changelog skip. Merge tree `56d1b172` exactly matches
+reviewed content; human authorship and blank squash body were verified. Local
+proof: 5,354 / 35 skips / 0 failures, typecheck/build and independent review.
+Original #1245/#1220 causality stays open. Approved expiry draft
+[#1275](https://github.com/rynfar/meridian/pull/1275), final `1856ee65`, retains
+fully tested executable `b386b148`: 5,374 / 35 skips / 0 failures and actual
+inactive-browser DOM retention/blur/in-flight success/failure controls on both
+pages. Visible keyboard and screen-reader proof remain unavailable; current
+native screenshot coverage is limited. Positive native/provider login and
+client/package acceptance remains open; submitted-head CI passes.
+
+Transcript enrollment's corrected harness observes the exact target-installed
+SDK and cleans setup failures. Its first full run at `ab9bb9ae` failed an
+existing third-replacement test that would discard an unfenced predecessor.
+The fixture now obtains modern locators through actual metadata registration,
+retaining every original assertion and the production guard. The necessary full
+rerun at frozen `b20a0e66` passes 5,392 / 35 skips / 0 failures across
+19 batches. Draft [#1276](https://github.com/rynfar/meridian/pull/1276) is now
+delivered at `e47fbb28` on current main `d3be0c62`, with all eight replayed
+patches and product/harness/test blobs preserved. Focused checks, typecheck and
+build pass; native/client/Windows and final-head CI remain open. The source
+stays open; this does not collect the untracked backlog.
+
+The exact submitted heads of drafts #1271 (`7de8cf5f`), #1273 (`8e1bf53b`)
+and #1275 (`1856ee65`) now have all six executed CI checks passing, including
+test, plus the expected changelog skip. Earlier CI-pending wording is superseded
+for those heads; refresh after any head/base change. Their actual affected-flow
+evidence remains open, so CI alone does not permit landing them.
+
+Sonnet draft #1267's verified local terminal head is `5a8097c3`. Default-native
+401/zero-query and round-two personal 200 followed by one `<synthetic>` query
+with zero input and normalized subscription refusal remain retained separately.
+Round three's distinct work snapshot returned usage 200, but its tiny actual
+Linux/V2/SDK/Sonnet control made one SDK query: `<synthetic>`, zero input,
+`is_error=true`, provider HTTP 400/API Error mentioning extra usage, no receipt.
+The precise entitlement cause remains unproven. Large baseline/fixed/resume
+were NOT RUN; retained rounds total two SDK query attempts and zero valid
+required-model completions. Package/client identities and each arm's 409
+installed dist files match; credentialless/syntax/privacy/content checks pass. Root verified
+terminal completion, zero owned children and removal of owned runtime/container
+with source unchanged. Native acceptance and fresh local/base/head/CI remain
+open; controller owns the requested working-login follow-up. Independent review
+approved the production/harness; local evidence head `73b2d122` clarifies actual
+package-installed Meridian V2 plugin execution through setup/config assertions,
+catalog discovery and the plugin-generated attested primary request. It records
+later controller snapshot cleanup without claiming successful inference. The
+fresh Sonnet full suite is running at frozen `73b2d122` after GC released
+the slot. Refresh active
+source/delivery evidence before integration; this checkpoint does not itself
+establish whole-stack acceptance. A single paginated post-E41 queue/discovery
+refresh at 23:38:04 UTC found the same six managed repositories and permissions,
+27 open PRs / 12 issues, unchanged contributor heads, and no coverage gaps or
+unexpected source work. Held Release Please #1202 is now `ebbc22e7`; separate
+release authorization remains absent. The continuation records exact counts
+and scope.
+
+## Current continuation — 2026-10-04
+
+The owner authorized a managed PR/issue backlog pass after reviewing repository
+rules. The [current queue and exact source dispositions](BACKLOG_REVIEW_2026-10-04.md)
+cover Meridian and the five managed scrub repositories. Paginated account and
+organization discovery found no additional managed scrub candidates. The dirty
+user checkout is preserved; implementation uses isolated branches/worktrees.
+No release or community-comment authorization is inferred.
+
+The October 3 sections below are historical records. Their delivery- or
+approval-pending statements are superseded by this continuation and the current
+standalone backlog record wherever a later disposition is supplied. In
+particular, #1258 merged as `f299fe06e72411b786380b5212edea79cd13966a` and
+#1257 closed; #1259 now has owner approval. Older records remain intact for
+traceability, and outstanding deferrals still apply as recorded in the current
+queue. Refresh live status before relying on any checkpoint.
+
+[Header delivery #1264](https://github.com/rynfar/meridian/pull/1264) is merged as
+`9d77d8e282cb9c58d99b8962b900777e9f4b0803`, from validated head
+`72ebaad447ee769aaac390833d5c4d8a1d1fc132`. Exact tree
+`93c72e883b0e43043a3e31e0e0844892a8218c37` and Nowaker co-author credit were
+verified. All six executed final-head CI checks passed, including
+[test run 37234609333/job 111531118342](https://github.com/rynfar/meridian/actions/runs/37234609333/job/111531118342).
+Source #1262 was refreshed unchanged at
+`b7bea911ecf41cdeeed34d5cc6d7f08c9936fe5f` and closed after verified delivery.
+Local gates: 5,304 pass / 35 platform skips / 0 failures, standalone
+typecheck/build and actual native-browser hover, negative and width controls.
+[Durable header proof](evidence/1262-header-separator.md) is delivered on main.
+
+Bounded reviews of new sources remain explicit deferrals:
+
+- [#1260 login lifetime](evidence/1260-login-lifetime-review.md), source
+  `99b8f0c46fbf8ce0b7f28cb14d2bdce4929948ef`: nine new profile response fields
+  require new tracked owner approval. Concurrent history loss, false logout,
+  unknown-store/replacement state errors and contradictory UI are reproduced.
+  Corrections plus native/browser/client proof remain gates.
+- [#1261 transcript sweep](evidence/1261-transcript-sweep-review.md), source
+  `7475d08c652332aa1b9b23cbc525024bef83ab28`: disk-growth purpose fits, but
+  root-wide deletion bypasses pins and reproduces a busy-root admission race; unjoined-child hazards are supported
+  by inspection, with that shutdown proof still open. Require durable ownership/admission/join authority
+  through supported APIs and actual affected-client proof.
+
+[Test scratch cleanup #1265](https://github.com/rynfar/meridian/pull/1265) is
+accepted with corrections, rebased delivery head
+`904eba426c571974503a31268ae805ce93018bcd` on header merge `9d77d8e2`.
+Authored incorporation `19334b24e762249628821a76ddc0b3bec83c3c9f` preserves
+source `3a959e12569d72db44be9f868ea25fdf54fde49a`; separate correction
+`c169e46d80cd20689990e5276900f14f6655f215` addresses ownership/deletion and
+harness safety. Historical full suite at `fb795476ef9be300c9be4960c639e003ea3e366c`:
+5,316 pass / 35 skips / 0 failures. Rebased focused checks: 71 pass; standalone
+typecheck/build pass, with zero per-process scratch residue. Delivery #1265
+merged as `5bd6b765fc7507780e1e9238b6d48a99f3d44810`; exact merged tree
+`e416d35b5b291f11da09f1b8c66d1803381dcac5` matches the validated head. All
+six executed final-head checks passed, including
+[test run 37235880525/job 111534755311](https://github.com/rynfar/meridian/actions/runs/37235880525/job/111534755311).
+Nowaker co-author credit verified; source #1263 refreshed unchanged and closed.
+
+[Process diagnostics #1266](https://github.com/rynfar/meridian/pull/1266) is a
+**diagnostics-only draft** at `9a1793729fa1f09ee643f646ca3221c738d5ab00` on
+`9d77d8e2`. Known probe path and bounded errno/exit metadata now reach the proxy
+log while admission stays fail closed and the HTTP body stays generic 500.
+Historical full suite at original product head
+`3a5291e345532cae895bd93127171d4ff4e064fa`: 5,305 pass / 35 skips / 0 failures.
+After rebase/harness loader correction: 16 focused checks and all five headless
+matrix arms pass, as do standalone typecheck/build. All six executed CI checks
+passed at `9a179372`, including
+[test](https://github.com/rynfar/meridian/actions/runs/37235975680/job/111535029225).
+A fresh base/head/check review remains necessary before any future integration. Exact
+macOS 27.0.1 / nono 0.79.0 / OpenCode 2.0.21 / plugin 1.11.1 native/client/model/
+installed-package proof remain open. #1229 stays open; synthetic denial does
+not establish that the native sandbox operation is fixed.
+
+The owner-approved hostname contract under
+[issue #1259](https://github.com/rynfar/meridian/issues/1259) is delivered through
+[#1268](https://github.com/rynfar/meridian/pull/1268). Validated head
+`78ba26a88cff1885c1c3876970543289a0d2278a` merged as
+`3afca1f5a0d51d74f8c7437b90f43d5686cf4163`; exact tree
+`852b4e66d06f93d62b8a32f80f2ded364859a6d6` and Nowaker co-author verified.
+All ten executed final-head checks passed, including
+[test](https://github.com/rynfar/meridian/actions/runs/37237523641/job/111539518710);
+two workflow-conditional checks skipped as expected. Source #1233 was refreshed
+unchanged at `322d3af68691eb41552b53c010d1996e9474c130` and closed;
+approval issue #1259 closed through the validated merge. Authored incorporation
+`3055d6b3` preserves Author/AuthorDate; correction `6fb37564` remains separate.
+Default-off settings/health/shared header behavior has independent final review,
+10/10 actual Settings/standalone browser controls and local proof: 5,333 tests /
+35 skips / 0 failures at `f33f93a1` on `9d77d8e2`, across 19 stages. After
+rebase, identical product/harness blobs, 100 focused checks and standalone
+typecheck/build pass. [Durable proof](evidence/1233-hostname-contract.md).
+The October 3 approval-pending note is superseded. The owned fixture stopped;
+consent was confirmed off before removing its exact private configuration.
+
+Sonnet source `553fd5c386de5e18e531a1d0101d64ef3a3b1792` is prepared in
+[draft delivery #1267](https://github.com/rynfar/meridian/pull/1267), head
+`259b152609269386e8494b8fc277230b0638ad64`. Supported Sonnet 5/5.5 native 1M
+context and inherited SDK opt-out have focused coverage and independent review.
+Full suite at `74e50774`: 5,321 pass / 35 skips / 0 failures. Typecheck and
+macOS/Linux builds pass. All six executed final-head CI checks passed, including
+[test](https://github.com/rynfar/meridian/actions/runs/37236867721/job/111537621268).
+Actual installed Linux/OpenCode 2.0.16 catalog/import rehearsal retains all
+15 messages with zero generations. Native readiness remains expired/401;
+the specifically owned macOS credential fixture is absent. Exact affected-model
+before/after generation and resume proof remain open; source #1213/#1212 stay
+open. Recheck base/head/CI before any future integration.
+
+The post-hostname paginated queue refresh at 22:00 UTC found 25 open PRs /
+11 issues, including [checkpoint #1269](https://github.com/rynfar/meridian/pull/1269).
+No new issue, unexpected PR or contributor head change appeared. Prepared drafts
+#1266/#1267 remain unchanged; held release #1202 now leads at
+`0b50bedabb1887297c63e562f425374c1dcd5030`. All six API coverages succeeded.
+Separate release authorization remains absent. The checkpoint is rebased onto
+`3afca1f5`; fresh final-head CI remains its own integration gate.
+
+## Current continuation — 2026-10-03
+
+Browser-login #1217 is delivered as 93d6c5c97daf9f21778cf5e6ecf90f12d53f40cb,
+validated head e80b68adc99d2a0e7ccc3f6a86fb7b8ec3b0f94a. All six executed
+final-head CI checks passed, including test run 37174543121/job 111354323110.
+Exact merged tree and Nowaker co-author verified; unchanged #792 a9abcce8
+closed and approval issue #1215 closed. Fresh automatic native re-authentication
+and actual OpenCode/Opus receipt/resume proof supersede the older pending notes.
+
+#1251/#1252 are delivered through [#1255](https://github.com/rynfar/meridian/pull/1255).
+Validated head cc8b0634cf2369ee4c2e07b54b36065fd1996be8 merged as
+240287e809cb57f675e7919de76f6d867a3d3352; exact tree
+edffe0fb5327863fe006600fe524a3fb50bd4040 and Nowaker co-author verified.
+All six executed final-head checks passed, including test run
+37176043204/job 111358731010. Final local gates 5,296 / 0 / 35 platform skips,
+typecheck/build. The owner approved the layout API contract under #1254;
+issue closed. Both unchanged source heads (1251 74ac9017, 1252 3d02224d)
+were refreshed and closed after delivery. Native browser matrices, actual
+settings persistence, authenticated API controls, every HTML route including
+standalone provider pages, reversible phone fitting, 169 unchanged desktop
+elements and real browser grid flows pass. [Durable review/source maps](evidence/1251-1252-responsive-layout.md).
+
+The #1243 retirement fault now has a maintained credentialless harness and
+[bounded review record](evidence/1243-migration-retirement-review.md). Exact
+source 6558c209f8bddf8e59b554d16c9834381c7817c2 still retires an unimported
+older-writer replacement. Expected-hazard mode is a negative control, not fix
+acceptance; parent #1245/cache and full migration acceptance remain open.
+
+Paginated owner and both accessible organization repository discovery was
+refreshed after the layout merge. The same six managed repositories are in
+scope; no additional managed scrub repo appeared. Meridian has 18 open PRs
+and 11 open issues; OpenCode scrub has #18 plus release #20, Pi scrub release
+#15, and the other three scrubs have no open PRs/issues. Separate release
+approval remains absent. Existing dispositions below continue to apply to
+unchanged sources; release heads are live leads, never permission to publish.
+
+#1257 API/setup-token credential metadata isolation is corrected in isolated
+branch codex/api-profile-credential-isolation-20261003, base a079dc94b,
+product commit 68a614ecd68a02467d693de39b4838dbba746447. Unchanged main
+reproduces the metadata leak and wrong API logged-out demotion; actual CLI
+2.1.289 + owned macOS Keychain + actual HTTP after controls make zero native
+store reads. Eight isolated HTTP regression controls retain stored-Claude
+plan/renewal/presence and unknown-store behavior. Native browser confirms the
+API card no longer shows Max 20x or wrong logged-out status. SDK/model calls
+are fenced. Final local gates 5,304 / 0 / 35 platform skips across 18 stages,
+standalone typecheck/build pass. Integration [#1258](https://github.com/rynfar/meridian/pull/1258)
+awaits final-head CI/merge.
+[Durable proof](evidence/1257-profile-credential-isolation.md).
+
+#1233 source c609e8d1a82b7c98114d65376474dcde5ed3ff56 is completely
+reviewed for its opt-in hostname contract. [Issue #1259](https://github.com/rynfar/meridian/issues/1259)
+records authenticated GET/PUT /settings/api/header and optional hostname on
+unauthenticated /health while enabled. Owner decision is pending; no source
+incorporation or new contract is authorized yet. After approval, compose the
+current responsive header and verify all API/width/privacy controls. The source
+PR remains reviewable and unchanged; no external comment was sent.
+
+#1256 retirement-harness checkpoint delivered as
+a079dc94bd313a830a318215d760baf7c984e695 from exact validated head
+e189e454c7332868f8da22aa1a44b1445b408c2a; merged tree verified. All six
+executed checks passed, including test 37176523505/job 111360151539.
+
+#1246 is delivered through [#1250](https://github.com/rynfar/meridian/pull/1250).
+Validated head `29799ce68a72e4f71ce77f9ba965e9d6b5ee0a91` merged as
+`4170a8a7f30c98de99d411321158b41a71098b6f`; exact tree match and maintainer
+credit verified. All six executed CI checks passed, including
+[test](https://github.com/rynfar/meridian/actions/runs/37110676264/job/111167808247).
+Issue #1246 closed through the validated merge. The older pending lead below
+is historical; no release was authorized.
+
+#1238 is delivered through [#1253](https://github.com/rynfar/meridian/pull/1253).
+Validated head 5aa8c029abcbe54f4ede905d0686312070616f95 merged as
+e2b09669b9140ba0eb8ebbec54cc504907e82cad, exact merged tree verified.
+All six executed final-head CI checks passed, including
+[test](https://github.com/rynfar/meridian/actions/runs/37173240035/job/111350364392);
+issue #1238 is closed. Official agy 1.2.7 / actual OpenCode 1.18.30 / native
+Gemini 3.8 Flash High pass 129/256 MCP catalogs, tail-tool receipts, client
+results, negative controls and joined cleanup. Final local 5,154 / 0 / 4 skips,
+typecheck/build. [Durable proof](evidence/1238-antigravity-tool-catalog.md).
+
+#1230 is delivered through [#1249](https://github.com/rynfar/meridian/pull/1249),
+validated head `af7a6a4020de4ef3eaae6d6b1abeb6f129e9c400`, merge
+`67a19e50c743942ab0ed62d340d1caf143c6140b`. All six executed final-head
+CI checks passed, including [test](https://github.com/rynfar/meridian/actions/runs/37107099227/job/111157663187);
+5,144 local tests / 0 failures / 4 skips, typecheck/build. Merged tree exactly
+equals the validated head and Noah Passalacqua credit is verified. Unchanged
+source `d50e28062bad5b98f93359e268ce53aa8facd868` is closed. The later pending
+#1230 leads below are historical.
+
+#1246 executable selection is implemented on current main in isolated branch
+`codex/claude-path-resolution-1246-20261003`. Published and current-main
+Linux/OpenCode/mise before controls reproduce the exact 2.1.268 model refusal;
+corrected Opus 5.5 selects 2.1.288, returns its receipt and leaves no owned
+processes. Override and missing/broken PATH controls are retained. A real missing
+native binary behind a mise shim required a version-probe fallback correction;
+cold readiness now uses asynchronous resolution to keep liveness responsive.
+Final local gates pass 5,151 / 0 / 4 skips, typecheck/build. Exact-head CI and
+merged-tree gates remain. [Durable proof](evidence/1246-claude-path-resolution.md).
+
+This checkpoint supersedes the pending #1242 and #1230 leads below.
+#1248 is merged as `928bddc42b684680bc58f31a0aab18034197e8f3`; final local
+and CI gates, exact merged tree and Nowaker credit were verified before closing
+the unchanged #1242 source. No release was authorized.
+
+#1230 source `d50e28062bad5b98f93359e268ce53aa8facd868` is accepted with
+maintainer correction on current main. Actual Claude Code 2.1.287 PTY before/
+after now reproduces native argument failure and verifies a rendered receipt
+on macOS arm64 and Linux x86_64, with SDK 0.2.141/CLI 2.1.284 and native Sonnet 5.
+Source-only code exposed a second live-prompt framing bug from trailing system
+metadata; failing HTTP controls and source-only actual-client failures precede
+the correction. Supported/off and print-mode omitted controls plus all four E41
+modes pass. [Durable evidence](evidence/1230-interactive-thinking-display.md).
+Final local/CI and delivery state must be refreshed before landing.
+
+Browser-login #1217 current head `cc3dee1140d84cc5bc59476138e64c345504f977`
+has 5,248 passing local tests / 35 platform skips, typecheck/build and all six
+executed final-head CI checks passing (test run 37102721775). Its existing-account
+assisted grant exchange is proved, but fresh automatic browser callback and
+post-grant client proof remain open. The preview currently requires account
+sign-in; no fresh authorization completion is claimed. #1245's owner-approved
+async cleanup (#1244) still waits for the unexplained original 200-token
+canonical prefix loss, not renewed public-contract approval.
+
+Bounded review of #1243 current source
+`6558c209f8bddf8e59b554d16c9834381c7817c2` reproduces a legacy migration
+retirement race: an older writer atomically replaces sessions.json after the
+digest read, then retirement renames that unimported replacement away from the
+active path. Fault-control result: 0 pass / 1 fail. Bytes survive in the retired
+file, but automatic restart cannot recover those unimported mappings. Legacy
+writer-lock participation or an equivalent crash-safe protocol, composition
+with #1245's caller snapshots/revocation fences, and the parent acceptance gate
+are prerequisites. This is not a completed full SQLite acceptance review.
+
+#1223 current source `537ccad864336a4f4dc25f925e92177cd12fe6b2` still grants
+a second lease while the synthetic original holder is kernel-confirmed SIGSTOP
+and alive; current main refuses. The maintained ownerless fault harness was
+rerun on both exact heads. Decline age-only same-boot recovery; reconsider with
+affirmative owner-death/boot evidence or actual write fencing.
+
+## Goal-backed backlog continuation — 2026-10-03 UTC
+
+Owner explicitly requested a goal and continuing through whatever open PRs can
+be completed. The active goal covers the managed Meridian/scrub queue, with
+no release authorization or external community comments. Owner's dirty main
+checkout remains untouched; all new work uses isolated feature worktrees.
+
+Paginated account + accessible organization discovery refreshed the live queue
+across six managed repositories: Meridian, hudscrub, and Hermes/OpenClaw/
+OpenCode/Pi scrub. The plugin-doc links match the discovered repositories.
+No additional accessible scrub repositories were found. New source items
+#1242 and #1243 and issue #1246 are added to the current queue. #1213 is now
+ready for review (same `553fd5c` head, no longer draft); its actual V2 catalog/
+large-replay evidence gate remains and draft status is no longer a blocker.
+
+- **#1240 / #1239:** accept with a separate fixture correction. Source
+  `d868637455387e0359f1b3f4975caaf5fb1399ac` → authored cherry `cbdd5d17`;
+  robertn702's Author/AuthorDate retained. Integration
+  [#1247](https://github.com/rynfar/meridian/pull/1247), current head
+  `c1a345e2b5f44b33b118e56036517e5660b9255e`, branch
+  `codex/replay-budget-isolation-1240-20261002`, worktree
+  `/Users/rynfar/repos/meridian-replay-budget-1240`. Exact ordered-load
+  reproduction: 11 pass / 2 budget failures; isolated original assertions
+  13/13. Initial full local gates 5,125 pass / 0 fail / 4 skips, typecheck/build
+  pass. Initial CI exposed an SDK gate test readiness race, reproduced with
+  300 ms delayed real gate fsync; worker-ready preceded asynchronous publication.
+  Maintainer commit `c1a345e2` adds actual-executor startup and controlled-release
+  handshakes. Delayed control and all five lifecycle process tests pass.
+  Corrected full local gates pass 5,125 / 0 fail / 4 skips across 17 stages,
+  typecheck/build pass, and all ten executed final CI checks pass. Merged as
+  `802d9398f609eb49b4c93fe34c306b872ebeb647`; merged tree exactly equals the
+  validated head and its human co-author trailer is verified. Unchanged source
+  #1240 is closed; #1239 closed through the validated integration.
+  [Durable evidence](evidence/1240-replay-budget-isolation.md).
+- **#1242:** delivered with narrowing correction.
+  Source `a2408b82ca4c05e8ed1c770b1ac72615ef1bdd85` → authored cherry
+  `6912ec9f`, now rebased as `37ade6ab` (Nowaker / original authored date
+  retained). Maintainer correction `f11c355b`, now `a42c696e`, preserves recovery wording before a tool result or beside meaningful
+  user text; recognize only the actual synthetic tail. Source regression control
+  16 pass / 1 fail → corrected 18/18. Merged integration
+  [#1248](https://github.com/rynfar/meridian/pull/1248), worktree
+  `/Users/rynfar/repos/meridian-prefill-lineage-1242`, branch
+  `codex/opencode-prefill-lineage-1242-20261002`. Real OpenCode 1.18.34 + released
+  oh-my-openagent 5.1.12 transform + independent scrub 0.2.3 + SDK 0.2.141 /
+  bundled CLI 2.1.284 + native Sonnet 4.6, macOS arm64, Bun 1.4.2:
+  three actual tool recovery rounds caused two replays on unchanged `d57388724`
+  and zero replays after the fix; both return the tool receipt and join cleanup.
+  Source + correction full local npm test 5,130 pass / 0 fail / 4 skips,
+  typecheck/build pass. All four E41 chain/parallel JSON/SSE modes pass
+  unchanged cache/history assertions. Final client harness also passes joined
+  cleanup with four observed recovery rounds / zero replays. Rebased onto
+  test-only main `802d9398f`; product code equals the live-tested tree. Fresh
+  full local gates pass 5,130 / 0 fail / 4 skips across 17 stages,
+  standalone typecheck/build pass, and all six executed final-head CI checks
+  pass. Final head `ae5eb07cf5e2f1284903e73086f4baec8bb61f17` merged as
+  `928bddc42b684680bc58f31a0aab18034197e8f3`, with exact merged-tree and
+  Nowaker human co-author verification. Unchanged source #1242 is closed.
+  [Durable evidence and maintained harness](evidence/1242-opencode-prefill-lineage.md).
+- **#1243 `6558c209f8bddf8e59b554d16c9834381c7817c2`:** queued, not yet fully
+  reviewed; contributor explicitly stacks its SQLite store/journal migration
+  after #1220. Respect that dependency. The full diff is retained locally; do
+  not treat contributor production measurements or green CI as completed
+  migration/rollback/cross-process/live-client review.
+- **#1245 / #1220:** remain draft/pending the unexplained original 200-token
+  canonical prefix reduction. The user-approved async cleanup contract is
+  recorded in #1244 and the integration PR; do not ask again. All corrected
+  local gates and prior final-head CI pass. Real encrypted-transport retry
+  control proves aggregate billing can overstate a canonical cached prompt;
+  it does not explain the residual 200 tokens in the original fixture. Baseline
+  retry control confirms aggregate accounting before this source change, but
+  its continuation was interrupted, so do not claim a complete baseline E41
+  result. Latest facts live in #1245's PR body. Persistent valid owned native
+  fixture is available; the earlier temporary re-authentication directory has
+  been removed. Never print grant values or authorization codes.
+
+- **#1217 / #792 — next active delivery:** recovered the existing integration
+  into a fresh isolated branch from main `928bddc42`, preserving all four
+  authored Nowaker commits and separate prior corrections. Current authored
+  SHAs: `13e8e349`, `fa431b65`, `fb6e2ae3`, `072669a9`; refreshed source remains
+  `a9abcce8c693dae018ff73872051a9dfeabe21b6`. Worktree
+  `/Users/rynfar/repos/meridian-browser-login-finalize-792`, local branch
+  `codex/browser-login-finalize-792-20261003`; the existing draft #1217 is reused,
+  not duplicated. Documentation conflicts retained both E2E flows and the
+  current main handoff. Old detached recovery worktree is left intact.
+  Standalone typecheck/build passed before the final test-only/main-adapter
+  rebase; fresh full gates are next. Assisted re-authentication completed as
+  recorded below and in the corrected PR body. Automatic browser callback is
+  still an explicit gate. Product-native preview tab `tab_4` is available,
+  currently hidden/about:blank; its first open returned not-yet-ready and a
+  corrected status call confirmed availability. No alternate browser was used.
+  Prior scoped owner authorization covers these selected profile contracts.
+  Keep all authorization URLs/codes/grants private. The persistent owned native
+  credential fixture is available; do not depend on removed temporary roots.
+- **New issues:** #1246 requests PATH Claude precedence in Linux x86_64 /
+  OpenCode 1.18.34 / opencode-with-claude 1.10.1, with an older cached 2.1.268
+  CLI hiding a newer mise 2.1.288 install. #1238 requests relaxing Antigravity's
+  128-tool cap with actual OpenCode 1.18.30 / agy 1.2.7 / Gemini 3.8 Flash-high.
+  Their bodies are read and retained as queued issues; no delivered fix is
+  claimed. Match the exact affected platform/client/model when reaching them.
+
+Remaining earlier dispositions below are dated leads. Refresh live heads before
+acting, continue independently actionable PRs while these wait, and use exact
+head matching and required CI for every merge. Release Please PRs remain held
+for separate release authorization.
+
+## Additional Nowaker work (2026-10-02)
+
+Owner authorized continuing more Nowaker work. #1222 source `1bffa43fe` is
+cherry-picked on fresh main `f443faee0` as `66d6d2cc`, with separate ping-report
+and independent-process probe corrections. [Evidence](evidence/1222-late-idle-deadline.md).
+Actual macOS/Linux OpenCode/Opus baseline false stalls and corrected
+receipts/resume pass, as do independent Node/Bun socket controls, all four E41
+modes and final local tests/typecheck/build. Integration is [#1241](https://github.com/rynfar/meridian/pull/1241); its live
+state and final-head check links are the authority for CI/merge disposition.
+Required final-head CI remains a merge gate. #792 existing-account re-authentication now completed and its native
+grant changed with the same profile mapping. The preview blanked at its
+localhost callback; replaying that original callback privately to the same
+server via 127.0.0.1 completed exchange. This is assisted callback evidence,
+not automatic loopback proof. Draft #1217 remains unfinished. Other public
+contract/deferred gates remain in the takeover record.
+
+## Takeover checkpoint (2026-10-02)
+
+[Current dispositions and proof](BACKLOG_TAKEOVER_2026-10-02.md) supersede the
+October 1 status leads below. #1187 incorporated with corrections as #1235,
+merge `c0af34eaa`, verified exact tree/CI/Nowaker credit and source closure.
+#1221 correction and actual macOS/Linux proof merged as #1236, `e1f8bc473`;
+exact tested tree/CI/Nowaker credit and source closure verified. #1217 rebased head `eb0c2b9e` has all executed
+CI passing, but remains draft pending real existing-account re-authentication.
+#1234 exact plugin pins and a reproduced `/inflight` queue-fixture correction
+are in #1237; final-head checks remain required before merge. General CI flake
+issues remain open. #1176 is deferred until a supported OpenAI-serving backend exists. #1175 already
+merged as #1227 (`3cb65df0c`). No release or external community messages.
+
+## Prior active authorized backlog (2026-10-01)
+
+**Nowaker priority checkpoint (2026-10-01).** #1171 incorporated with corrections
+as [#1225](https://github.com/rynfar/meridian/pull/1225), merge
+`bd00c164d198a368956c79658897a6360a0cd5ea`; #1190 incorporated with corrections
+as [#1218](https://github.com/rynfar/meridian/pull/1218), merge
+`310dd95698b27484ff5bc0feb88f59f365ef58c0`. Both merged trees equal their
+validated heads, all executed exact-head CI passed, Nowaker co-author credit
+verified, original heads unchanged before closure. Durable records:
+[evidence/1171-build-provenance.md](evidence/1171-build-provenance.md) and
+[evidence/1190-request-activity.md](evidence/1190-request-activity.md).
+#792 draft [#1217](https://github.com/rynfar/meridian/pull/1217) proves new-account
+creation and real OpenCode use; re-authentication still awaits a completed
+human Claude authorization. #1187 is being completed in an isolated takeover branch;
+#1176 is deferred until Meridian has a supported OpenAI-serving path. #1175 correction and
+actual bundled HTTP/browser proof are recorded in
+[evidence/1175-update-setting.md](evidence/1175-update-setting.md); merged as #1227 at `3cb65df0c`; final-head CI and human credit were verified.
+No release authorized.
+
+Owner requested a persistent goal covering PRs/issues, authored cherry-picks,
+maintainer corrections and headless actual-client evidence. Initial paginated
+inventory: Meridian 18 PRs / 11 issues; OpenCode scrub 2 PRs; Pi scrub issue #13;
+Hermes scrub, OpenClaw scrub and hudscrub empty. Accessible owner/org repository
+discovery found no additional scrub candidates. No release or community-message
+authorization. Preserve the dirty desktop checkout at `446a0f163`.
+
+**#1191 accepted and integrated as #1196.** Refreshed exact source/base/head and
+all required CI before squash. Merge `c04a861ba8a4fb71d105065afa9b73019d9985f4`
+has tree `0f62d771d385bcbd619725072a449811524177c8`, identical to validated
+`84902f520bfa70f85227369b40f1cde0518070e5`. Explicit verified Nowaker human
+co-author trailer present. Source head unchanged at closure. Existing independent
+browser proof and local/CI gates remain valid: base did not change before merge.
+The collaborative preview initially failed, then recovered. Its repeated live
+phone/desktop probe matched the retained measurements exactly: 375px page/client
+360/360, internal table scroll 311px; desktop 1265/1265 with no inner scroll;
+rule-removal control 626/360. No unrelated model calls for CSS.
+
+**#1197 accepted and delivered as [#1203](https://github.com/rynfar/meridian/pull/1203).**
+Source `3baf6f59` cherry-picked as `e97c6f61`; Author/AuthorDate preserved.
+[Durable proof](evidence/1197-auth-refresh.md) includes the committed real-CLI
+delay harness: unchanged baseline health probes 2258 ms, fixed 2–4 ms, one
+refresh. Actual headless OpenCode 1.18.33 / Opus 5.5 / SDK 0.2.141 / scrub
+0.2.3 same-session continuation passes. Final local suite and exact-head CI
+passed: final npm test 4949 pass / 0 fail / 4 skip, standalone typecheck and build;
+all six executed CI checks passed, including
+[test](https://github.com/rynfar/meridian/actions/runs/36820232911/job/110234024099).
+Merge `98c48c03ff65f0b8ce428c8b60718655c49f85dd`, tree
+`40110cc03377380c1a9ef4568ef28a4079880e89`, identical to validated head
+`96aaac51`. Nowaker co-author trailer verified; source unchanged at closure.
+
+**#1186 corrected and incorporated in #1204, merged.** Source `9d33e45f` maps
+to authored cherry `3849868f`; ownership/immutability correction `1ec6f47e`,
+proof `e74eb796`, process-isolated timing gate `1cefadb3`.
+Merge `2404eae1eafbc530e472a0bf28b775f2b7956689`, tree
+`167c4031cb95ca8e6113c2279909d322bc0b3936` equals validated tree.
+4967 tests, all ten executed CI checks, typecheck/build and two real OpenCode
+1.18.33 / Opus 5.5 clients with independent tool-result receipts/continuations
+pass on final rebased tree. Four-mode E41 passes on the identical store blob.
+Nowaker credit verified; source unchanged at closure.
+[Evidence](evidence/1186-store-mutation.md) records failing shallow-freeze tests,
+lazy exposure, benchmark noise and initial full-suite isolation failure.
+
+**#1198/#1199 incorporated with correction in #1205, merged.** Source SHAs
+`959dc6c5`/`b6cb22e0` map to authored cherries `01d37638`/`503ba3c0`.
+Maintainer sort-control correction and probes `5851f8d1`. Merge
+`dedb55564aedccb9e207167f4ae148aeac112e0d`, tree
+`eb04d210092729c37e2e52ea44f8a765772a6729` equals validated tree. 4958 tests,
+all six executed CI checks, 28 real browser baseline/final cases and compiled
+Node asset HTTP gate pass. Nowaker credit verified; both sources unchanged at
+closure. [Evidence](evidence/1198-1199-mobile-layout.md); local media captured,
+no durable GitHub media upload claimed because no uploader was available.
+
+**#1189 accepted with correction and merged as #1206.**
+Source `c2f4b67f` maps to authored cherry `6baaf143`; correction `632445c4`.
+Real Node processes confirm authored reporter makes warn/none fatal and aborts
+warn-with-error-code before its timer. Error.name leaks a synthetic Bearer value.
+Corrected policy preserves all five modes, CLI-over-NODE_OPTIONS precedence
+and strict-mode exact-once reporting; names scrubbed/bounded before spool.
+Retained headless gate: 22 Node/Bun paired configurations and four actual
+compiled test-error-report CLI cases pass against local collector.
+[Evidence](evidence/1189-error-reporting.md). Final npm test 4985 pass / 0 fail / 4 skip, typecheck/build and all six
+executed CI checks pass. Merge `cc74cd2dd65ec3a246512179fc7958a79a1bccd6`, tree
+`aace784e254fe63e4646563c06d9174aac41ac94` matches validated head `a9d1112d`.
+Nowaker co-author credit verified; source unchanged at closure. No third-party collector claimed.
+
+**Pi scrub issue #13 resolved by merged plugin PR #14.**
+Exact Pi 0.87.1 found under renamed package @earendil-works/pi-coding-agent.
+Published scrub 0.2.2 and current scrub main `23c98fac` reproduce two test
+failures. Complete header-scoped <docs> removal corrects both (17 pass/0 fail),
+preserving adjacent foreign documentation and project context.
+Actual headless Pi 0.87.1 / Opus 5.5 / SDK 0.2.141 macOS flow through an
+independently installed fixed tarball removes all docs, retains project
+instructions and completes a read with random client-only tool-result receipt
+and a continuation. Both turns have zero errors. Pi arrives as adapter=opencode
+in this real custom-provider flow; content-scoped scrubbing correctly applies.
+Baseline also observed billing_error, which is not claimed as universal billing
+causation or a guaranteed billing remedy. Final-head build CI passes; merge
+`188115f355f423cbff50b20a2e5fd7d932ec1746` tree
+`e4002e54eb2ed3c9822f27425befabf9a8a9b347` matches tested head `adc3b140`.
+Issue closed. No publication authorized.
+
+**#1200 accepted with design corrections and merged as #1207.**
+Source `517c91bd` maps to authored cherry `f90db029`. Shared-header profile
+anchors/search preserve routing. Restore DESIGN.md section micro-labels, bound
+pulse tint and add reduced-motion CSS. Actual browser matrix with 14 synthetic
+accounts passes 320/375/800/1280 widths, header content growth, aliases, polling
+focus/scroll, filter/reorder controls and zero mutations following a home link.
+[Evidence](evidence/1200-profile-find.md) explicitly corrects an initial padding
+probe: no application timing defect claimed, speculative timing change removed.
+Final full local gates: 5010 pass / 0 fail / 4 skip, typecheck/build. All six
+executed CI checks pass. Merge `4c5e602e2640348a0fa32668e30e2e621eea700c`,
+tree `6256b0e41b9171250164acc895373ae67be371e0`, matches validated head
+`8aef41ba`. Nowaker credit and unchanged source head verified before closure.
+An unchanged Antigravity one-second probe failed once under full-suite load;
+baseline/final focused probes pass and the repeated full suite passes.
+
+**#1192 delivered as #1208, merged.** Source `4e55f7de` unchanged at
+closure. Authored cherry `b636e878` and maintainer harnesses preserve credit.
+Merge `b4d23428ea6b7dd9d7f4878e3fd59ad92bcb4e9f`, tree
+`152e52dac326451533d7e8636111ebc75d4352b5`, equals validated head
+`72a82eaabe32a52b52d7fb05d47d06ee4dc5f208`. All six executed CI checks pass,
+including [test](https://github.com/rynfar/meridian/actions/runs/36829379659/job/110262244694).
+5014 local tests / zero failures / four skips, typecheck/build and actual
+macOS/Linux headless OpenCode controlled rejection plus live Opus 5.5 receipts
+and continuations pass. Nowaker co-author verified. Detailed proof in
+[evidence](evidence/1192-deferred-tool-recovery.md) after rebasing this checkpoint.
+
+**#1177 critical idle regression advanced ahead of remaining feature proposals.**
+Reason: ping-only SDK events can indefinitely postpone a stalled client's error.
+Fresh issue/discussion confirms reported macOS arm64, SDK 0.2.141, Claude Code
+2.1.283 and Pi; exact Pi/model version omitted. Fork checkpoint `b004b952` is
+only packaging; actual authored fix is `f261fc9e0259f6ac92157051e1bec38a19eeac77`
+by Nate Berkopec, cherry-picked as `5f488d8e` with Author/AuthorDate retained.
+Resolve conflicting fork version metadata by retaining main 1.79.0; separate
+maintainer commit `70385c83` removes fork-only packaging workflow. Current main
+and published 1.76.5 share guard blob `b93ea333e1263b903dac074baf30942a480f5607`.
+Authored reproduction exits 1 before (120 seconds of ping-only events), 0 after
+(timeout at 90 seconds); focused controls pass 8 tests. Full suite and actual
+client/model evidence are recorded below; a unit replay alone is insufficient.
+A disposable real SDK / CLI 2.1.284 local API probe filters transport pings
+before message_start and ends with no_events, rather than reproducing the nested
+SDK event. The longer 2.1.283 probe observed six actual nested SDK pings. Its duration
+differs from the short 2.1.284 probe, so no version-dependent fix is inferred.
+The compiled real Pi 0.87.1 / SDK 0.2.141 / Claude Code 2.1.283 / Node 26.8.2
+on macOS arm64 before/after passes: unchanged 15-second idle limit waits
+35178 ms for synthetic output; corrected times out at 15007 ms, zero completed
+answers. Separate actual Opus 5.5 read result and same Pi session continuation
+pass with that CLI/platform. [Durable proof](evidence/1177-sdk-ping-idle.md). Initial probe used a nonexistent
+cli.js and then misclassified /messages?beta=true; corrected pathname/binary
+selection, no product defect claimed for those setup errors.
+
+**#1201 pending actual-client proof.** Source `30e01969`. Public implicated
+client is `XInTheDark/meowbert-ai-agent`. Its own commit `08e771a9` (2026-10-01
+01:07:50 UTC) identifies Opus and fixes interleaving by recording all response
+calls before outputs. Current client already uses that ordering. Original
+affected model/version and before-code live path still need establishing;
+owner does not know them. Do not call a synthetic HTTP-only success actual
+Meowbert E2E. Continue independent work while that gate is open.
+
+**Final behavior deliveries and queue dispositions (2026-10-01).**
+#1177 merged as [#1209](https://github.com/rynfar/meridian/pull/1209), merge
+`0f2a4a541b3b7b14022317ecd9ffe14c149b8f1d`, tree
+`d1250b1c059860ff994ef0cf9b86f046eee64788` equals tested head
+`d08011f8624d62ef8f66d261cc9b1295eaf7883d`. Final local suite 5017 pass /
+zero fail / four skip, standalone typecheck/build and all six executed CI checks
+including [test](https://github.com/rynfar/meridian/actions/runs/36831203611/job/110267982115)
+pass. Nate Berkopec co-author trailer verified; issue closed by validated fix.
+
+OpenCode scrub #5 accepted with correction in merged
+[scrub #19](https://github.com/rynfar/meridian-plugin-opencode-scrub/pull/19).
+Source `40094cd9adaef32456befa54c1b969d611785395` retained as authored cherry
+`eddcf85a40701b94c6b95cfbe16b7cd644d57350`, maintainer correction `a2c479c`.
+Restore current guards/OMO fixes and remove environment preamble in minimal
+mode while keeping cwd, policy and optional identity rewrite. 28 tests / zero
+fail, typecheck/build/pack, two default fixtures byte-identical to main; actual
+OpenCode 1.18.33 / Opus 5.5 / SDK 0.2.141 / Code 2.1.284 on macOS arm64 passes
+actual read receipts/same-session continuation in both modes, independent
+installed tarball. Final escrowed minimal harness rerun also passes. Final-head
+[build CI](https://github.com/rynfar/meridian-plugin-opencode-scrub/actions/runs/36832792431/job/110273021200)
+passes. Merge `77316d2ba4ed77ef3d5f12e40256ba1c3699d85a`, tree
+`fbb9c0a4e44ab2161a0854fe93c305db30cc3b2d` equals tested `a2c479c`.
+briankeefe human co-author verified; source unchanged before closure. No
+publication. [Durable plugin proof](https://github.com/rynfar/meridian-plugin-opencode-scrub/blob/main/docs/evidence/5-minimal-mode.md).
+
+[Complete refreshed dispositions](BACKLOG_DISPOSITIONS_2026-10-01.md) record
+all remaining source heads, product-fit/regression findings and observable
+revisit triggers, including reproduced #792 prototype-dictionary skip. Current
+owner closure of #1009 does not supply historical missing abort-window proof.
+No release or external message performed. The queue retains explicit public
+contract, actual-client evidence, dedicated-lane and credential gates; it is not
+empty. Refresh live status before resuming any deferred item.
+
+## Historical PR review and plan (2026-09-29)
+
+Live inventory: 12 Meridian PRs and two OpenCode scrub PRs, refreshed against
+`0ec52a28d9c70d0f9aa84767613c7a08125d25e4`. See the
+[prioritized plan](PR_REVIEW_PLAN_2026-09-29.md) for each source head,
+disposition, correction and E2E gate. This supersedes historical ready/draft
+status for #792 (now ready); #1192 remains draft under author observation.
+
+Delivery [#1196](https://github.com/rynfar/meridian/pull/1196) was open at this checkpoint; it is now merged as recorded above.
+Local gates passed: 4,943 tests, 0 failures, 4 skips; typecheck/build and the
+retained browser probe passed. Required final-head CI remains tracked on the PR.
+
+#1191 is incorporated as authored commit `de0f00329ce0468e3b3bc274e197fbbd199fa407`
+in `/tmp/meridian-review-20260929`, branch `codex/pr-review-plan-20260929`.
+[Independent browser evidence](evidence/1191-settings-overflow.md) proves the
+pricing overflow fix at 375px with a failing rule-removal control and desktop
+parity. Other viewport overflow remains outside the pricing table. The larger
+PRs have a triage plan, not completed independent acceptance validation.
+No merge/release/comment/source closure is authorized or performed by this entry.
+
+
 ## Contributor fix batch #1174/#1178/#1172/#1173/#1169 (2026-09-28)
 
 Live queue at start: 9 contributor PRs plus release PR #1167 and own #1050, from

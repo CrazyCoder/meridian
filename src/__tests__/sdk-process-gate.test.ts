@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { afterEach, describe, expect, it, spyOn } from "bun:test"
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { open, type FileHandle } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, isAbsolute, join } from "node:path"
 import { createSdkProcessGate, getSdkGateNodeExecutable } from "../proxy/session/sdkProcessGate"
@@ -82,4 +83,156 @@ describe("SDK process gate", () => {
     expect(await gate.closeAndJoin()).toBe(true)
   })
 
+  it("keeps serving the event loop while the gate waits for the disk", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-sdk-gate-"))
+    roots.push(root)
+    const gate = await createSdkProcessGate(root, async () => undefined)
+    const disk = holdDisk()
+    const restore = await replaceFileHandleSync(root, async (sync) => {
+      await disk.held
+      return sync()
+    })
+    let ticks = 0
+    const heartbeat = setInterval(() => { ticks++ }, 5)
+    let output = ""
+    try {
+      const child = gate.spawnClaudeCodeProcess({
+        command: process.execPath,
+        args: ["-e", 'process.stdout.write("gated")'],
+        env: { ...process.env },
+        signal: new AbortController().signal,
+      })
+      const drained = new Promise<void>((resolve) => child.stdout.once("end", () => resolve()))
+      child.stdout.on("data", (chunk) => { output += chunk.toString() })
+      await Bun.sleep(100)
+      expect(ticks).toBeGreaterThanOrEqual(5)
+      expect(output).toBe("")
+      disk.release()
+      await drained
+    } finally {
+      clearInterval(heartbeat)
+      disk.release()
+      restore()
+    }
+    expect(output).toBe("gated")
+    expect(await gate.closeAndJoin()).toBe(true)
+  })
+
+  it("leaves no gate behind when an abort lands while the gate is being written", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-sdk-gate-"))
+    roots.push(root)
+    const marker = join(root, "command-ran")
+    const gate = await createSdkProcessGate(root, async () => undefined)
+    const disk = holdDisk()
+    const restore = await replaceFileHandleSync(root, async (sync) => {
+      await disk.held
+      return sync()
+    })
+    try {
+      const controller = new AbortController()
+      const child = gate.spawnClaudeCodeProcess({
+        command: process.execPath,
+        args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`],
+        env: { ...process.env },
+        signal: controller.signal,
+      })
+      const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()))
+      controller.abort()
+      await exited
+      const joining = gate.closeAndJoin()
+      await Bun.sleep(50)
+      disk.release()
+      expect(await joining).toBe(true)
+    } finally {
+      disk.release()
+      restore()
+    }
+    expect(existsSync(marker)).toBe(false)
+    expect(readdirSync(root).filter((name) => name.includes(".gate"))).toEqual([])
+  })
+
+  it("bounds join while publication is stuck and removes its late sensitive gate", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-sdk-gate-"))
+    roots.push(root)
+    const marker = join(root, "must-not-run")
+    const gate = await createSdkProcessGate(root, async () => undefined)
+    const disk = holdDisk()
+    const restore = await replaceFileHandleSync(root, async (sync) => {
+      await disk.held
+      return sync()
+    })
+    let joining: Promise<boolean> | undefined
+    try {
+      const controller = new AbortController()
+      const child = gate.spawnClaudeCodeProcess({
+        command: process.execPath,
+        args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`],
+        env: { ...process.env }, signal: controller.signal,
+      })
+      const exited = new Promise<void>(resolve => child.once("exit", () => resolve()))
+      controller.abort()
+      await exited
+      joining = gate.closeAndJoin(30)
+      expect(await Promise.race([joining, Bun.sleep(300).then(() => "unbounded")])).toBe(false)
+      disk.release()
+      const deadline = Date.now() + 2000
+      while (readdirSync(root).some(name => name.includes(".gate")) && Date.now() < deadline) await Bun.sleep(10)
+      expect(readdirSync(root).filter(name => name.includes(".gate"))).toEqual([])
+      expect(existsSync(marker)).toBe(false)
+      expect(await gate.closeAndJoin()).toBe(true)
+    } finally {
+      disk.release()
+      restore()
+      await joining
+      await gate.closeAndJoin()
+    }
+  })
+
+  it("stops the wrapper instead of opening the command when the gate cannot be published", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-sdk-gate-"))
+    roots.push(root)
+    const marker = join(root, "command-ran")
+    const gate = await createSdkProcessGate(root, async () => undefined)
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {})
+    const restore = await replaceFileHandleSync(root, async () => {
+      throw new Error("injected sync failure")
+    })
+    try {
+      const child = gate.spawnClaudeCodeProcess({
+        command: process.execPath,
+        args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`],
+        env: { ...process.env },
+        signal: new AbortController().signal,
+      })
+      await new Promise<void>((resolve) => child.once("exit", () => resolve()))
+      expect(errorSpy).toHaveBeenCalledWith("[sdkProcessGate] gate publication failed:", expect.any(Error))
+    } finally {
+      restore()
+      errorSpy.mockRestore()
+    }
+    expect(await gate.closeAndJoin()).toBe(true)
+    expect(existsSync(marker)).toBe(false)
+    expect(readdirSync(root).filter((name) => name.includes(".gate"))).toEqual([])
+  })
 })
+
+function holdDisk(): { held: Promise<void>; release: () => void } {
+  let release!: () => void
+  const held = new Promise<void>((resolve) => { release = resolve })
+  return { held, release }
+}
+
+async function replaceFileHandleSync(
+  dir: string,
+  replacement: (sync: () => Promise<void>) => Promise<void>,
+): Promise<() => void> {
+  const probe = await open(join(dir, "sync-probe"), "w")
+  const prototype = Object.getPrototypeOf(probe) as FileHandle
+  await probe.close()
+  rmSync(join(dir, "sync-probe"), { force: true })
+  const sync = prototype.sync
+  prototype.sync = function (this: FileHandle) {
+    return replacement(() => sync.call(this))
+  }
+  return () => { prototype.sync = sync }
+}

@@ -219,3 +219,69 @@ describe('desktop manager real child lifecycle', () => {
     await expect(manager.start()).rejects.toThrow('External instances')
   })
 })
+
+describe('desktop account sign-in feedback', () => {
+  async function loginFixture(exitCode = 0) {
+    const context = await fixture()
+    await installed(context.directory, '1.0.0')
+    await writeFile(join(context.directory, 'versions/1.0.0/node_modules/@rynfar/meridian/dist/cli.js'), `
+      console.log('https://claude.com/oauth/authorize?fixture=1');
+      process.stdin.once('data', () => setTimeout(() => process.exit(${exitCode}), 100));
+      setInterval(() => {}, 1000);
+    `)
+    context.manager.preferences.selected = '1.0.0'
+    return context
+  }
+  async function phase(manager: Manager, expected: NonNullable<Manager['state']['login']>['phase']) {
+    const deadline = Date.now() + 3000
+    while (manager.state.login?.phase !== expected && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+    expect(manager.state.login?.phase).toBe(expected)
+  }
+  test('waits for a link, rejects duplicate submission and retains success until dismissed', async () => {
+    const { manager } = await loginFixture()
+    await manager.profileLogin('work', false)
+    expect(manager.state.login?.profile).toBe('work')
+    expect(() => manager.loginCode('premature')).toThrow('Wait for')
+    await phase(manager, 'waiting')
+    expect(() => manager.loginCode('bad\rcode')).toThrow('Paste')
+    manager.loginCode('fixture-code')
+    expect(manager.state.login?.phase).toBe('verifying')
+    expect(() => manager.loginCode('duplicate')).toThrow('Wait for')
+    await phase(manager, 'success')
+    expect(manager.state.login?.url).toBeUndefined()
+    manager.loginCode('dismiss')
+    expect(manager.state.login).toBeUndefined()
+  })
+  test('cancel is not a sign-in error and a new attempt can start', async () => {
+    const { manager } = await loginFixture()
+    await manager.profileLogin('work', false)
+    await phase(manager, 'waiting')
+    manager.loginCode('cancel')
+    await phase(manager, 'cancelled')
+    expect(manager.state.error).toBeUndefined()
+    await manager.profileLogin('other', true)
+    await phase(manager, 'waiting')
+    expect(manager.state.login?.profile).toBe('other')
+  })
+  test('failed sign-in retains a retryable result', async () => {
+    const { manager } = await loginFixture(1)
+    await manager.profileLogin('work', false)
+    await phase(manager, 'waiting')
+    manager.loginCode('fixture-code')
+    await phase(manager, 'error')
+    expect(manager.state.login?.profile).toBe('work')
+    expect(manager.state.login?.url).toBeUndefined()
+    await manager.profileLogin('work', false)
+    await phase(manager, 'waiting')
+  })
+  test('Dock preference defaults off and persists independently of service ownership', async () => {
+    const { manager, directory } = await fixture()
+    expect(manager.preferences.hideDockIcon).toBe(false)
+    await manager.configure({ mode: 'attached', hideDockIcon: true })
+    expect(JSON.parse(await readFile(join(directory, 'desktop.json'), 'utf8')).hideDockIcon).toBe(true)
+    await manager.init()
+    expect(manager.preferences.hideDockIcon).toBe(true)
+    await manager.configure({ hideDockIcon: false })
+    expect(manager.preferences.hideDockIcon).toBe(false)
+  })
+})

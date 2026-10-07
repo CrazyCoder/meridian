@@ -5,6 +5,7 @@
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profileBar"
 import { profileFactsJs } from "./profileFacts"
+import { profileFindJs } from "./profileFind"
 import { reorderClientJs, reorderCss, reorderLiveRegionHtml } from "./profileOrder"
 import { WINDOW_LABELS } from "./profileUsage"
 
@@ -14,6 +15,7 @@ export const profilePageHtml = `<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Meridian — Profiles</title>
+<link rel="icon" type="image/svg+xml" href="/telemetry/icon.svg">
 <style>
   ${themeCss}
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -26,44 +28,97 @@ export const profilePageHtml = `<!DOCTYPE html>
   .section-title { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase;
                    letter-spacing: 0.5px; margin-bottom: 12px; }
 
+  .profile-search { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  .profile-search[hidden] { display: none; }
+  .profile-search input {
+    flex: 1 1 260px; min-width: 0; padding: 8px 12px; border-radius: 8px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    font-family: inherit; font-size: 13px;
+  }
+  .profile-search input::placeholder { color: var(--muted); }
+  .profile-search input:focus { outline: none; border-color: var(--accent); }
+  .profile-search-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .profile-no-match { padding: 32px; }
+  .profile-no-match[hidden] { display: none; }
+  .link-btn {
+    background: none; border: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer;
+  }
+  .link-btn:hover { text-decoration: underline; }
+  /* Reordering a filtered list would move cards past ones nobody can see. */
+  .filtering .drag-handle, .filtering .order-index, .filtering .order-note { display: none; }
+
   .profile-card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
     padding: 20px; margin-bottom: 12px; transition: border-color 0.2s;
   }
+  .profile-card[hidden] { display: none; }
+  /* Wide layout: the stack becomes a grid of larger cards, two to four to a
+     row on a desktop monitor. The order note, the empty state and the loading
+     line take a whole row rather than a card's slot. */
+  html[data-layout="wide"] #content {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(min(560px, 100%), 1fr)); gap: 16px;
+  }
+  html[data-layout="wide"] #content > :not(.profile-card) { grid-column: 1 / -1; }
+  html[data-layout="wide"] #content > .profile-card { margin-bottom: 0; }
+  /* Arriving from a /profiles#<name> link: one short pulse says which card. */
+  .profile-card.anchor-flash { animation: profile-anchor-flash 0.5s ease-out; }
+  @keyframes profile-anchor-flash {
+    0% { box-shadow: 0 0 0 0 rgba(88,166,255,0); background: var(--surface); }
+    35% { box-shadow: 0 0 0 4px rgba(88,166,255,0.35); background: rgba(88,166,255,0.12); }
+    100% { box-shadow: 0 0 0 0 rgba(88,166,255,0); background: var(--surface); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .profile-card.anchor-flash { animation: none; }
+  }
+  /* The name links to its own card. */
+  a.profile-name { color: inherit; text-decoration: none; }
+  a.profile-name:hover { color: var(--accent); }
   .profile-card.active { border-color: var(--accent); }
-  .profile-card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  /* The header row carries the reorder handle, the name, every badge the
+     card can earn - active, the type, out of a limit - and the actions. On a
+     phone they do not fit on one line, and a row that cannot wrap pushed the
+     actions past the card's edge and scrolled the whole page sideways. The
+     row wraps, a long name may break anywhere, and the actions stay
+     right-aligned, on their own line once nothing else fits beside them.
+     When everything fits on one line, as on a desktop, none of this changes
+     the layout. */
+  .profile-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px; }
   ${reorderCss}
-  .profile-name { font-size: 16px; font-weight: 600; }
-  .profile-card-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .profile-name { font-size: 16px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .profile-card-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
   .icon-btn {
     background: var(--bg); color: var(--muted); border: 1px solid var(--border);
     border-radius: 4px; padding: 4px 6px; cursor: pointer; display: inline-flex;
-    align-items: center; transition: all 0.15s;
+    align-items: center; transition: all 0.15s; flex-shrink: 0;
   }
   .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
   .rename-input {
     background: var(--surface2); color: var(--text); border: 1px solid var(--accent);
     border-radius: 6px; padding: 4px 8px; font-size: 14px; font-weight: 600;
-    font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; width: 200px;
+    font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; width: 200px; max-width: 100%;
   }
   .rename-input:focus { outline: none; }
   .rename-hint { font-size: 11px; color: var(--muted); }
   .rename-error { font-size: 12px; color: var(--red); margin-bottom: 12px; }
   .profile-badge {
     font-size: 10px; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;
-    letter-spacing: 0.5px; font-weight: 500;
+    letter-spacing: 0.5px; font-weight: 500; min-width: 0; overflow-wrap: anywhere;
   }
   .badge-active { background: rgba(88,166,255,0.15); color: var(--accent); }
   .badge-type { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
   .badge-spent { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.35); }
   .spent-note { margin: 10px 0; padding: 10px 14px; border-radius: 8px; font-size: 12px; line-height: 1.5;
-    background: rgba(248,81,73,0.08); border: 1px solid rgba(248,81,73,0.3); color: var(--text); }
+    background: rgba(248,81,73,0.08); border: 1px solid rgba(248,81,73,0.3); color: var(--text);
+    overflow-wrap: anywhere; }
   .spent-note .spent-why { color: var(--muted); }
+  /* minmax(0, 1fr), not 1fr: a bare fr track is at least as wide as its
+     longest unbreakable value, so an email address widened the grid past
+     the card instead of wrapping. */
   .profile-details {
-    display: grid; grid-template-columns: 120px 1fr; gap: 6px 16px; font-size: 13px;
+    display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 6px 16px; font-size: 13px;
   }
   .detail-label { color: var(--muted); }
-  .detail-value { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-size: 12px; }
+  .detail-value { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
   .cached-tag { color: var(--muted); font-size: 10px; font-style: italic; margin-left: 6px; white-space: nowrap; }
   .detail-unknown { color: var(--muted); font-style: italic; }
   .status-ok { color: var(--green); }
@@ -71,7 +126,7 @@ export const profilePageHtml = `<!DOCTYPE html>
   .switch-btn {
     margin-top: 12px; padding: 6px 16px; font-size: 12px; font-weight: 500;
     background: var(--bg); color: var(--accent); border: 1px solid var(--accent);
-    border-radius: 6px; cursor: pointer; transition: all 0.15s;
+    border-radius: 6px; cursor: pointer; transition: all 0.15s; max-width: 100%; overflow-wrap: anywhere;
   }
   .switch-btn:hover { background: rgba(88,166,255,0.1); }
   .switch-btn:disabled { opacity: 0.4; cursor: default; }
@@ -82,6 +137,7 @@ export const profilePageHtml = `<!DOCTYPE html>
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
   }
   .empty-state h2 { font-size: 16px; margin-bottom: 8px; color: var(--text); }
+  .empty-state code { max-width: 100%; overflow-wrap: anywhere; }
 
   .guide {
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
@@ -100,11 +156,49 @@ export const profilePageHtml = `<!DOCTYPE html>
   }
   .guide .warn strong { color: var(--yellow); }
 
+  /* Browser login — the paste box that replaces a terminal round trip. */
+  .login-btn {
+    padding: 6px 12px; font-size: 12px; font-weight: 500;
+    background: var(--surface2); color: var(--accent); border: 1px solid var(--accent);
+    border-radius: 6px; cursor: pointer; transition: all 0.15s;
+  }
+  .login-btn:hover { background: rgba(88,166,255,0.12); }
+  .login-btn:disabled { opacity: 0.4; cursor: default; }
+  /* The sign-in control is an <a>, so it needs a button's box back. */
+  a.login-btn { display: inline-block; text-decoration: none; line-height: normal; }
+  a.login-btn[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+  .login-panel {
+    margin-top: 12px; padding: 14px 16px; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 8px;
+  }
+  .login-panel-title { font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+  .login-note {
+    font-size: 12px; color: var(--muted); margin-bottom: 8px; padding: 8px 10px;
+    background: rgba(210,153,34,0.1); border: 1px solid rgba(210,153,34,0.3); border-radius: 6px;
+  }
+  .login-steps { font-size: 12px; color: var(--muted); padding-left: 18px; margin-bottom: 10px; }
+  .login-steps li { margin-bottom: 4px; }
+  .login-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .login-input {
+    flex: 1 1 260px; min-width: 0; padding: 7px 10px; border-radius: 6px;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-size: 12px;
+  }
+  .login-input:focus { outline: none; border-color: var(--accent); }
+  .login-msg { margin-top: 10px; font-size: 12px; }
+  .login-msg.err { color: var(--red); }
+  .login-msg.busy { color: var(--muted); }
+  .login-reopen { color: var(--accent); font-size: 11px; text-decoration: none; }
+  .login-reopen:hover { text-decoration: underline; }
+  .add-intro { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .add-note { font-size: 11px; color: var(--muted); margin-top: 8px; }
+
   .mono { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-size: 12px; }
   .copy-cmd {
     font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-size: 12px;
     background: var(--bg); padding: 4px 10px; border-radius: 4px; color: var(--accent2);
     cursor: pointer; border: 1px solid var(--border); transition: border-color 0.15s;
+    min-width: 0; overflow-wrap: anywhere;
   }
   .copy-btn {
     background: var(--bg); color: var(--muted); border: 1px solid var(--border);
@@ -118,12 +212,12 @@ export const profilePageHtml = `<!DOCTYPE html>
   .usage-section { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
   .usage-section-title {
     font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
-    margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+    margin-bottom: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   }
   .usage-as-of { font-size: 10px; color: var(--muted); text-transform: none; letter-spacing: 0; opacity: 0.7; }
   .usage-stale-note { font-size: 11px; color: var(--yellow); line-height: 1.4; margin: -2px 0 10px; }
   .usage-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
     gap: 8px;
   }
   .usage-card {
@@ -134,7 +228,7 @@ export const profilePageHtml = `<!DOCTYPE html>
     display: flex; justify-content: space-between; align-items: baseline;
     font-size: 11px; gap: 8px; margin-bottom: 6px;
   }
-  .usage-label { color: var(--muted); font-weight: 500; white-space: nowrap; }
+  .usage-label { color: var(--muted); font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
   .usage-pct { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-weight: 600; font-size: 12px; }
   .usage-bar {
     height: 4px; background: rgba(127,127,127,0.18); border-radius: 2px; overflow: hidden;
@@ -156,6 +250,14 @@ export const profilePageHtml = `<!DOCTYPE html>
   .usage-empty {
     font-size: 11px; color: var(--muted); padding: 6px 0; font-style: italic;
   }
+  /* A phone leaves a card about 230px inside: beside a 120px label column an
+     email would wrap every few characters, so each label sits above its
+     value instead. */
+  @media (max-width: 480px) {
+    .profile-details { grid-template-columns: minmax(0, 1fr); row-gap: 0; }
+    .detail-value { margin-bottom: 6px; }
+    .empty-state { padding: 32px 16px; }
+  }
 ` + profileBarCss + `
 </style>
 </head>
@@ -165,11 +267,33 @@ export const profilePageHtml = `<!DOCTYPE html>
 <h1>Profiles</h1>
 <div class="subtitle">Manage Claude account profiles</div>
 
-<div id="content"><div style="color:var(--muted);padding:40px;text-align:center">Loading\u2026</div></div>
+<!-- The heading and search box sit outside #content, which render() rebuilds
+     on every poll: a box inside it would lose its text every ten seconds. -->
+<div class="section" id="profiles-section">
+  <h2 class="section-title">Configured Profiles</h2>
+  <div class="profile-search" id="profiles-filter-bar" hidden>
+    <input type="search" id="profiles-filter" autocomplete="off" spellcheck="false"
+      aria-label="Filter profiles" aria-controls="content"
+      placeholder="Filter by name, email, organization, plan (5x, 20x, max) or former name">
+    <span class="profile-search-count" id="profiles-filter-count" aria-live="polite"></span>
+  </div>
+  <div id="content"><div style="color:var(--muted);padding:40px;text-align:center">Loading\u2026</div></div>
+  <div class="empty-state profile-no-match" id="profiles-no-match" hidden>
+    No profile matches <strong id="profiles-no-match-query"></strong>.
+    <button type="button" class="link-btn" onclick="setProfileQuery('')">Clear the search</button>
+  </div>
+</div>
 ${reorderLiveRegionHtml}
 
+<!-- Outside #content on purpose: render() rebuilds that element wholesale on
+     every poll, which would destroy a half-typed name or a pasted code. -->
+<div class="section">
+  <div class="section-title">Add a profile</div>
+  <div class="profile-card"><div id="add-slot"></div></div>
+</div>
+
 <div class="section" style="margin-top:32px">
-  <div class="section-title">Setup Guide</div>
+  <h2 class="section-title">Setup Guide</h2>
   <div class="guide">
     <h3>How profiles work</h3>
     <p style="font-size:13px;color:var(--muted);margin-bottom:12px">
@@ -179,17 +303,22 @@ ${reorderLiveRegionHtml}
 
     <h3 style="margin-top:16px">Adding a new profile</h3>
     <ol>
-      <li>Open a terminal and run: <code>meridian profile add &lt;name&gt;</code></li>
-      <li>This opens your browser for Claude login</li>
-      <li>Done \u2014 the profile is ready to use</li>
+      <li><strong>UI:</strong> Name it under <strong>Add a profile</strong> above, sign in, then paste
+          the code Claude shows you \u2014 the whole callback URL works too</li>
+      <li><strong>CLI:</strong> <code>meridian profile add &lt;name&gt;</code></li>
     </ol>
+    <p style="font-size:12px;color:var(--muted);margin-top:8px">
+      Either way the profile gets its own config directory and is ready to use immediately.
+      Only the CLI offers to adopt existing <code>~/.claude</code> credentials as a profile;
+      the UI always signs in fresh, so clicking Add can never quietly claim the account
+      you are already logged in as on this machine.
+    </p>
 
     <div class="warn">
-      <strong>\u26a0 Important for adding a second account:</strong> Before running
-      <code>meridian profile add</code> for a different account, sign out of claude.ai
-      in your browser first, then sign in with the other account. Claude\u2019s OAuth
-      reuses your browser session \u2014 if you\u2019re already signed in, the login will
-      silently use the same account.
+      <strong>\u26a0 Important for adding a second account:</strong> Before adding a different
+      account, sign out of claude.ai in your browser first, then sign in with the other
+      account. Claude\u2019s OAuth reuses your browser session \u2014 if you\u2019re already signed
+      in, the login will silently use the same account.
     </div>
 
     <h3 style="margin-top:16px">Switching profiles</h3>
@@ -198,6 +327,20 @@ ${reorderLiveRegionHtml}
       <li><strong>CLI:</strong> <code>meridian profile switch &lt;name&gt;</code></li>
       <li><strong>Per-request:</strong> Send <code>x-meridian-profile: &lt;name&gt;</code> header</li>
     </ol>
+
+    <h3 style="margin-top:16px">Re-authenticating a profile</h3>
+    <ol>
+      <li><strong>UI:</strong> Click <strong>Log in from browser</strong> on the profile card and sign in.
+          Claude sends you back here and the login finishes itself. It is an ordinary link, so
+          right-click it to open the sign-in in a private window or copy it into another browser
+          \u2014 useful when this browser is already signed into a different Claude account.</li>
+      <li><strong>CLI:</strong> <code>meridian profile login &lt;name&gt;</code></li>
+    </ol>
+    <p style="font-size:12px;color:var(--muted);margin-top:8px">
+      Claude will only redirect back to <code>localhost</code> or <code>127.0.0.1</code> \u2014 those are the
+      addresses registered for this client. Browsing Meridian on any other hostname, the panel
+      asks for the code instead; the bare code or the whole callback URL both work.
+    </p>
 
     <h3 style="margin-top:16px">Other commands</h3>
     <div style="font-size:13px;margin-top:8px">
@@ -216,7 +359,7 @@ ${reorderLiveRegionHtml}
 </div>
 
 <script>
-` + profileFactsJs + `
+` + profileFactsJs + profileFindJs + `
 // Inlined from src/telemetry/profileUsage.ts. The TS source is unit-tested
 // (see profile-usage.test.ts) and the labels object is interpolated here so
 // the browser script and TS module share their data.
@@ -543,7 +686,7 @@ function render(data, quotaData) {
   // or have errored — in that case quotaById is empty and the per-card
   // renderer simply hides its usage section.
   const quotaProfiles = (quotaData && Array.isArray(quotaData.profiles)) ? quotaData.profiles : [];
-  const quotaById = {};
+  const quotaById = Object.create(null);
   for (var qi = 0; qi < quotaProfiles.length; qi++) {
     quotaById[quotaProfiles[qi].id] = quotaProfiles[qi];
   }
@@ -551,21 +694,22 @@ function render(data, quotaData) {
   if (profiles.length === 0) {
     document.getElementById('content').innerHTML = '<div class="empty-state">'
       + '<h2>No profiles configured</h2>'
-      + '<p style="margin-top:8px">Add your first profile from the terminal:</p>'
+      + '<p style="margin-top:8px">Add your first one below, or from a terminal:</p>'
       + '<p style="margin-top:8px"><code class="mono" style="background:var(--bg);padding:8px 16px;border-radius:6px;display:inline-block">meridian profile add personal</code></p>'
       + '</div>';
+    afterRender();
     return;
   }
 
   const reorderable = profiles.length > 1 && !meridianReorder.envPinned();
 
-  let html = '<div class="section"><div class="section-title">Configured Profiles</div>';
+  let html = '';
   if (profiles.length > 1) html += meridianReorder.noteHtml(reorderable);
 
   for (let idx = 0; idx < profiles.length; idx++) {
     const p = profiles[idx];
     const isActive = p.id === active;
-    html += '<div class="profile-card' + (isActive ? ' active' : '') + '" data-id="' + esc(p.id) + '" data-index="' + idx + '">';
+    html += '<div class="profile-card' + (isActive ? ' active' : '') + '" id="' + esc(profileAnchorElementId(p.id)) + '" data-id="' + esc(p.id) + '" data-index="' + idx + '">';
     html += '<div class="profile-card-header">';
     if (editingProfile === p.id) {
       html += "<input class=\\"rename-input\\" id=\\"rename-input\\" value=\\"" + esc(p.id) + "\\" spellcheck=\\"false\\" autocomplete=\\"off\\""
@@ -578,7 +722,7 @@ function render(data, quotaData) {
       html += "</span>";
     } else {
       if (reorderable) html += meridianReorder.handleHtml(p.id, idx, profiles.length);
-      html += "<span class=\\"profile-name\\">" + esc(p.id) + "</span>";
+      html += "<a class=\\"profile-name\\" href=\\"#" + esc(encodeURIComponent(p.id)) + "\\" title=\\"Link to this profile\\">" + esc(p.id) + "</a>";
       if (isActive) html += "<span class=\\"profile-badge badge-active\\">active</span>";
       html += "<span class=\\"profile-badge badge-type\\">" + esc(p.type || "claude-max") + "</span>";
       html += renderSpentBadge((quotaById[p.id] || {}).spent);
@@ -607,7 +751,24 @@ function render(data, quotaData) {
     html += '<button class="copy-btn" data-cmd="meridian profile login ' + esc(p.id) + '" onclick="copyCmd(this)" title="Copy to clipboard">';
     html += '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25zM5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25z"/></svg>';
     html += '</button>';
+    // Only claude-max profiles have an OAuth flow; api and oauth-token profiles
+    // would only ever get a refusal, so they get no button.
+    if ((p.type || 'claude-max') === 'claude-max') {
+      // A real anchor with a real href, not a button. That is the only way the
+      // browser offers "Open Link in Incognito Window" and "Copy Link Address"
+      // — and someone signed into several Claude accounts needs those, because
+      // the ambient session in their main browser is usually the wrong account
+      // for the profile being re-authenticated. A button, or an anchor that
+      // navigates from a click handler, gets no such menu.
+      html += '<a class="login-btn login-link" data-profile="' + esc(p.id) + '"'
+        + ' href="' + esc(loginHrefFor(p.id) || '#') + '"'
+        + (loginHrefFor(p.id) ? '' : ' aria-disabled="true"')
+        + ' target="_blank" rel="noopener noreferrer"'
+        + ' onclick="return onLoginLinkClick(event, &quot;' + esc(p.id) + '&quot;)">Log in from browser</a>';
+    }
     html += '</div>';
+
+    html += '<div class="login-slot" id="login-slot-' + esc(p.id) + '"></div>';
 
     html += renderUsageSection(quotaById[p.id]);
 
@@ -620,10 +781,136 @@ function render(data, quotaData) {
     html += '</div>';
   }
 
-  html += '</div>';
+  // A refresh already in flight when a login panel opened still renders. Carry
+  // the open panel's node across so the paste, and its focus, survive.
+  var keptSlot = activeLogin ? loginSlot(activeLogin.profile) : null;
+  var keptFocus = keptSlot && keptSlot.contains(document.activeElement) ? document.activeElement : null;
   document.getElementById('content').innerHTML = html;
+  var freshSlot = keptSlot ? loginSlot(activeLogin.profile) : null;
+  if (freshSlot) freshSlot.replaceWith(keptSlot);
   meridianReorder.restoreFocus(refocusId);
+  if (freshSlot && keptFocus) keptFocus.focus();
+  // render() replaces #content wholesale, so the anchors are new elements with
+  // whatever href the markup carried. Restore them from the cache, then top up
+  // anything missing or near expiry in the background.
+  applyLoginHrefs();
+  ensureLoginLinks(profiles);
+  afterRender();
 }
+
+// The search and the #anchor both act on the cards render() just drew, so
+// they run after every render. Both change only visibility and scroll, never
+// the markup, so they cannot wipe a panel or input the poll is protecting.
+function afterRender() {
+  applyProfileFilter();
+  if (anchorPending && lastProfiles) {
+    anchorPending = false;
+    jumpToProfileAnchor();
+  }
+}
+
+var profileQuery = '';
+// Set on load and on hashchange; consumed by the first render with data, so
+// the 10s poll never yanks the page back to the card after someone scrolls.
+var anchorPending = !!location.hash;
+
+function profilesForFind() {
+  return (lastProfiles && Array.isArray(lastProfiles.profiles)) ? lastProfiles.profiles : [];
+}
+
+function writeProfilesUrl(hashId) {
+  var url = new URL(location.href);
+  if (profileQueryTerms(profileQuery).length > 0) url.searchParams.set('q', profileQuery);
+  else url.searchParams.delete('q');
+  if (hashId) url.hash = encodeURIComponent(hashId);
+  if (url.toString() !== location.href) history.replaceState(history.state, '', url.toString());
+}
+
+function applyProfileFilter() {
+  var profiles = profilesForFind();
+  var byId = Object.create(null);
+  for (var i = 0; i < profiles.length; i++) byId[profiles[i].id] = profiles[i];
+  var cards = document.querySelectorAll('#content .profile-card[data-id]');
+  var shown = 0;
+  for (var c = 0; c < cards.length; c++) {
+    var match = profileMatchesQuery(byId[cards[c].getAttribute('data-id')], profileQuery);
+    cards[c].hidden = !match;
+    if (match) shown++;
+  }
+  var filtering = profileQueryTerms(profileQuery).length > 0;
+  document.getElementById('profiles-section').classList.toggle('filtering', filtering);
+  document.getElementById('profiles-filter-bar').hidden = cards.length === 0 && !filtering;
+  var paused = filtering && document.querySelector('#content .drag-handle') ? ' \u00b7 clear to reorder' : '';
+  document.getElementById('profiles-filter-count').textContent = filtering
+    ? shown + ' of ' + cards.length + paused
+    : '';
+  document.getElementById('profiles-no-match-query').textContent = profileQuery.trim();
+  document.getElementById('profiles-no-match').hidden = !(filtering && cards.length > 0 && shown === 0);
+}
+
+function setProfileQuery(query) {
+  profileQuery = String(query || '');
+  var input = document.getElementById('profiles-filter');
+  if (input.value !== profileQuery) input.value = profileQuery;
+  applyProfileFilter();
+  writeProfilesUrl(null);
+}
+
+// Scrolls under the sticky header rather than behind it; the header wraps to
+// several rows on a phone, so its height is measured, not assumed.
+function alignProfileCard(card) {
+  var header = document.querySelector('.meridian-header');
+  var offset = (header ? header.getBoundingClientRect().height : 0) + 12;
+  window.scrollTo({ top: Math.max(0, card.getBoundingClientRect().top + window.scrollY - offset) });
+}
+
+// The header can still grow after the jump - its chips load on their own
+// fetches and wrap to another row on a phone - and scroll anchoring then keeps
+// the card where it was, now underneath. So a resize shortly after a jump
+// re-aligns, until the reader scrolls on their own.
+var anchorHold = null;
+function releaseAnchorHold() { anchorHold = null; }
+['wheel', 'touchstart', 'keydown', 'mousedown'].forEach(function (type) {
+  window.addEventListener(type, releaseAnchorHold, { passive: true });
+});
+if (window.ResizeObserver) {
+  var profilesHeader = document.querySelector('.meridian-header');
+  if (profilesHeader) new ResizeObserver(function () {
+    if (!anchorHold || Date.now() > anchorHold.until || !anchorHold.card.isConnected) return;
+    alignProfileCard(anchorHold.card);
+  }).observe(profilesHeader);
+}
+
+function jumpToProfileAnchor() {
+  var id = resolveProfileAnchor(location.hash, profilesForFind());
+  if (!id) return;
+  var card = document.getElementById(profileAnchorElementId(id));
+  if (!card) return;
+  // Following a link to one profile outranks a filter that hides it.
+  if (card.hidden) setProfileQuery('');
+  // A former name, or different casing, becomes the name the card shows.
+  if (profileIdFromHash(location.hash) !== id) writeProfilesUrl(id);
+  alignProfileCard(card);
+  anchorHold = { card: card, until: Date.now() + 5000 };
+  card.classList.remove('anchor-flash');
+  void card.offsetWidth;
+  card.classList.add('anchor-flash');
+  card.addEventListener('animationend', function () { card.classList.remove('anchor-flash'); }, { once: true });
+}
+
+(function initProfileFind() {
+  var input = document.getElementById('profiles-filter');
+  profileQuery = new URL(location.href).searchParams.get('q') || '';
+  input.value = profileQuery;
+  input.addEventListener('input', function () { setProfileQuery(input.value); });
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && input.value) { e.preventDefault(); setProfileQuery(''); }
+  });
+  window.addEventListener('hashchange', function () {
+    anchorPending = true;
+    if (lastProfiles) afterRender();
+  });
+})();
 
 function copyCmd(btn) {
   var cmd = btn.getAttribute('data-cmd');
@@ -647,9 +934,565 @@ async function switchProfile(id) {
   else if (data.error) alert(data.error);
 }
 
+// --- Browser login ---
+//
+// The open login is held here rather than in the DOM because render() rebuilds
+// #content wholesale on every poll — a panel written into a card would be
+// destroyed mid-typing. While a login is open the card poll is paused, so the
+// panel and whatever is half-pasted into it survive.
+var activeLogin = null;
+var loginPollTimer = null;
+
+function loginSlot(id) { return document.getElementById('login-slot-' + id); }
+
+function setPanelMsg(slot, text, kind) {
+  if (!slot) return;
+  var msg = slot.querySelector('.login-msg');
+  if (!msg) return;
+  msg.className = 'login-msg' + (kind ? ' ' + kind : '');
+  msg.textContent = text || '';
+}
+
+function setLoginMsg(text, kind) {
+  setPanelMsg(activeLogin ? loginSlot(activeLogin.profile) : null, text, kind);
+}
+
+// Sign-in links, minted server-side and held per profile so the anchor has a
+// real href before anyone clicks it. Nothing secret lives here: the authorize
+// URL is public by design, and the PKCE verifier never leaves the server.
+var loginLinks = Object.create(null);
+// Whether this browser can reach Meridian on loopback. A fact about the
+// BROWSER, not about any one profile, so it is answered once for the page.
+var loopbackOk = null;
+// Set when the refusal is about the instance rather than a profile.
+var loginBlocked = null;
+// Cards whose link is being minted right now, so a render landing mid-mint
+// does not start a second login for the same card.
+var mintingLinks = Object.create(null);
+
+// A card's link names ONE pending login. Once a panel has opened it, that
+// login may be spent - completed, failed, or finished in the sign-in tab
+// before the poll noticed - and its state will not be honoured again. Drop it
+// so the card mints a fresh one rather than sending the next sign-in to a dead
+// state. A link already re-minted underneath the panel is left alone.
+function retireLoginLink(login) {
+  var link = loginLinks[login.profile];
+  if (link && link.loginId === login.loginId) delete loginLinks[login.profile];
+  applyLoginHrefs();
+  if (lastProfiles) ensureLoginLinks(lastProfiles.profiles || []);
+}
+
+function loginHrefFor(id) {
+  var link = loginLinks[id];
+  if (!link) return '';
+  return (loopbackOk && link.loopback) ? link.loopback : link.hosted;
+}
+
+function applyLoginHrefs() {
+  var els = document.querySelectorAll('.login-link');
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i];
+    var href = loginHrefFor(el.getAttribute('data-profile'));
+    if (href) {
+      el.setAttribute('href', href);
+      el.removeAttribute('aria-disabled');
+    } else {
+      el.setAttribute('href', '#');
+      el.setAttribute('aria-disabled', 'true');
+    }
+    if (loginBlocked) el.setAttribute('title', loginBlocked);
+  }
+}
+
+async function mintLoginLink(id) {
+  var res, data;
+  try {
+    res = await fetch('/profiles/login/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: id })
+    });
+    data = await res.json();
+  } catch (err) {
+    return 'error';
+  }
+  if (!res.ok) {
+    if (data.code === 'credentials_readonly' || data.code === 'no_profiles') {
+      loginBlocked = data.error || 'Login unavailable on this instance.';
+      return 'blocked';
+    }
+    return 'error';
+  }
+  if (data.mode === 'redirect') loopbackOk = true;
+  loginLinks[id] = {
+    loginId: data.loginId,
+    hosted: data.pasteAuthorizeUrl,
+    loopback: data.loopbackAuthorizeUrl || null,
+    probeUrl: data.loopbackProbeUrl || null,
+    expiresAt: data.expiresAt
+  };
+  return 'ok';
+}
+
+// Keep every claude-max card's href live. Re-minted before the pending login
+// expires, so a link that has sat on screen for a while still works when it is
+// finally clicked — or when it is opened in another browser minutes later.
+async function ensureLoginLinks(profiles) {
+  if (loginBlocked) return;
+  var due = [];
+  for (var i = 0; i < profiles.length; i++) {
+    var p = profiles[i];
+    if ((p.type || 'claude-max') !== 'claude-max' || mintingLinks[p.id]) continue;
+    var link = loginLinks[p.id];
+    if (!link || link.expiresAt - Date.now() < 120000) due.push(p.id);
+  }
+  if (due.length === 0) return;
+  for (var m = 0; m < due.length; m++) mintingLinks[due[m]] = true;
+
+  try {
+    // The first alone: a refusal about the INSTANCE (a read-only standby, no
+    // profiles at all) would otherwise repeat once per card, and each one is a
+    // logged refusal on the server.
+    if (await mintLoginLink(due[0]) === 'blocked') { applyLoginHrefs(); return; }
+    await Promise.all(due.slice(1).map(mintLoginLink));
+  } finally {
+    for (var n = 0; n < due.length; n++) delete mintingLinks[due[n]];
+  }
+
+  if (loopbackOk === null) {
+    var probe = null;
+    for (var id in loginLinks) {
+      if (loginLinks[id].probeUrl) { probe = loginLinks[id].probeUrl; break; }
+    }
+    loopbackOk = probe ? await loopbackReachable(probe) : false;
+  }
+  applyLoginHrefs();
+}
+
+function showLoginMessage(id, text, kind) {
+  var slot = loginSlot(id);
+  if (!slot) return;
+  slot.innerHTML = '<div class="login-panel"><div class="login-msg ' + esc(kind) + '"></div></div>';
+  var msg = slot.querySelector('.login-msg');
+  if (msg) msg.textContent = text;
+}
+
+function onLoginLinkClick(ev, id) {
+  if (loginBlocked) {
+    ev.preventDefault();
+    showLoginMessage(id, loginBlocked, 'err');
+    return false;
+  }
+  var link = loginLinks[id];
+  if (!link) {
+    ev.preventDefault();
+    showLoginMessage(id, 'Preparing the sign-in link\\u2026', 'busy');
+    return false;
+  }
+  openLoginPanel(id, link);
+  // Returning true lets the BROWSER follow the href. Nothing here opens a
+  // window, so ctrl-click, middle-click and "open in incognito" all behave as
+  // the user asked instead of being second-guessed by script.
+  return true;
+}
+
+function openLoginPanel(id, link) {
+  if (activeLogin && activeLogin.profile !== id) cancelLogin();
+  var slot = loginSlot(id);
+  if (!slot) return;
+  activeLogin = { profile: id, loginId: link.loginId, pasteUrl: link.hosted };
+  if (loopbackOk && link.loopback) {
+    slot.innerHTML = renderWaitingPanel(id, link.loopback, link.hosted);
+  } else {
+    slot.innerHTML = renderPastePanel(id, link.hosted,
+      'This browser cannot be redirected back to Meridian, so paste the code instead.');
+    bindPasteInput(slot);
+  }
+  // Poll either way: the login can also be finished in another browser, and
+  // then this panel should get out of the way.
+  scheduleLoginPoll();
+}
+
+// Can this browser reach the instance that served this page on loopback?
+//
+// The probe is that login's own status route, so a 200 proves both that
+// loopback is reachable AND that what answered holds this login — something
+// else listening on the port answers 410. Any failure keeps the paste flow,
+// so a wrong guess costs nothing.
+async function loopbackReachable(probeUrl) {
+  var ctrl = new AbortController();
+  var timer = setTimeout(function () { ctrl.abort(); }, 2000);
+  try {
+    var res = await fetch(probeUrl, { signal: ctrl.signal, cache: 'no-store' });
+    if (!res.ok) return false;
+    var body = await res.json();
+    return body.status === 'waiting';
+  } catch (err) {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The redirect flow's panel. It has no paste box on purpose — Claude comes
+// back to Meridian by itself — so it does not share renderOauthPanel's shape.
+function renderWaitingPanel(id, authorizeUrl, pasteUrl) {
+  return '<div class="login-panel">'
+    + '<div class="login-panel-title">Sign in as ' + esc(id) + '</div>'
+    + '<ol class="login-steps">'
+    +   '<li>A Claude sign-in tab just opened — '
+    +     '<a class="login-reopen" href="' + esc(authorizeUrl) + '" target="_blank" rel="noopener noreferrer">open it again</a>'
+    +     ' if it was blocked. Right-click either link to sign in from a private window or another browser.</li>'
+    +   '<li>Make sure you are signed into the right Claude account for this profile.</li>'
+    +   '<li>That is all — Claude sends you back here and this page finishes the login itself.</li>'
+    + '</ol>'
+    + '<div class="login-row">'
+    +   '<button class="switch-btn current login-cancel" style="margin-top:0" onclick="cancelLogin()">Cancel</button>'
+    // Also a real link, and pointed at the hosted code page on purpose: it is
+    // the one that still works from a browser on ANOTHER machine, where a
+    // loopback redirect has nowhere to come back to.
+    +   '<a class="login-reopen" href="' + esc(pasteUrl || authorizeUrl) + '" target="_blank" rel="noopener noreferrer" onclick="switchToPaste();return true;">Paste a code instead</a>'
+    + '</div>'
+    + '<div class="login-msg busy">Waiting for you to finish signing in\\u2026</div>'
+    + '</div>';
+}
+
+// One panel for both paste flows. Signing a profile in and creating one differ
+// in their wording and their handlers, not in their shape — two copies of this
+// markup would drift the moment either is touched.
+function renderOauthPanel(o) {
+  return '<div class="login-panel">'
+    + '<div class="login-panel-title">' + o.title + '</div>'
+    + (o.note ? '<div class="login-note">' + esc(o.note) + '</div>' : '')
+    + '<ol class="login-steps">'
+    +   '<li>A Claude sign-in tab just opened — '
+    +     '<a class="login-reopen" href="' + esc(o.authorizeUrl) + '" target="_blank" rel="noopener noreferrer">open it again</a>'
+    +     ' if it was blocked.</li>'
+    +   '<li>' + o.accountStep + '</li>'
+    +   '<li>Paste the code Claude shows you below — or the whole callback URL from the address bar.</li>'
+    + '</ol>'
+    + '<div class="login-row">'
+    +   '<input class="login-input" type="text" autocomplete="off" spellcheck="false" placeholder="code, or https://platform.claude.com/oauth/code/callback?code=…">'
+    +   '<button class="login-btn login-submit" onclick="' + o.onSubmit + '">' + o.submitLabel + '</button>'
+    +   '<button class="switch-btn current login-cancel" style="margin-top:0" onclick="' + o.onCancel + '">Cancel</button>'
+    + '</div>'
+    + '<div class="login-msg"></div>'
+    + '</div>';
+}
+
+function renderPastePanel(id, authorizeUrl, note) {
+  return renderOauthPanel({
+    title: 'Sign in as ' + esc(id),
+    authorizeUrl: authorizeUrl,
+    note: note,
+    accountStep: 'Make sure you are signed into the right Claude account for this profile.',
+    submitLabel: 'Complete login',
+    onSubmit: 'submitLogin()',
+    onCancel: 'cancelLogin()',
+  });
+}
+
+function bindPasteInput(slot) {
+  var input = slot.querySelector('.login-input');
+  if (!input) return;
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitLogin(); });
+  input.focus();
+}
+
+// Falls back WITHOUT restarting the login: both authorize URLs were minted from
+// the same challenge, so the one that shows a code completes the login already
+// in progress.
+function switchToPaste() {
+  if (!activeLogin) return;
+  var slot = loginSlot(activeLogin.profile);
+  if (!slot || !activeLogin.pasteUrl) return;
+  slot.innerHTML = renderPastePanel(activeLogin.profile, activeLogin.pasteUrl,
+    'Opened a second sign-in that ends on a page showing the code.');
+  bindPasteInput(slot);
+}
+
+function scheduleLoginPoll() {
+  stopLoginPoll();
+  loginPollTimer = setTimeout(checkLoginStatus, 1500);
+}
+
+function stopLoginPoll() {
+  if (loginPollTimer) clearTimeout(loginPollTimer);
+  loginPollTimer = null;
+}
+
+async function checkLoginStatus() {
+  if (!activeLogin || activeLogin.spent) return;
+  var loginId = activeLogin.loginId;
+
+  var res, data;
+  try {
+    res = await fetch('/profiles/login/status?loginId=' + encodeURIComponent(loginId));
+    data = await res.json();
+  } catch (err) {
+    scheduleLoginPoll();
+    return;
+  }
+
+  // The login may have been cancelled or replaced while this was in flight.
+  if (!activeLogin || activeLogin.loginId !== loginId) return;
+
+  if (res.ok && data.status === 'waiting') { scheduleLoginPoll(); return; }
+  if (res.ok && data.status === 'completed') { finishLogin(); return; }
+
+  setLoginMsg(data.error || 'Login failed.', 'err');
+  activeLogin.spent = true;
+  stopLoginPoll();
+}
+
+function finishLogin() {
+  stopLoginPoll();
+  var finished = activeLogin;
+  activeLogin = null;
+  if (finished) retireLoginLink(finished);
+  if (window.meridianHeaderRefresh) window.meridianHeaderRefresh();
+  refresh();
+}
+
+async function submitLogin() {
+  if (!activeLogin || activeLogin.spent) return;
+  var slot = loginSlot(activeLogin.profile);
+  var input = slot ? slot.querySelector('.login-input') : null;
+  var value = input ? input.value.trim() : '';
+  if (!value) { setLoginMsg('Paste the code first.', 'err'); return; }
+
+  var buttons = slot ? slot.querySelectorAll('button') : [];
+  for (var i = 0; i < buttons.length; i++) buttons[i].disabled = true;
+  setLoginMsg('Exchanging…', 'busy');
+
+  var res, data;
+  try {
+    res = await fetch('/profiles/login/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ loginId: activeLogin.loginId, code: value })
+    });
+    data = await res.json();
+  } catch (err) {
+    setLoginMsg('Could not reach Meridian.', 'err');
+    for (var j = 0; j < buttons.length; j++) buttons[j].disabled = false;
+    return;
+  }
+
+  if (!res.ok) {
+    setLoginMsg(data.error || 'Login failed.', 'err');
+    var cancelBtn = slot ? slot.querySelector('.login-cancel') : null;
+    if (cancelBtn) cancelBtn.disabled = false;
+    // The server says whether the login survived: it does when the paste was
+    // rejected before any code reached Anthropic. Otherwise the code is spent
+    // and this panel cannot retry it.
+    if (data.retryable) {
+      var submitBtn = slot ? slot.querySelector('.login-submit') : null;
+      if (submitBtn) submitBtn.disabled = false;
+      if (input) input.focus();
+    } else {
+      // Keep the panel — and with it the paused poll — so the reason stays
+      // readable. render() rebuilds #content wholesale, so resuming here would
+      // erase the very message telling the user their code was spent. Cancel
+      // is the way out.
+      activeLogin.spent = true;
+    }
+    return;
+  }
+
+  finishLogin();
+}
+
+function cancelLogin() {
+  var previous = activeLogin;
+  stopLoginPoll();
+  activeLogin = null;
+  if (previous) {
+    var slot = loginSlot(previous.profile);
+    if (slot) slot.innerHTML = '';
+    retireLoginLink(previous);
+  }
+}
+
+// --- Add a profile ---
+//
+// The same two steps against its own routes. Creating an account is a
+// different act from re-authenticating one, and /profiles/login/start refuses
+// an unknown name precisely so a typo there cannot create one.
+//
+// #add-slot sits outside #content, so this panel survives the poll on its own
+// and — unlike the login panels — does not have to pause it.
+var activeAdd = null;
+
+function addSlot() { return document.getElementById('add-slot'); }
+
+// Returning from the provider may reload this page. Retain only the pending
+// handle and public authorize URL in this tab, never the pasted code or tokens.
+function savePendingAdd(add) {
+  try {
+    if (add) sessionStorage.setItem('meridian.pendingAdd', JSON.stringify(add));
+    else sessionStorage.removeItem('meridian.pendingAdd');
+    return true;
+  } catch (error) {
+    // Storage can be disabled; the live form still works while it stays open.
+    return false;
+  }
+}
+
+function restorePendingAdd() {
+  try {
+    var raw = sessionStorage.getItem('meridian.pendingAdd');
+    if (!raw) return false;
+    if (raw.length > 8192) throw new Error('Invalid pending sign-in');
+    var add = JSON.parse(raw);
+    if (!add || typeof add.profile !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(add.profile)
+      || typeof add.addId !== 'string' || !add.addId || typeof add.authorizeUrl !== 'string'
+      || typeof add.expiresAt !== 'number' || !Number.isFinite(add.expiresAt)
+      || add.expiresAt <= Date.now()) throw new Error('Invalid pending sign-in');
+    var url = new URL(add.authorizeUrl);
+    if (url.origin !== 'https://claude.com' || url.pathname !== '/cai/oauth/authorize')
+      throw new Error('Invalid authorization URL');
+    var slot = addSlot();
+    if (!slot) return false;
+    activeAdd = { profile: add.profile, addId: add.addId, authorizeUrl: add.authorizeUrl, expiresAt: add.expiresAt };
+    slot.innerHTML = renderAddPanel(activeAdd.profile, activeAdd.authorizeUrl);
+    var input = slot.querySelector('.login-input');
+    if (input) input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAdd(); });
+    return true;
+  } catch (error) {
+    savePendingAdd(null);
+    return false;
+  }
+}
+
+function renderAddForm(prefill) {
+  return '<div class="add-intro">Sign in to another Claude account and keep it here alongside the others.</div>'
+    + '<div class="login-row">'
+    +   '<input class="login-input add-input" type="text" autocomplete="off" spellcheck="false"'
+    +     ' placeholder="new profile name" value="' + esc(prefill || '') + '">'
+    +   '<button class="login-btn" onclick="startAdd()">Add profile</button>'
+    + '</div>'
+    + '<div class="add-note">Letters, numbers, hyphens and underscores.</div>'
+    + '<div class="login-msg"></div>';
+}
+
+function resetAddForm(prefill) {
+  activeAdd = null;
+  savePendingAdd(null);
+  var slot = addSlot();
+  if (!slot) return;
+  slot.innerHTML = renderAddForm(prefill);
+  var input = slot.querySelector('.add-input');
+  if (input) input.addEventListener('keydown', function (e) { if (e.key === 'Enter') startAdd(); });
+}
+
+function renderAddPanel(id, authorizeUrl) {
+  return renderOauthPanel({
+    title: 'Create ' + esc(id),
+    authorizeUrl: authorizeUrl,
+    accountStep: 'Sign in with the Claude account this profile should use \u2014 if a different account is already '
+      + 'signed in at claude.ai, sign out there first, or Claude will reuse it without asking.',
+    submitLabel: 'Create profile',
+    onSubmit: 'submitAdd()',
+    onCancel: 'cancelAdd()',
+  });
+}
+
+async function startAdd() {
+  var slot = addSlot();
+  if (!slot) return;
+  var nameInput = slot.querySelector('.add-input');
+  var name = nameInput ? nameInput.value.trim() : '';
+  if (!name) { setPanelMsg(slot, 'Name the profile first.', 'err'); return; }
+
+  setPanelMsg(slot, 'Starting\u2026', 'busy');
+
+  var res, data;
+  try {
+    res = await fetch('/profiles/add/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: name })
+    });
+    data = await res.json();
+  } catch (err) {
+    setPanelMsg(slot, 'Could not reach Meridian.', 'err');
+    return;
+  }
+
+  // The form is left standing on a refusal, name and all: every refusal here
+  // is about the name, and retyping it to fix a typo is the wrong ask.
+  if (!res.ok) { setPanelMsg(slot, data.error || 'Could not start.', 'err'); return; }
+
+  activeAdd = { profile: name, addId: data.addId, authorizeUrl: data.authorizeUrl, expiresAt: data.expiresAt };
+  var retained = savePendingAdd(activeAdd);
+  slot.innerHTML = renderAddPanel(name, data.authorizeUrl);
+  if (!retained) setPanelMsg(slot, 'Keep this page open while signing in; this browser cannot retain the pending form.', 'err');
+  var codeInput = slot.querySelector('.login-input');
+  if (codeInput) {
+    codeInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAdd(); });
+    codeInput.focus();
+  }
+  window.open(data.authorizeUrl, '_blank', 'noopener');
+}
+
+async function submitAdd() {
+  if (!activeAdd || activeAdd.spent) return;
+  var slot = addSlot();
+  var input = slot ? slot.querySelector('.login-input') : null;
+  var value = input ? input.value.trim() : '';
+  if (!value) { setPanelMsg(slot, 'Paste the code first.', 'err'); return; }
+
+  var buttons = slot ? slot.querySelectorAll('button') : [];
+  for (var i = 0; i < buttons.length; i++) buttons[i].disabled = true;
+  setPanelMsg(slot, 'Creating\u2026', 'busy');
+
+  var res, data;
+  try {
+    res = await fetch('/profiles/add/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ addId: activeAdd.addId, code: value })
+    });
+    data = await res.json();
+  } catch (err) {
+    setPanelMsg(slot, 'Could not reach Meridian.', 'err');
+    for (var j = 0; j < buttons.length; j++) buttons[j].disabled = false;
+    return;
+  }
+
+  if (!res.ok) {
+    setPanelMsg(slot, data.error || 'Could not create the profile.', 'err');
+    var cancelBtn = slot ? slot.querySelector('.login-cancel') : null;
+    if (cancelBtn) cancelBtn.disabled = false;
+    if (data.retryable) {
+      var submitBtn = slot ? slot.querySelector('.login-submit') : null;
+      if (submitBtn) submitBtn.disabled = false;
+      if (input) input.focus();
+    } else {
+      // The code is spent. Keep the panel so the reason stays readable —
+      // Cancel is the way back to the form.
+      activeAdd.spent = true;
+      savePendingAdd(null);
+    }
+    return;
+  }
+
+  resetAddForm('');
+  if (window.meridianHeaderRefresh) window.meridianHeaderRefresh();
+  refresh();
+}
+
+function cancelAdd() {
+  // Keeps the name. Abandoning a sign-in almost always means the wrong Claude
+  // account was signed in, not that the name was wrong.
+  resetAddForm(activeAdd ? activeAdd.profile : '');
+}
+
 meridianReorder.init({ onSaved: refresh });
 refresh();
-setInterval(function () { if (!meridianReorder.dragging()) refresh(); }, 10000);
+if (!restorePendingAdd()) resetAddForm('');
+setInterval(function () { if (!activeLogin && !meridianReorder.dragging()) refresh(); }, 10000);
 ` + profileBarJs + `
 </script>
 </body>

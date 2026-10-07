@@ -1,0 +1,575 @@
+{
+  "base": "f443faee0b135c5d4bfe1e6fe771c6a262ae5f33",
+  "source": "1bffa43fe95037df7ac3c32fb818d01a6c3877d5",
+  "actual_client": {
+    "macOS_baseline": {
+      "result": "PASS",
+      "expectBaseline": true,
+      "freezes": 1,
+      "idleMs": 15000,
+      "freezeMs": 17700,
+      "lateDeadlines": 0,
+      "lateResumed": false,
+      "lateVerdicts": [],
+      "stalls": 2,
+      "stallTimings": [
+        {
+          "sinceLastMs": 17712,
+          "mode": "stream"
+        },
+        {
+          "sinceLastMs": 17713,
+          "mode": "stream"
+        }
+      ],
+      "platform": "darwin/arm64",
+      "bun": "1.3.14",
+      "opencode": "1.18.34",
+      "sdk": "0.2.141",
+      "claudeCode": "2.1.284",
+      "model": "claude-opus-5-5",
+      "firstExit": 1,
+      "continuedExit": 0,
+      "firstHasSession": true,
+      "toolCalls": 1,
+      "firstReceipt": true,
+      "continuedReceipt": true,
+      "allQueriesUseNewAccount": true,
+      "servedModels": [
+        "claude-opus-5-5"
+      ],
+      "realSdkQueries": 4,
+      "queryObservations": [
+        {
+          "credentialDirectoryMatched": true,
+          "resume": false,
+          "allowedTools": 0,
+          "textChunks": 4
+        },
+        {
+          "credentialDirectoryMatched": true,
+          "resume": false,
+          "allowedTools": 10,
+          "textChunks": 0
+        },
+        {
+          "credentialDirectoryMatched": true,
+          "resume": true,
+          "allowedTools": 10,
+          "textChunks": 167
+        },
+        {
+          "credentialDirectoryMatched": true,
+          "resume": true,
+          "allowedTools": 10,
+          "textChunks": 6
+        }
+      ],
+      "resumed": true,
+      "scrub": "0.2.3"
+    },
+    "macOS_fixed": {
+      "result": "PASS",
+      "expectBaseline": false,
+      "freezes": 1,
+      "idleMs": 15000,
+      "freezeMs": 17700,
+      "lateDeadlines": 2,
+      "lateResumed": true,
+      "lateVerdicts": [
+        {
+          "lateMs": 2709,
+          "sinceLastMs": 17709,
+          "resumed": true,
+          "mode": "stream"
+        },
+        {
+          "lateMs": 2709,
+          "sinceLastMs": 17709,
+          "resumed": true,
+          "mode": "stream"
+        }
+      ],
+      "stalls": 0,
+      "stallTimings": [],
+      "platform": "darwin/arm64",
+      "bun": "1.3.14",
+      "opencode": "1.18.34",
+      "sdk": "0.2.141",
+      "claudeCode": "2.1.284",
+      "model": "claude-opus-5-5",
+      "firstExit": 0,
+      "continuedExit": 0,
+      "firstHasSession": true,
+      "toolCalls": 1,
+      "firstReceipt": true,
+      "continuedReceipt": true,
+      "allQueriesUseNewAccount": true,
+      "servedModels": [
+        "claude-opus-5-5"
+      ],
+      "realSdkQueries": 4,
+      "queryObservations": [
+        {
+          "credentialDirectoryMatched": true,
+          "resume": false,
+          "allowedTools": 0,
+          "textChunks": 3
+        },
+        {
+          "credentialDirectoryMatched": true,
+          "resume": false,
+          "allowedTools": 10,
+          "textChunks": 0
+        },
+        {
+          "credentialDirectoryMatched": true,
+          "resume": true,
+          "allowedTools": 10,
+          "textChunks": 426
+        },
+        {
+          "credentialDirectoryMatched": true,
+          "resume": true,
+          "allowedTools": 10,
+          "textChunks": 5
+        }
+      ],
+      "resumed": true,
+      "scrub": "0.2.3"
+    },
+    "Linux_baseline": {
+      "result": "PASS",
+      "expectBaseline": true,
+      "freezes": 1,
+      "idleMs": 15000,
+      "freezeMs": 17700,
+      "lateDeadlines": 0,
+      "lateResumed": false,
+      "lateVerdicts": [],
+      "stalls": 2,
+      "stallTimings": [
+        {
+          "sinceLastMs": 17726,
+          "mode": "stream"
+        },
+        {
+          "sinceLastMs": 17726,
+          "mode": "stream"
+        }
+      ],
+      "platform": "linux/arm64",
+      "bun": "1.4.2",
+      "opencode": "1.18.34",
+      "sdk": "0.2.141",
+      "claudeCode": "2.1.284",
+      "model": "claude-opus-5-5",
+      "firstExit": 1,
+      "continuedExit": 0,
+      "firstHasSession": true,
+      "toolCalls": 1,
+      "firstReceipt": true,
+      "continuedReceipt": true,
+      "allQueriesUseNewAccount": true,
+      "servedModels": [
+        "claude-opus-5-5"
+      ],
+      "realSdkQueries": 4,
+      "queryObservations": [
+        {
+          "credentialDirectoryMatched": true,
+          "resume": false,
+          "allowedTools": 0,
+          "textChunks": 3
+        },
+        {
+          "credentialDirectoryMatched": true,
+          "resume": false,
+          "allowedTools": 10,
+          "textChunks": 0
+        },
+        {
+          "credentialDirectoryMatched": true,
+          "resume": true,
+          "allowedTools": 10,
+          "textChunks": 162
+        },
+        {
+          "credentialDirectoryMatched": true,
+          "resume": true,
+          "allowedTools": 10,
+          "textChunks": 15
+        }
+      ],
+      "resumed": true,
+      "scrub": "0.2.3"
+    },
+    "Linux_fixed": {
+      "result": "PASS",
+      "expectBaseline": false,
+      "freezes": 1,
+      "idleMs": 15000,
+      "freezeMs": 17700,
+      "lateDeadlines": 2,
+      "lateResumed": true,
+      "lateVerdicts": [
+        {
+          "lateMs": 2726,
+          "sinceLastMs": 17726,
+          "resumed": true,
+          "mode": "stream"
+        },
+        {
+          "lateMs": 2727,
+          "sinceLastMs": 17727,
+          "resumed": true,
+          "mode": "stream"
+        }
+      ],
+      "stalls": 0,
+      "stallTimings": [],
+      "platform": "linux/arm64",
+      "bun": "1.4.2",
+      "opencode": "1.18.34",
+      "sdk": "0.2.141",
+      "claudeCode": "2.1.284",
+      "model": "claude-opus-5-5",
+      "firstExit": 0,
+      "continuedExit": 0,
+      "firstHasSession": true,
+      "toolCalls": 1,
+      "firstReceipt": true,
+      "continuedReceipt": true,
+      "allQueriesUseNewAccount": true,
+      "servedModels": [
+        "claude-opus-5-5"
+      ],
+      "realSdkQueries": 4,
+      "queryObservations": [
+        {
+          "credentialDirectoryMatched": true,
+          "resume": false,
+          "allowedTools": 0,
+          "textChunks": 3
+        },
+        {
+          "credentialDirectoryMatched": true,
+          "resume": false,
+          "allowedTools": 10,
+          "textChunks": 0
+        },
+        {
+          "credentialDirectoryMatched": true,
+          "resume": true,
+          "allowedTools": 10,
+          "textChunks": 448
+        },
+        {
+          "credentialDirectoryMatched": true,
+          "resume": true,
+          "allowedTools": 10,
+          "textChunks": 6
+        }
+      ],
+      "resumed": true,
+      "scrub": "0.2.3"
+    }
+  },
+  "independent_linux_sockets": {
+    "linux-sockets-bun-baseline.log": [
+      {
+        "mode": "active",
+        "freeze": true,
+        "freezeCount": 1,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          2706
+        ],
+        "late": []
+      },
+      {
+        "mode": "silent",
+        "freeze": true,
+        "freezeCount": 1,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          2707
+        ],
+        "late": []
+      },
+      {
+        "mode": "ping",
+        "freeze": true,
+        "freezeCount": 1,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          2703
+        ],
+        "late": []
+      },
+      {
+        "mode": "silent",
+        "freeze": false,
+        "freezeCount": 0,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          252
+        ],
+        "late": []
+      },
+      {
+        "mode": "active",
+        "freeze": false,
+        "freezeCount": 0,
+        "count": 12,
+        "errorName": null,
+        "stalls": [],
+        "late": []
+      },
+      {
+        "result": "PASS",
+        "runtime": "bun/1.4.2",
+        "platform": "linux/arm64",
+        "expectBaseline": true,
+        "independentUpstream": true
+      }
+    ],
+    "linux-sockets-bun-final.log": [
+      {
+        "mode": "active",
+        "freeze": true,
+        "freezeCount": 1,
+        "count": 12,
+        "errorName": null,
+        "stalls": [],
+        "late": [
+          {
+            "lateMs": 2453,
+            "sinceLastMs": 2703,
+            "resumed": true
+          }
+        ]
+      },
+      {
+        "mode": "silent",
+        "freeze": true,
+        "freezeCount": 1,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          2702
+        ],
+        "late": [
+          {
+            "lateMs": 2452,
+            "sinceLastMs": 2702,
+            "resumed": false
+          }
+        ]
+      },
+      {
+        "mode": "ping",
+        "freeze": true,
+        "freezeCount": 1,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          2706
+        ],
+        "late": [
+          {
+            "lateMs": 2451,
+            "sinceLastMs": 2701,
+            "resumed": false
+          }
+        ]
+      },
+      {
+        "mode": "silent",
+        "freeze": false,
+        "freezeCount": 0,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          254
+        ],
+        "late": []
+      },
+      {
+        "mode": "active",
+        "freeze": false,
+        "freezeCount": 0,
+        "count": 12,
+        "errorName": null,
+        "stalls": [],
+        "late": []
+      },
+      {
+        "result": "PASS",
+        "runtime": "bun/1.4.2",
+        "platform": "linux/arm64",
+        "expectBaseline": false,
+        "independentUpstream": true
+      }
+    ],
+    "linux-sockets-node-baseline.log": [
+      {
+        "mode": "active",
+        "freeze": true,
+        "freezeCount": 1,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          2704
+        ],
+        "late": []
+      },
+      {
+        "mode": "silent",
+        "freeze": true,
+        "freezeCount": 1,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          2702
+        ],
+        "late": []
+      },
+      {
+        "mode": "ping",
+        "freeze": true,
+        "freezeCount": 1,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          2705
+        ],
+        "late": []
+      },
+      {
+        "mode": "silent",
+        "freeze": false,
+        "freezeCount": 0,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          251
+        ],
+        "late": []
+      },
+      {
+        "mode": "active",
+        "freeze": false,
+        "freezeCount": 0,
+        "count": 12,
+        "errorName": null,
+        "stalls": [],
+        "late": []
+      },
+      {
+        "result": "PASS",
+        "runtime": "node/24.20.0",
+        "platform": "linux/arm64",
+        "expectBaseline": true,
+        "independentUpstream": true
+      }
+    ],
+    "linux-sockets-node-final.log": [
+      {
+        "mode": "active",
+        "freeze": true,
+        "freezeCount": 1,
+        "count": 12,
+        "errorName": null,
+        "stalls": [],
+        "late": [
+          {
+            "lateMs": 2453,
+            "sinceLastMs": 2703,
+            "resumed": true
+          }
+        ]
+      },
+      {
+        "mode": "silent",
+        "freeze": true,
+        "freezeCount": 1,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          2701
+        ],
+        "late": [
+          {
+            "lateMs": 2451,
+            "sinceLastMs": 2701,
+            "resumed": false
+          }
+        ]
+      },
+      {
+        "mode": "ping",
+        "freeze": true,
+        "freezeCount": 1,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          2708
+        ],
+        "late": [
+          {
+            "lateMs": 2456,
+            "sinceLastMs": 2706,
+            "resumed": false
+          }
+        ]
+      },
+      {
+        "mode": "silent",
+        "freeze": false,
+        "freezeCount": 0,
+        "count": 3,
+        "errorName": "UpstreamIdleError",
+        "stalls": [
+          251
+        ],
+        "late": []
+      },
+      {
+        "mode": "active",
+        "freeze": false,
+        "freezeCount": 0,
+        "count": 12,
+        "errorName": null,
+        "stalls": [],
+        "late": []
+      },
+      {
+        "result": "PASS",
+        "runtime": "node/24.20.0",
+        "platform": "linux/arm64",
+        "expectBaseline": false,
+        "independentUpstream": true
+      }
+    ]
+  },
+  "local_tests": {
+    "pass": 5125,
+    "fail": 0,
+    "skip": 4
+  },
+  "E41": {
+    "chain_json": "PASS",
+    "chain_stream": "PASS",
+    "parallel_json": "PASS",
+    "parallel_stream": "PASS",
+    "model": "claude-opus-5-5",
+    "platform": "darwin/arm64",
+    "sdk": "0.2.141",
+    "claudeCode": "2.1.284"
+  }
+}

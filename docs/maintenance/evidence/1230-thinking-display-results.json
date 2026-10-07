@@ -1,0 +1,940 @@
+{
+  "baseline": "928bddc42b684680bc58f31a0aab18034197e8f3",
+  "source": "d50e28062bad5b98f93359e268ce53aa8facd868",
+  "sdk": "0.2.141",
+  "bundledCli": "2.1.284",
+  "bun": "1.4.2",
+  "cases": [
+    {
+      "case": "mac-final-baseline-updates",
+      "result": "PASS",
+      "platform": "darwin",
+      "version": "2.1.287 (Claude Code)",
+      "mode": "updates",
+      "expectedFailure": true,
+      "actualInteractive": true,
+      "wire": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": false,
+          "unsupportedDisplay": false,
+          "aborted": false
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "updates"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": 200,
+          "errorEvent": true,
+          "receipt": false,
+          "unsupportedDisplay": true,
+          "aborted": false
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "updates"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": false,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": 401,
+          "errorEvent": false,
+          "receipt": false,
+          "unsupportedDisplay": true,
+          "aborted": false
+        }
+      ],
+      "queries": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "updates"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": true,
+          "models": []
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "updates"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": true,
+          "models": []
+        }
+      ],
+      "nativeModels": [
+        "claude-sonnet-5"
+      ],
+      "joinedCleanup": true,
+      "clientMode": "interactive",
+      "terminal": {
+        "actualInteractive": true,
+        "promptSentInTui": true,
+        "nativeDisplayRejection": true,
+        "receiptDelivered": false
+      }
+    },
+    {
+      "case": "linux-x64-final-baseline-updates",
+      "result": "PASS",
+      "platform": "linux",
+      "version": "2.1.287 (Claude Code)",
+      "mode": "updates",
+      "expectedFailure": true,
+      "actualInteractive": true,
+      "wire": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": false,
+          "unsupportedDisplay": false,
+          "aborted": false
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "updates"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": 200,
+          "errorEvent": true,
+          "receipt": false,
+          "unsupportedDisplay": true,
+          "aborted": false
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "updates"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": false,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": null,
+          "errorEvent": false,
+          "receipt": false,
+          "unsupportedDisplay": false,
+          "aborted": true
+        }
+      ],
+      "queries": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "updates"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": true,
+          "models": []
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "updates"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": true,
+          "models": []
+        }
+      ],
+      "nativeModels": [
+        "claude-sonnet-5"
+      ],
+      "joinedCleanup": true,
+      "clientMode": "interactive",
+      "terminal": {
+        "actualInteractive": true,
+        "promptSentInTui": true,
+        "nativeDisplayRejection": true,
+        "receiptDelivered": false
+      }
+    },
+    {
+      "case": "mac-final-updates",
+      "result": "PASS",
+      "platform": "darwin",
+      "version": "2.1.287 (Claude Code)",
+      "mode": "updates",
+      "expectedFailure": false,
+      "actualInteractive": true,
+      "wire": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": false,
+          "unsupportedDisplay": false,
+          "aborted": false
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "updates"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": true,
+          "unsupportedDisplay": false,
+          "aborted": false
+        }
+      ],
+      "queries": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        },
+        {
+          "thinking": {
+            "type": "adaptive"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        }
+      ],
+      "nativeModels": [
+        "claude-sonnet-5"
+      ],
+      "joinedCleanup": true,
+      "clientMode": "interactive",
+      "terminal": {
+        "actualInteractive": true,
+        "promptSentInTui": true,
+        "nativeDisplayRejection": false,
+        "receiptDelivered": true
+      }
+    },
+    {
+      "case": "linux-x64-final-updates",
+      "result": "PASS",
+      "platform": "linux",
+      "version": "2.1.287 (Claude Code)",
+      "mode": "updates",
+      "expectedFailure": false,
+      "actualInteractive": true,
+      "wire": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": false,
+          "unsupportedDisplay": false,
+          "aborted": false
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "updates"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": true,
+          "unsupportedDisplay": false,
+          "aborted": false
+        }
+      ],
+      "queries": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        },
+        {
+          "thinking": {
+            "type": "adaptive"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        }
+      ],
+      "nativeModels": [
+        "claude-sonnet-5"
+      ],
+      "joinedCleanup": true,
+      "clientMode": "interactive",
+      "terminal": {
+        "actualInteractive": true,
+        "promptSentInTui": true,
+        "nativeDisplayRejection": false,
+        "receiptDelivered": true
+      }
+    },
+    {
+      "case": "mac-print-omitted",
+      "result": "PASS",
+      "platform": "darwin",
+      "version": "2.1.287 (Claude Code)",
+      "mode": "omitted",
+      "expectedFailure": false,
+      "actualInteractive": false,
+      "wire": [
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "omitted"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, sdk-cli)",
+          "stream": true,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": true,
+          "unsupportedDisplay": false,
+          "aborted": false
+        }
+      ],
+      "queries": [
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "omitted"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        }
+      ],
+      "nativeModels": [
+        "claude-sonnet-5"
+      ],
+      "joinedCleanup": true,
+      "clientMode": "print",
+      "terminal": {
+        "actualInteractive": false,
+        "promptSentInTui": false,
+        "nativeDisplayRejection": false,
+        "receiptDelivered": true
+      }
+    },
+    {
+      "case": "linux-x64-print-omitted",
+      "result": "PASS",
+      "platform": "linux",
+      "version": "2.1.287 (Claude Code)",
+      "mode": "omitted",
+      "expectedFailure": false,
+      "actualInteractive": false,
+      "wire": [
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "omitted"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, sdk-cli)",
+          "stream": true,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": true,
+          "unsupportedDisplay": false,
+          "aborted": false
+        }
+      ],
+      "queries": [
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "omitted"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        }
+      ],
+      "nativeModels": [
+        "claude-sonnet-5"
+      ],
+      "joinedCleanup": true,
+      "clientMode": "print",
+      "terminal": {
+        "actualInteractive": false,
+        "promptSentInTui": false,
+        "nativeDisplayRejection": false,
+        "receiptDelivered": true
+      }
+    },
+    {
+      "case": "mac-corrected-summarized",
+      "result": "PASS",
+      "platform": "darwin",
+      "version": "2.1.287 (Claude Code)",
+      "mode": "summarized",
+      "expectedFailure": false,
+      "actualInteractive": true,
+      "wire": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": false,
+          "unsupportedDisplay": false,
+          "aborted": false
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "summarized"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": true,
+          "unsupportedDisplay": false,
+          "aborted": false
+        }
+      ],
+      "queries": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "summarized"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        }
+      ],
+      "nativeModels": [
+        "claude-sonnet-5"
+      ],
+      "joinedCleanup": true,
+      "clientMode": "interactive",
+      "terminal": {
+        "actualInteractive": true,
+        "promptSentInTui": true,
+        "nativeDisplayRejection": false,
+        "receiptRendered": true
+      }
+    },
+    {
+      "case": "linux-x64-summarized",
+      "result": "PASS",
+      "platform": "linux",
+      "version": "2.1.287 (Claude Code)",
+      "mode": "summarized",
+      "expectedFailure": false,
+      "actualInteractive": true,
+      "wire": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": false,
+          "unsupportedDisplay": false,
+          "aborted": false
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "summarized"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": true,
+          "unsupportedDisplay": false,
+          "aborted": false
+        }
+      ],
+      "queries": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "summarized"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        }
+      ],
+      "nativeModels": [
+        "claude-sonnet-5"
+      ],
+      "joinedCleanup": true,
+      "clientMode": "interactive",
+      "terminal": {
+        "actualInteractive": true,
+        "promptSentInTui": true,
+        "nativeDisplayRejection": false,
+        "receiptDelivered": true
+      }
+    },
+    {
+      "case": "mac-corrected-highlights",
+      "result": "PASS",
+      "platform": "darwin",
+      "version": "2.1.287 (Claude Code)",
+      "mode": "highlights",
+      "expectedFailure": false,
+      "actualInteractive": true,
+      "wire": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": false,
+          "unsupportedDisplay": false,
+          "aborted": false
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "highlights"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": true,
+          "unsupportedDisplay": false,
+          "aborted": false
+        }
+      ],
+      "queries": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        },
+        {
+          "thinking": {
+            "type": "adaptive",
+            "display": "highlights"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        }
+      ],
+      "nativeModels": [
+        "claude-sonnet-5"
+      ],
+      "joinedCleanup": true,
+      "clientMode": "interactive",
+      "terminal": {
+        "actualInteractive": true,
+        "promptSentInTui": true,
+        "nativeDisplayRejection": false,
+        "receiptRendered": true
+      }
+    },
+    {
+      "case": "mac-corrected-disabled",
+      "result": "PASS",
+      "platform": "darwin",
+      "version": "2.1.287 (Claude Code)",
+      "mode": "disabled",
+      "expectedFailure": false,
+      "actualInteractive": true,
+      "wire": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": false,
+          "unsupportedDisplay": false,
+          "aborted": false
+        },
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": true,
+          "unsupportedDisplay": false,
+          "aborted": false
+        }
+      ],
+      "queries": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        },
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        }
+      ],
+      "nativeModels": [
+        "claude-sonnet-5"
+      ],
+      "joinedCleanup": true,
+      "clientMode": "interactive",
+      "terminal": {
+        "actualInteractive": true,
+        "promptSentInTui": true,
+        "nativeDisplayRejection": false,
+        "receiptRendered": true
+      }
+    },
+    {
+      "case": "linux-x64-disabled",
+      "result": "PASS",
+      "platform": "linux",
+      "version": "2.1.287 (Claude Code)",
+      "mode": "disabled",
+      "expectedFailure": false,
+      "actualInteractive": true,
+      "wire": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": false,
+          "unsupportedDisplay": false,
+          "aborted": false
+        },
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "model": "claude-sonnet-5",
+          "client": "claude-cli/2.1.287 (external, cli)",
+          "stream": true,
+          "messageRoles": [
+            "user",
+            "system"
+          ],
+          "status": 200,
+          "errorEvent": false,
+          "receipt": true,
+          "unsupportedDisplay": false,
+          "aborted": false
+        }
+      ],
+      "queries": [
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        },
+        {
+          "thinking": {
+            "type": "disabled"
+          },
+          "credentialDirectoryMatched": true,
+          "promptReceiptInsideHistory": false,
+          "models": [
+            "claude-sonnet-5"
+          ]
+        }
+      ],
+      "nativeModels": [
+        "claude-sonnet-5"
+      ],
+      "joinedCleanup": true,
+      "clientMode": "interactive",
+      "terminal": {
+        "actualInteractive": true,
+        "promptSentInTui": true,
+        "nativeDisplayRejection": false,
+        "receiptDelivered": true
+      }
+    }
+  ],
+  "framingFailureControls": [
+    {
+      "case": "mac-baseline-summarized-framing-control",
+      "result": "FAILED_RECEIPT_ASSERTION",
+      "observation": {
+        "wire": [
+          {
+            "thinking": {
+              "type": "disabled"
+            },
+            "model": "claude-sonnet-5",
+            "client": "claude-cli/2.1.287 (external, cli)",
+            "stream": true,
+            "messageRoles": [
+              "user"
+            ],
+            "status": 200,
+            "errorEvent": false,
+            "receipt": false,
+            "unsupportedDisplay": false,
+            "aborted": false
+          },
+          {
+            "thinking": {
+              "type": "adaptive",
+              "display": "summarized"
+            },
+            "model": "claude-sonnet-5",
+            "client": "claude-cli/2.1.287 (external, cli)",
+            "stream": true,
+            "messageRoles": [
+              "user",
+              "system"
+            ],
+            "status": 200,
+            "errorEvent": false,
+            "receipt": false,
+            "unsupportedDisplay": false,
+            "aborted": false
+          }
+        ],
+        "queries": [
+          {
+            "thinking": {
+              "type": "disabled"
+            },
+            "credentialDirectoryMatched": true,
+            "promptReceiptInsideHistory": false,
+            "models": [
+              "claude-sonnet-5"
+            ]
+          },
+          {
+            "thinking": {
+              "type": "adaptive",
+              "display": "summarized"
+            },
+            "credentialDirectoryMatched": true,
+            "promptReceiptInsideHistory": true,
+            "models": [
+              "claude-sonnet-5"
+            ]
+          }
+        ],
+        "nativeModels": [
+          "claude-sonnet-5"
+        ]
+      }
+    }
+  ]
+}

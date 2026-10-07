@@ -5,7 +5,7 @@
  * Bun's bundler emits duplicate `export {}` blocks and `__INVALID__REF__`
  * references in code-split chunks. This script cleans up both issues in dist/.
  *
- * Run automatically via the `postbuild` npm script.
+ * Run automatically by the build coordinator in scripts/build.ts.
  *
  * Exposes `fixBunExports(distDir)` for unit testing — see
  * src/__tests__/fix-bun-exports.test.ts for fixtures that lock in the

@@ -9,6 +9,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { once } from 'node:events'
+import { writeUnusedToolRoster } from './lib/opencode-tool-roster.mjs'
 
 const meridianRoot = fileURLToPath(new URL('..', import.meta.url))
 const expectBillingError = process.env.E2E_EXPECT_BILLING_ERROR === '1'
@@ -17,6 +20,10 @@ if (!expectBillingError) assert(scrubPath, 'Set E2E_PLUGIN_PATH to the installed
 const model = process.env.E2E_MODEL ?? 'claude-opus-5-5'
 const clientBin = process.env.E2E_OPENCODE_BIN ?? 'opencode'
 const concurrency = Number(process.env.E2E_CONCURRENCY ?? 1)
+const deferRoster = process.env.E2E_DEFER_ROSTER === '1'
+const exerciseRead = process.env.E2E_TOOL_RECEIPT === '1'
+const receipt = exerciseRead ? `CLIENT-READ-${randomUUID()}` : undefined
+const storeFixture = process.env.E2E_SESSION_STORE_FIXTURE
 assert(Number.isInteger(concurrency) && concurrency >= 1 && concurrency <= 8)
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'meridian-opencode-admission-')))
 console.log(JSON.stringify({ artifact: root }))
@@ -30,12 +37,38 @@ Object.assign(process.env, {
   MERIDIAN_SESSION_DIR: join(root, 'meridian-sessions'),
   MERIDIAN_TELEMETRY_PERSIST: '0',
   MERIDIAN_PASSTHROUGH: '1',
+  MERIDIAN_CREDENTIALS_READONLY: '1',
+  MERIDIAN_NO_UPDATE_CHECK: '1',
 })
+let fixtureBytes = 0
+if (storeFixture) {
+  const bytes = readFileSync(storeFixture, 'utf8')
+  const document = JSON.parse(bytes)
+  assert(Object.keys(document).filter(key => key.startsWith('fixture-')).length === 856,
+    'Use the disposable synthetic fixture from e2e-session-store-cost.mjs')
+  mkdirSync(process.env.MERIDIAN_SESSION_DIR, { recursive: true })
+  writeFileSync(join(process.env.MERIDIAN_SESSION_DIR, 'sessions.json'), bytes, { mode: 0o600 })
+  fixtureBytes = Buffer.byteLength(bytes)
+}
 const before = []
 const after = []
 globalThis.__opencodeAdmissionBefore = before
 globalThis.__opencodeAdmissionAfter = after
-const probe = (name, target) => `export default { name: ${JSON.stringify(name)}, onRequest(ctx) { globalThis.${target}.push({ adapter: ctx.adapter, hasPowered: (ctx.systemContext || '').includes('You are powered by the model named'), hasEnvPreamble: (ctx.systemContext || '').includes('Here is some useful information about the environment you are running in:'), hasWorkingDirectory: (ctx.systemContext || '').includes('Working directory:') }); return ctx } }`
+const probe = (name, target) => `export default {
+  name: ${JSON.stringify(name)},
+  onRequest(ctx) {
+    const results = (ctx.messages || []).filter(m => m.role === 'user' && Array.isArray(m.content))
+      .flatMap(m => m.content.filter(b => b?.type === 'tool_result'));
+    const receiptClients = Array.from({length: ${concurrency}}, (_, index) => index).filter(index =>
+      results.some(b => JSON.stringify(b.content ?? '').includes(${JSON.stringify(receipt ?? '__unused_receipt__')} + '-' + index)));
+    globalThis.${target}.push({ adapter: ctx.adapter, toolCount: ctx.tools?.length ?? 0,
+      hasPowered: (ctx.systemContext || '').includes('You are powered by the model named'),
+      hasEnvPreamble: (ctx.systemContext || '').includes('Here is some useful information about the environment you are running in:'),
+      hasWorkingDirectory: (ctx.systemContext || '').includes('Working directory:'),
+      hasClientReadResult: receiptClients.length > 0, receiptClients });
+    return ctx;
+  }
+}`
 const beforePath = join(root, 'before.js')
 const afterPath = join(root, 'after.js')
 writeFileSync(beforePath, probe('before-opencode-admission', '__opencodeAdmissionBefore'))
@@ -54,13 +87,17 @@ async function runClient(index, url) {
   const project = join(clientRoot, 'project')
   const config = join(clientRoot, 'config')
   for (const path of [clientRoot, project, config]) mkdirSync(path)
+  if (exerciseRead) writeFileSync(join(project, 'receipt.txt'), receipt + '-' + index + '\n')
+  const roster = join(clientRoot, 'roster.cjs')
+  if (deferRoster) writeUnusedToolRoster(roster)
   writeFileSync(join(config, 'opencode.json'), JSON.stringify({
     $schema: 'https://opencode.ai/config.json',
     plugin: [join(meridianRoot, 'dist', 'meridian')],
     model: `anthropic/${model}`,
     small_model: `anthropic/${model}`,
     share: 'disabled',
-    permission: 'deny',
+    permission: exerciseRead ? 'allow' : 'deny',
+    ...(deferRoster ? { mcp: { roster: { type: 'local', command: [process.execPath, roster], enabled: true } } } : {}),
     provider: { anthropic: { options: { apiKey: 'local-fixture', baseURL: url },
       models: { [model]: { name: model, limit: { context: 200000, output: 1024 },
         modalities: { input: ['text'], output: ['text'] }, temperature: false,
@@ -90,13 +127,15 @@ async function runClient(index, url) {
       try { return [JSON.parse(line)] } catch { return [] }
     })
     return { exit, textEvents: events.filter(event => event.type === 'text' && event.part?.text).length,
+      toolEvents: events.filter(event => event.type === 'tool_use').length,
       errorEvents: events.filter(event => event.type === 'error').length,
       billingErrors: events.filter(event => event.type === 'error' && JSON.stringify(event).includes('billing_error')).length,
       eventTypes: [...new Set(events.map(event => event.type))],
       sessionId: events.find(event => typeof event.sessionID === 'string')?.sessionID }
   }
   const first = await invoke(['run', '--format', 'json', '--model', `anthropic/${model}`,
-    'Reply with a short acknowledgement. Do not use tools.'], 'first')
+    exerciseRead ? `Use the read tool to read ${join(project, 'receipt.txt')}, then give a brief acknowledgement.`
+      : 'Reply with a short acknowledgement. Do not use tools.'], 'first')
   const continued = !expectBillingError && first.exit === 0 && first.sessionId
     ? await invoke(['run', '--session', first.sessionId, '--format', 'json', '--model', `anthropic/${model}`,
       'Reply with another short acknowledgement. Do not use tools.'], 'continued')
@@ -112,6 +151,7 @@ let proxy
 try {
   proxy = await startProxyServer({ port: 0, host: '127.0.0.1', silent: true,
     pluginConfigPath, pluginDir: join(root, 'plugins') })
+  if (!proxy.server.listening) await once(proxy.server, 'listening')
   const url = `http://127.0.0.1:${proxy.server.address().port}`
   const initial = await (await fetch(`${url}/plugins/list`)).json()
   const scrub = initial.plugins.find(plugin => plugin.name === 'opencode-scrub')
@@ -123,9 +163,12 @@ try {
   const final = await (await fetch(`${url}/plugins/list`)).json()
   const scrubStats = final.plugins.find(plugin => plugin.name === 'opencode-scrub')?.stats?.hooks?.onRequest
   const summary = { result: 'pending', artifact: root, meridian: JSON.parse(readFileSync(join(meridianRoot, 'package.json'))).version,
+    fixtureBytes, exerciseRead,
     opencode: clientVersion.stdout.trim(), model, plugin: scrub ? { version: scrub.version, onRequest: scrubStats } : null,
     clients, before, after }
   writeFileSync(join(root, 'summary.json'), JSON.stringify(summary, null, 2))
+  try {
+  if (deferRoster) assert(before.some(entry => entry.toolCount > 80), 'Actual OpenCode did not declare deferred roster')
   assert(before.length >= concurrency && before.every(entry => entry.adapter === 'opencode'),
     `The OpenCode client plugin did not identify requests; see ${root}/summary.json`)
   assert(before.some(entry => entry.hasPowered && entry.hasEnvPreamble),
@@ -138,6 +181,11 @@ try {
     assert(after.some(entry => entry.hasPowered && entry.hasEnvPreamble),
       `The unscreened OpenCode system fingerprint was absent; see ${root}/summary.json`)
   } else {
+    if (exerciseRead) {
+      assert(clients.every(client => client.toolEvents > 0), 'Actual OpenCode did not execute a tool')
+      assert(clients.every(client => before.some(entry => entry.receiptClients.includes(client.index))),
+        'A random client-only read receipt never reached the SDK request')
+    }
     assert(clients.every(client => client.exit === 0 && client.textEvents > 0 && client.errorEvents === 0
       && client.sessionCaptured && client.continuationSameSession && client.continuation?.exit === 0
       && client.continuation.textEvents > 0 && client.continuation.errorEvents === 0),
@@ -148,6 +196,10 @@ try {
       `The metering fingerprint remained after scrubbing; see ${root}/summary.json`)
     assert(after.some(entry => entry.hasWorkingDirectory),
       `The scrub plugin removed OpenCode's working-directory context; see ${root}/summary.json`)
+  }
+  } catch (error) {
+    console.log(JSON.stringify({ ...summary, result: 'FAIL' }))
+    throw error
   }
   summary.result = 'PASS'
   writeFileSync(join(root, 'summary.json'), JSON.stringify(summary, null, 2))

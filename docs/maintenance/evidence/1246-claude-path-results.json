@@ -1,0 +1,211 @@
+{
+  "issue": 1246,
+  "baselineMain": "67a19e50c743942ab0ed62d340d1caf143c6140b",
+  "publishedBaseline": "1.68.0",
+  "sdk": "0.2.141",
+  "mise": "2026.10.0",
+  "parentRuntime": "Bun 1.4.2",
+  "environment": "owned Linux x86_64 container on macOS arm64; ordinary actual OpenCode CLI and unmodified published plugin",
+  "prompt": "identical JavaScript console.log fixture task with exact per-run random receipt",
+  "cases": [
+    {
+      "result": "PASS",
+      "client": "1.18.34",
+      "plugin": "1.10.1",
+      "platform": "linux",
+      "arch": "x64",
+      "model": "claude-opus-5-5",
+      "expectedSource": "platform-package",
+      "selectedVersion": "2.1.268 (Claude Code)",
+      "expectFailure": true,
+      "delivered": false,
+      "versionRejected": true,
+      "queryCount": 6,
+      "nativeModels": [
+        "<synthetic>"
+      ],
+      "frontendExit": 1,
+      "accountMatched": true,
+      "executableConsistent": true,
+      "completedSdkIterators": true,
+      "ownedResidualProcesses": 0,
+      "joinedCleanup": true,
+      "override": false,
+      "noPath": false,
+      "brokenPath": false,
+      "miseManaged": true,
+      "case": "published-before"
+    },
+    {
+      "result": "PASS",
+      "client": "1.18.34",
+      "plugin": "1.10.1",
+      "platform": "linux",
+      "arch": "x64",
+      "model": "claude-opus-5-5",
+      "expectedSource": "platform-package",
+      "selectedVersion": "2.1.268 (Claude Code)",
+      "expectFailure": true,
+      "delivered": false,
+      "versionRejected": true,
+      "queryCount": 6,
+      "nativeModels": [
+        "<synthetic>"
+      ],
+      "frontendExit": 1,
+      "accountMatched": true,
+      "executableConsistent": true,
+      "completedSdkIterators": true,
+      "ownedResidualProcesses": 0,
+      "joinedCleanup": true,
+      "override": false,
+      "noPath": false,
+      "brokenPath": false,
+      "miseManaged": true,
+      "case": "main-before"
+    },
+    {
+      "result": "PASS",
+      "client": "1.18.34",
+      "plugin": "1.10.1",
+      "platform": "linux",
+      "arch": "x64",
+      "model": "claude-opus-5-5",
+      "expectedSource": "path-lookup",
+      "selectedVersion": "2.1.288 (Claude Code)",
+      "expectFailure": false,
+      "delivered": true,
+      "versionRejected": false,
+      "queryCount": 1,
+      "nativeModels": [
+        "claude-opus-5-5"
+      ],
+      "frontendExit": 0,
+      "accountMatched": true,
+      "executableConsistent": true,
+      "completedSdkIterators": true,
+      "ownedResidualProcesses": 0,
+      "joinedCleanup": true,
+      "override": false,
+      "noPath": false,
+      "brokenPath": false,
+      "miseManaged": true,
+      "case": "mise-after"
+    },
+    {
+      "result": "PASS",
+      "client": "1.18.34",
+      "plugin": "1.10.1",
+      "platform": "linux",
+      "arch": "x64",
+      "model": "claude-opus-5-5",
+      "expectedSource": "env",
+      "selectedVersion": "2.1.268 (Claude Code)",
+      "expectFailure": true,
+      "delivered": false,
+      "versionRejected": true,
+      "queryCount": 6,
+      "nativeModels": [
+        "<synthetic>"
+      ],
+      "frontendExit": 1,
+      "accountMatched": true,
+      "executableConsistent": true,
+      "completedSdkIterators": true,
+      "ownedResidualProcesses": 0,
+      "joinedCleanup": true,
+      "override": true,
+      "noPath": false,
+      "brokenPath": false,
+      "miseManaged": true,
+      "case": "override"
+    },
+    {
+      "result": "PASS",
+      "client": "1.18.34",
+      "plugin": "1.10.1",
+      "platform": "linux",
+      "arch": "x64",
+      "model": "claude-haiku-4-5-20251001",
+      "expectedSource": "platform-package",
+      "selectedVersion": "2.1.268 (Claude Code)",
+      "expectFailure": false,
+      "delivered": true,
+      "versionRejected": false,
+      "queryCount": 1,
+      "nativeModels": [
+        "claude-haiku-4-5-20251001"
+      ],
+      "frontendExit": 0,
+      "accountMatched": true,
+      "executableConsistent": true,
+      "completedSdkIterators": true,
+      "ownedResidualProcesses": 0,
+      "joinedCleanup": true,
+      "override": false,
+      "noPath": true,
+      "brokenPath": false,
+      "miseManaged": false,
+      "case": "missing-path"
+    },
+    {
+      "result": "PASS",
+      "client": "1.18.34",
+      "plugin": "1.10.1",
+      "platform": "linux",
+      "arch": "x64",
+      "model": "claude-haiku-4-5-20251001",
+      "expectedSource": "platform-package",
+      "selectedVersion": "2.1.268 (Claude Code)",
+      "expectFailure": false,
+      "delivered": true,
+      "versionRejected": false,
+      "queryCount": 1,
+      "nativeModels": [
+        "claude-haiku-4-5-20251001"
+      ],
+      "frontendExit": 0,
+      "accountMatched": true,
+      "executableConsistent": true,
+      "completedSdkIterators": true,
+      "ownedResidualProcesses": 0,
+      "joinedCleanup": true,
+      "override": false,
+      "noPath": false,
+      "brokenPath": true,
+      "miseManaged": false,
+      "case": "broken-path"
+    }
+  ],
+  "localGates": {
+    "npmTest": {
+      "passed": 5151,
+      "failed": 0,
+      "skipped": 4,
+      "stages": 17
+    },
+    "typecheck": "PASS",
+    "build": "PASS",
+    "resolver": {
+      "passed": 42,
+      "failed": 0
+    },
+    "readinessHealth": {
+      "passed": 11,
+      "failed": 0
+    },
+    "baselinePriority": {
+      "passed": 35,
+      "failed": 2
+    }
+  },
+  "retainedFailedControls": [
+    "Initial fallback arbitrary-echo prompts reached actual Haiku but refused the non-coding task; receipt assertions failed. Final common coding prompt was also repeated on both unchanged baselines.",
+    "Earlier attached-server/exit-observation harness prototypes did not complete and are not accepted product or lifecycle proof."
+  ],
+  "limits": [
+    "No real Windows model call is claimed.",
+    "No package publication; a pinned consumer must adopt the corrected package.",
+    "Cleanup checks kernel-visible processes in the unique owned project and completed public SDK iterators; no private SDK persistence is inspected."
+  ]
+}

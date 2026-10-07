@@ -311,7 +311,7 @@ describe("silent-turn recovery", () => {
     const stored = lookupSharedSession("silent-recovery-parallel")
     expect(stored?.claudeSessionId).toBe(queryCalls[1].options.sessionId)
     expect(stored?.passthroughToolCallAssistantUuid).toBe(assistantUuid)
-    expect(stored?.passthroughToolCallIds?.sort()).toEqual([...toolIds].sort())
+    expect(stored?.passthroughToolCallIds?.toSorted()).toEqual([...toolIds].sort())
   })
 
   it("does not emit or publish recovery tool calls when the recovery throws", async () => {

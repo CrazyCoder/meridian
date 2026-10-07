@@ -30,6 +30,16 @@ const initial = (content = "Get receipt") => ({ model: "fixture-model", max_toke
 afterEach(async () => { for (const close of closing.splice(0)) await close() })
 
 describe("Antigravity request contract", () => {
+  for (const count of [129, 256]) it(`preserves all ${count} client tool definitions`, () => {
+    const tools = Array.from({ length: count }, (_, index) => ({ ...tool, name: `lookup_${index + 1}` }))
+    const request = parseAgRequest({ ...initial(), tools, tool_choice: { type: "tool", name: `lookup_${count}` } })
+    expect(request.tools).toEqual(tools)
+    expect(renderAgPrompt(request)).toContain(JSON.stringify(tools.at(-1)))
+    expect(() => parseAgRequest({ ...initial(), tools: [...tools, tools[0]] })).toThrow("Duplicate tool names")
+    expect(() => parseAgRequest({ ...initial(), tools: [...tools, { ...tool, name: "invalid.name" }] })).toThrow("tools")
+    expect(() => parseAgRequest({ ...initial(), tools: [...tools, { name: "malformed", input_schema: [] }] })).toThrow("tools")
+  })
+
   it("rejects images and unsupported controls before creating a process", () => {
     expect(() => parseAgRequest({ ...initial(), messages: [{ role: "user", content: [{ type: "image", source: {} }] }] })).toThrow("text")
     expect(() => parseAgRequest({ ...initial(), temperature: 0 })).toThrow("temperature")
@@ -81,6 +91,15 @@ describe("Antigravity request contract", () => {
 })
 
 describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration", () => {
+  it("rejects a malformed schema beyond the former catalog limit", async () => {
+    const { runtime, send } = fixture()
+    const tools = Array.from({ length: 256 }, (_, index) => ({ ...tool, name: `lookup_${index + 1}` }))
+    const response = await send({ ...initial(), tools: [...tools, { name: "invalid_schema", input_schema: { type: "not-a-json-schema-type" } }] })
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain("Tool invalid_schema: Invalid or unsupported JSON Schema")
+    expect(runtime.runs.size).toBe(0)
+  })
+
   it("returns model discovery, health, text and per-invocation usage", async () => {
     const { server, send } = fixture()
     const health = await server.app.fetch(new Request("http://local/health"))
@@ -495,6 +514,14 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(provider.accounts[0]!.windows[0]).toMatchObject({ group: "Gemini Models", utilization: 0.25 })
     const page = await server.app.fetch(new Request("http://local/providers/view?provider=antigravity"))
     expect(await page.text()).toContain('data-provider-card="antigravity"')
+  })
+
+  it("serves the favicon its provider page links", async () => {
+    const { server } = fixture()
+    const response = await server.app.fetch(new Request("http://local/telemetry/icon.svg"))
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toBe("image/svg+xml")
+    expect(await response.text()).toContain("<svg")
   })
 
   it("runs the generated policy and permits only declared client MCP calls", async () => {

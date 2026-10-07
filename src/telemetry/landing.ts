@@ -10,6 +10,7 @@
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profileBar"
 import { profileFactsJs } from "./profileFacts"
+import { profileFindJs } from "./profileFind"
 import { reorderClientJs, reorderCss, reorderLiveRegionHtml } from "./profileOrder"
 import { DEFAULT_PROFILE_SORT, PROFILE_SORT_MODES } from "./profileSort"
 import { FADE_FROM, GENERAL_WINDOW_TYPES, SPENT_AT } from "./profileSpent"
@@ -20,6 +21,7 @@ export const landingHtml = `<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Meridian</title>
+<link rel="icon" type="image/svg+xml" href="/telemetry/icon.svg">
 <style>
   ${themeCss}
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -39,7 +41,14 @@ export const landingHtml = `<!DOCTYPE html>
   .intro-meta { font-size: 12px; color: var(--muted); margin-top: 8px; }
 
   /* Profile cards — the centerpiece: usage + cost per account, click to switch */
-  .profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  /* min() lets a single column shrink below 300px: a phone at 320px has only
+     272px inside the container, and a fixed 300px track scrolled the page. */
+  .profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; margin-bottom: 24px; }
+  /* Wide layout: a card stays about as wide as in the contained column, where
+     a 960px row holds two of about 448px, and a row takes as many as fit.
+     auto-fill keeps empty tracks, so a short list keeps its card size instead
+     of stretching across the window. */
+  html[data-layout="wide"] .profile-grid { grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr)); }
   .profile-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     padding: 18px 20px; position: relative; transition: border-color 0.15s; }
   .profile-card.switchable { cursor: pointer; }
@@ -72,10 +81,22 @@ export const landingHtml = `<!DOCTYPE html>
     border-radius: 10px; padding: 1px 8px; }
   .spend-pill.needs-login { color: var(--red); background: rgba(248,81,73,0.12);
     border-color: rgba(248,81,73,0.35); }
+  a.spend-pill { text-decoration: none; }
+  a.spend-pill:hover { border-color: var(--red); }
   ${reorderCss}
-  .profile-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
-  .profile-name { font-size: 13px; font-weight: 600; letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px; }
-  .profile-name .prof-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+  /* The name row carries every badge the card can earn - Active, the plan
+     chip, pool position, exhausted/refused, needs login, spent - and on a
+     narrow card they do not fit beside the cost. The row wraps its badges
+     onto further lines and may break a long label (an email) anywhere; the
+     cost never shrinks, and once the name would get narrower than 12em the
+     cost moves to its own right-aligned line. Nothing is pushed past the
+     card's edge. When everything fits on one line, as on a desktop, none of
+     this changes the layout. */
+  .profile-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+    gap: 2px 8px; margin-bottom: 4px; }
+  .profile-name { font-size: 13px; font-weight: 600; letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px;
+    flex: 1 1 12em; flex-wrap: wrap; row-gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+  .profile-name .prof-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: var(--border); }
   .profile-card.active .prof-dot { background: var(--accent); box-shadow: 0 0 6px rgba(88,166,255,0.5); }
   .active-pill { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
     color: var(--accent); background: rgba(88,166,255,0.12); border: 1px solid rgba(88,166,255,0.35);
@@ -83,7 +104,7 @@ export const landingHtml = `<!DOCTYPE html>
   .switch-hint { font-size: 9px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;
     color: var(--muted); opacity: 0; transition: opacity 0.15s; }
   .profile-card.switchable:hover .switch-hint { opacity: 1; }
-  .profile-cost { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
+  .profile-cost { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); flex-shrink: 0; margin-left: auto; }
 
   /* Account details on hover. Drawn rather than a title attribute: the native
      tooltip cannot show a label/value list, and this one has to match the grid
@@ -101,15 +122,32 @@ export const landingHtml = `<!DOCTYPE html>
     border: 1px solid var(--border); border-radius: 10px;
     box-shadow: 0 8px 24px rgba(0,0,0,0.35);
     opacity: 0; visibility: hidden; transition: opacity 0.12s;
-    text-align: left; font-weight: 400; letter-spacing: 0; text-transform: none; cursor: default; }
+    text-align: left; font-weight: 400; letter-spacing: 0; text-transform: none; cursor: default;
+    overflow-wrap: normal; }
   .prof-info:hover .prof-pop, .prof-info:focus-within .prof-pop { opacity: 1; visibility: visible; }
   .prof-pop-type { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
     color: var(--accent2); margin-bottom: 8px; }
   .prof-pop-grid { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; font-size: 11px; }
+  .prof-pop-link { display: block; margin-top: 10px; font-size: 11px; color: var(--accent); text-decoration: none; }
+  .prof-pop-link:hover { text-decoration: underline; }
   .prof-pop-label { color: var(--muted); white-space: nowrap; }
   .prof-pop-value { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; word-break: break-word; }
   .prof-pop-value.status-ok { color: var(--green); }
   .prof-pop-value.status-err { color: var(--red); }
+  /* A hidden overlay still counts toward the page's scroll width, and one
+     hung off the icon at 256px or more reaches past a phone's right edge.
+     On a narrow screen it spans the card's header row instead. */
+  @media (max-width: 720px) {
+    .profile-head { position: relative; }
+    .prof-info { position: static; }
+    .prof-pop { left: 0; right: 0; min-width: 0; }
+  }
+  /* A phone shows one card per row, each packed with usage rows and chips,
+     so the page edge and the card's own padding give that room back. */
+  @media (max-width: 720px) {
+    .container { padding-left: 8px; padding-right: 8px; }
+    .profile-card { padding: 9px 10px; }
+  }
   .profile-sub { font-size: 11px; color: var(--muted); text-align: right; margin-bottom: 12px; }
   .usage-row { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 4px 0; }
   .usage-row .w-label { color: var(--muted); width: 64px; flex-shrink: 0; }
@@ -149,10 +187,10 @@ export const landingHtml = `<!DOCTYPE html>
 
   /* Tabs rather than a dropdown: the current order stays legible without
      opening anything, which is the whole job of this page. */
-  .section-head { display: flex; align-items: baseline; justify-content: space-between;
+  .section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
     gap: 12px; margin-bottom: 12px; }
   .section-head .section-title { margin-bottom: 0; }
-  .sort-tabs { display: flex; gap: 2px; flex-shrink: 0; }
+  .sort-tabs { display: flex; flex-wrap: wrap; gap: 2px; min-width: 0; max-width: 100%; }
   .sort-tab { background: none; border: none; border-bottom: 2px solid transparent;
     color: var(--muted); font-family: inherit; font-size: 11px; font-weight: 500;
     letter-spacing: 0.3px; padding: 2px 8px 3px; cursor: pointer; }
@@ -173,7 +211,7 @@ export const landingHtml = `<!DOCTYPE html>
   ${reorderLiveRegionHtml}
 </div>
 <script>
-` + profileFactsJs + `
+` + profileFactsJs + profileFindJs + `
 function ms(v){if(v==null||v===0)return '—';return v<1000?v+'ms':(v/1000).toFixed(1)+'s'}
 function esc(s){return String(s).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch]})}
 function usd(v){if(v==null)return '—';if(v>0&&v<0.01)return '$'+v.toFixed(4);if(v<100)return '$'+v.toFixed(2);return '$'+Math.round(v).toLocaleString()}
@@ -312,6 +350,7 @@ function infoIcon(entry,type){
     +'<span class="prof-pop" role="tooltip">'
     +'<span class="prof-pop-type">'+esc(type||'claude-max')+'</span>'
     +'<span class="prof-pop-grid">'+rows+'</span>'
+    +'<a class="prof-pop-link" href="'+esc(profileHref(entry.id))+'">Open in Profiles \\u2192</a>'
     +'</span></span>';
 }
 
@@ -419,7 +458,9 @@ function profileSection(q,s,pl,h){
         +(sp.until?', back '+resetIn(sp.until):'')
         +'<div class="spent-banner-sub">figures below are the last successful read, not live</div></div>';
     }
-    if(spend.reason==='unusable')badge+=' <span class="spend-pill needs-login">needs login</span>';
+    if(spend.reason==='unusable')badge+=' '+(p.configured
+      ?'<a class="spend-pill needs-login" href="'+esc(profileHref(p.id))+'" title="Open this profile to log in again">needs login</a>'
+      :'<span class="spend-pill needs-login">needs login</span>');
     else if(spend.state==='spent')badge+=' <span class="spend-pill">spent</span>';
     var spendClass=spend.reason==='unusable'?' needs-login':spend.fade>0?' spend-'+spend.state:'';
     var spendStyle=spend.fade>0?' style="--spend-fade:'+spend.fade.toFixed(2)+'"':'';
@@ -508,6 +549,8 @@ document.getElementById('content').addEventListener('click',function(e){
   // The card is itself the switch button, so the icon inside one has to opt
   // out of it or reading an account would move all traffic to that account.
   if(e.target.closest('.prof-info'))return;
+  // Same for a link to the account's /profiles entry: following it is not a switch.
+  if(e.target.closest('a'))return;
   var tab=e.target.closest('.sort-tab');
   if(tab&&tab.dataset.sort){setViewSort(tab.dataset.sort);return}
   var card=e.target.closest('.profile-card.switchable');
@@ -516,7 +559,7 @@ document.getElementById('content').addEventListener('click',function(e){
 document.getElementById('content').addEventListener('keydown',function(e){
   if(e.key!=='Enter'&&e.key!==' ')return;
   if(onHandle(e))return;
-  if(e.target.closest('.prof-info'))return;
+  if(e.target.closest('.prof-info')||e.target.closest('a'))return;
   var card=e.target.closest('.profile-card.switchable');
   if(card&&card.dataset.profile){e.preventDefault();switchProfile(card.dataset.profile)}
 });

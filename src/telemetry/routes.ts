@@ -7,22 +7,17 @@
  * GET /telemetry/logs       — Diagnostic logs (JSON)
  */
 
-import { existsSync, readFileSync } from "node:fs"
-import { resolve, dirname } from "node:path"
-import { fileURLToPath } from "node:url"
 import { Hono } from "hono"
 import { telemetryStore, diagnosticLog } from "./index"
 import { dashboardHtml } from "./dashboard"
+import { iconResponse } from "./icon"
+import { withSavedLayout } from "./pageLayout"
 import type { SessionTreeSummary } from "./types"
 import { collapseRouteChains, summarizeRoutes } from "./routeChain"
 
 /** Upper bound on the rows one /routes tally reads, matching the memory
  *  store's ring capacity so a window inside it is covered exactly. */
 const ROUTE_SUMMARY_MAX_ROWS = 1000
-
-// Read once at module load — src/telemetry/ is two levels below the package root
-const _iconPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "assets", "icon.svg")
-const _iconSvg = existsSync(_iconPath) ? readFileSync(_iconPath, "utf-8") : null
 
 export interface TelemetryRouteDeps {
   /**
@@ -38,17 +33,11 @@ export function createTelemetryRoutes(deps: TelemetryRouteDeps = {}) {
 
   // Dashboard
   routes.get("/", (c) => {
-    return c.html(dashboardHtml)
+    return c.html(withSavedLayout(dashboardHtml))
   })
 
   // Favicon
-  routes.get("/icon.svg", (c) => {
-    if (!_iconSvg) return c.notFound()
-    return c.body(_iconSvg, 200, {
-      "Content-Type": "image/svg+xml",
-      "Cache-Control": "public, max-age=3600",
-    })
-  })
+  routes.get("/icon.svg", (c) => iconResponse() ?? c.notFound())
 
   // Recent requests
   routes.get("/requests", (c) => {

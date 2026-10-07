@@ -1,0 +1,127 @@
+{
+  "issue": 1238,
+  "baselineMain": "4170a8a7f30c98de99d411321158b41a71098b6f",
+  "publishedBaseline": "1.76.5",
+  "validatedProductCommit": "c285d89d7364de4cd60ad7643ab912147e7add7a",
+  "officialCliRelease": "https://github.com/google-antigravity/antigravity-cli/releases/tag/1.2.7",
+  "installedAnthropicProviderVersions": [],
+  "cases": [
+    {
+      "result": "PASS",
+      "catalogSize": 129,
+      "actualToolCount": 139,
+      "targetIndex": 129,
+      "model": "gemini-3.8-flash-high",
+      "client": "1.18.30",
+      "cli": "1.2.7",
+      "platform": "darwin",
+      "arch": "arm64",
+      "node": "v22.22.3",
+      "expectRejection": true,
+      "frontendExit": 1,
+      "delivered": false,
+      "targetInvocations": 0,
+      "clientRequests": 1,
+      "returnedClientToolResult": false,
+      "negativeControls": [],
+      "clientMcpServersExited": true,
+      "joinedBackendCleanup": true,
+      "case": "current-main-before"
+    },
+    {
+      "result": "PASS",
+      "catalogSize": 129,
+      "actualToolCount": 139,
+      "targetIndex": 129,
+      "model": "gemini-3.8-flash-high",
+      "client": "1.18.30",
+      "cli": "1.2.7",
+      "platform": "darwin",
+      "arch": "arm64",
+      "node": "v22.22.3",
+      "expectRejection": true,
+      "frontendExit": 1,
+      "delivered": false,
+      "targetInvocations": 0,
+      "clientRequests": 1,
+      "returnedClientToolResult": false,
+      "negativeControls": [],
+      "clientMcpServersExited": true,
+      "joinedBackendCleanup": true,
+      "case": "published-before"
+    },
+    {
+      "result": "PASS",
+      "catalogSize": 129,
+      "actualToolCount": 139,
+      "targetIndex": 129,
+      "model": "gemini-3.8-flash-high",
+      "client": "1.18.30",
+      "cli": "1.2.7",
+      "platform": "darwin",
+      "arch": "arm64",
+      "node": "v22.22.3",
+      "expectRejection": false,
+      "frontendExit": 0,
+      "delivered": true,
+      "targetInvocations": 1,
+      "clientRequests": 2,
+      "returnedClientToolResult": true,
+      "negativeControls": [
+        "invalid-name",
+        "duplicate-name",
+        "malformed-schema"
+      ],
+      "clientMcpServersExited": true,
+      "joinedBackendCleanup": true,
+      "case": "installed-129-after"
+    },
+    {
+      "result": "PASS",
+      "catalogSize": 256,
+      "actualToolCount": 266,
+      "targetIndex": 256,
+      "model": "gemini-3.8-flash-high",
+      "client": "1.18.30",
+      "cli": "1.2.7",
+      "platform": "darwin",
+      "arch": "arm64",
+      "node": "v22.22.3",
+      "expectRejection": false,
+      "frontendExit": 0,
+      "delivered": true,
+      "targetInvocations": 1,
+      "clientRequests": 2,
+      "returnedClientToolResult": true,
+      "negativeControls": [
+        "invalid-name",
+        "duplicate-name",
+        "malformed-schema"
+      ],
+      "clientMcpServersExited": true,
+      "joinedBackendCleanup": true,
+      "case": "source-256-after"
+    }
+  ],
+  "localGates": {
+    "npmTest": {
+      "pass": 5154,
+      "fail": 0,
+      "skip": 4,
+      "stages": 17
+    },
+    "typecheck": "PASS",
+    "build": "PASS",
+    "originalCountTests": {
+      "pass": 0,
+      "fail": 2
+    }
+  },
+  "limits": [
+    "Catalogs are synthetic fixtures discovered and executed by actual OpenCode through two real stdio MCP servers; this does not attest to every third-party MCP implementation.",
+    "No Linux or Windows native-model proof is claimed.",
+    "The CLI remains pinned to supported 1.2.7; the owner global 1.2.16 installation was not changed.",
+    "No package publication is claimed."
+  ],
+  "retainedHarnessFailure": "Initial observer assumed the first request contained tools; OpenCode also issued title generation. Final harness uses an explicit title and inspects the actual tool-bearing request; the failed prototype is not accepted proof."
+}
