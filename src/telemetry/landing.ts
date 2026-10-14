@@ -13,7 +13,7 @@ import { profileFactsJs } from "./profileFacts"
 import { profileFindJs } from "./profileFind"
 import { reorderClientJs, reorderCss, reorderLiveRegionHtml } from "./profileOrder"
 import { DEFAULT_PROFILE_SORT, PROFILE_SORT_MODES } from "./profileSort"
-import { FADE_FROM, GENERAL_WINDOW_TYPES, SPENT_AT } from "./profileSpent"
+import { FADE_FROM, GENERAL_WINDOW_TYPES, SPENT_AT, isUnusableJs } from "./profileSpent"
 
 export const landingHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -134,6 +134,11 @@ export const landingHtml = `<!DOCTYPE html>
   .prof-pop-value { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; word-break: break-word; }
   .prof-pop-value.status-ok { color: var(--green); }
   .prof-pop-value.status-err { color: var(--red); }
+  .prof-pop-value.status-warn { color: var(--yellow); }
+  .prof-pop-value[tabindex]:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  .prof-pop-value .cached-tag { color: var(--muted); font-size: 10px; font-style: italic; white-space: nowrap; }
+  .prof-pop-value .fact-explanation { display: none; margin-top: 4px; color: var(--muted); font-family: inherit; line-height: 1.4; }
+  .prof-pop-value:focus > .fact-explanation { display: block; }
   /* A hidden overlay still counts toward the page's scroll width, and one
      hung off the icon at 256px or more reaches past a phone's right edge.
      On a narrow screen it spans the card's header row instead. */
@@ -249,7 +254,7 @@ function resetIn(ts){if(ts==null)return '';var d=ts-Date.now();if(d<=0)return 'r
 var GENERAL_WINDOW_TYPES=${JSON.stringify(GENERAL_WINDOW_TYPES)};
 var FADE_FROM=${FADE_FROM};
 var SPENT_AT=${SPENT_AT};
-function isUnusable(p){if(p.loggedIn===false)return true;return p.error==='no_token'}
+${isUnusableJs}
 function generalUtilization(windows){
   var worst=null;
   for(var i=0;i<(windows||[]).length;i++){
@@ -341,9 +346,12 @@ function infoIcon(entry,type){
   var rows='';
   for(var i=0;i<facts.length;i++){
     var f=facts[i];
-    var tone=f.tone==='ok'?' status-ok':f.tone==='err'?' status-err':'';
+    var tone=f.tone==='ok'?' status-ok':f.tone==='err'?' status-err':f.tone==='warn'?' status-warn':'';
+    var title=f.title?' title="'+esc(f.title)+'" tabindex="0" aria-label="'+esc(f.label+': '+f.value+'. '+f.title)+'"':'';
+    var cached=f.cached?' <span class="cached-tag">(cached)</span>':'';
+    var explanation=f.title?'<span class="fact-explanation" aria-hidden="true">'+esc(f.title)+'</span>':'';
     rows+='<span class="prof-pop-label">'+esc(f.label)+'</span>'
-      +'<span class="prof-pop-value'+tone+'">'+esc(f.value)+'</span>';
+      +'<span class="prof-pop-value'+tone+'"'+title+'>'+esc(f.value)+cached+explanation+'</span>';
   }
   return '<span class="prof-info">'
     +'<span class="prof-info-dot" tabindex="0" role="button" aria-label="Details for '+esc(entry.id)+'">i</span>'
@@ -354,10 +362,12 @@ function infoIcon(entry,type){
     +'</span></span>';
 }
 
-// An open overlay is the hovered or focused element, so this needs no state of
-// its own and cannot be left stuck by an event that never arrives.
+// Retain the active element across a switch to another application too:
+// activeElement survives that switch even when CSS :focus-within does not.
 function infoPopOpen(){
-  return !!document.querySelector('.prof-info:hover, .prof-info:focus-within');
+  var active=document.activeElement;
+  return !!document.querySelector('.prof-info:hover, .prof-info:focus-within')
+    || !!(active && active.closest('.prof-info'));
 }
 
 function profileSection(q,s,pl,h){
@@ -491,6 +501,7 @@ function strip(items){
 }
 
 async function refresh(){
+  if(infoPopOpen())return;
   try{
     const [health,stats,quota,profiles,routing]=await Promise.all([
       fetch('/health').then(r=>r.json()),
@@ -499,9 +510,10 @@ async function refresh(){
       fetch('/profiles/list').then(r=>r.json()).catch(function(){return null}),
       fetch('/settings/api/routing').then(r=>r.json()).catch(function(){return null})
     ]);
+    if(infoPopOpen())return;
     meridianReorder.adopt(routing);
     render(health,stats,quota,profiles);
-  }catch(e){document.getElementById('content').innerHTML='<div style="color:var(--red);padding:40px;text-align:center">Could not connect</div>'}
+  }catch(e){if(!infoPopOpen())document.getElementById('content').innerHTML='<div style="color:var(--red);padding:40px;text-align:center">Could not connect</div>'}
 }
 
 function tokens(v){if(v==null)return '—';if(v>=1e6)return (v/1e6).toFixed(1)+'M';if(v>=1e3)return (v/1e3).toFixed(1)+'k';return String(v)}

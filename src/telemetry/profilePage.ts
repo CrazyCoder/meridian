@@ -7,6 +7,7 @@ import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profile
 import { profileFactsJs } from "./profileFacts"
 import { profileFindJs } from "./profileFind"
 import { reorderClientJs, reorderCss, reorderLiveRegionHtml } from "./profileOrder"
+import { isUnusableJs } from "./profileSpent"
 import { WINDOW_LABELS } from "./profileUsage"
 
 export const profilePageHtml = `<!DOCTYPE html>
@@ -74,6 +75,11 @@ export const profilePageHtml = `<!DOCTYPE html>
   a.profile-name { color: inherit; text-decoration: none; }
   a.profile-name:hover { color: var(--accent); }
   .profile-card.active { border-color: var(--accent); }
+  /* The same mark / gives an account that cannot serve requests. Its red
+     border would hide the active one's accent, so the active card keeps an
+     accent ring outside the red instead. */
+  .profile-card.needs-login { border-color: var(--red); }
+  .profile-card.active.needs-login { box-shadow: 0 0 0 1px var(--accent); }
   /* The header row carries the reorder handle, the name, every badge the
      card can earn - active, the type, out of a limit - and the actions. On a
      phone they do not fit on one line, and a row that cannot wrap pushed the
@@ -106,6 +112,7 @@ export const profilePageHtml = `<!DOCTYPE html>
   }
   .badge-active { background: rgba(88,166,255,0.15); color: var(--accent); }
   .badge-type { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+  .badge-needs-login { background: rgba(248,81,73,0.12); color: var(--red); border: 1px solid rgba(248,81,73,0.35); }
   .badge-spent { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.35); }
   .spent-note { margin: 10px 0; padding: 10px 14px; border-radius: 8px; font-size: 12px; line-height: 1.5;
     background: rgba(248,81,73,0.08); border: 1px solid rgba(248,81,73,0.3); color: var(--text);
@@ -123,6 +130,10 @@ export const profilePageHtml = `<!DOCTYPE html>
   .detail-unknown { color: var(--muted); font-style: italic; }
   .status-ok { color: var(--green); }
   .status-err { color: var(--red); }
+  .detail-value.status-warn { color: var(--yellow); }
+  .detail-value[tabindex]:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  .detail-value .fact-explanation { display: none; margin-top: 4px; color: var(--muted); font-family: inherit; line-height: 1.4; }
+  .detail-value:focus > .fact-explanation { display: block; }
   .switch-btn {
     margin-top: 12px; padding: 6px 16px; font-size: 12px; font-weight: 500;
     background: var(--bg); color: var(--accent); border: 1px solid var(--accent);
@@ -410,6 +421,9 @@ function formatExtraUsage(eu) {
   };
 }
 
+// Shared with / (profileSpent.ts), so both pages flag the same accounts.
+${isUnusableJs}
+
 ${reorderClientJs}
 
 // Cache the last seen quota response so the /profiles/list refresh can
@@ -477,8 +491,15 @@ async function commitRename(from) {
   focusRenameInput();
 }
 
+function detailFactFocused() {
+  // CSS :focus stops matching when the browser loses window focus, while
+  // activeElement still identifies the keyboard position to preserve.
+  var active = document.activeElement;
+  return !!(active && active.matches('.detail-value[tabindex]'));
+}
+
 async function refresh() {
-  if (editingProfile) return;
+  if (editingProfile || detailFactFocused()) return;
   try {
     var [profilesRes, quotaRes, routingRes] = await Promise.all([
       fetch('/profiles/list'),
@@ -495,8 +516,10 @@ async function refresh() {
       try { meridianReorder.adopt(await routingRes.json()); } catch (_) { /* keep the last good order */ }
     }
     lastProfiles = profiles;
+    if (detailFactFocused()) return;
     render(profiles, lastQuota);
   } catch {
+    if (detailFactFocused()) return;
     document.getElementById('content').innerHTML = '<div class="empty-state"><h2>Could not load profiles</h2><p>Is Meridian running?</p></div>';
   }
 }
@@ -505,11 +528,13 @@ function esc(s) { var d = document.createElement('div'); d.textContent = s; retu
 
 function factRows(facts) {
   return facts.map(function (f) {
-    var tone = f.tone === 'ok' ? ' status-ok' : f.tone === 'err' ? ' status-err' : '';
-    var title = f.title ? ' title="' + esc(f.title) + '"' : '';
+    var tone = f.tone === 'ok' ? ' status-ok' : f.tone === 'err' ? ' status-err' : f.tone === 'warn' ? ' status-warn' : '';
+    var title = f.title ? ' title="' + esc(f.title).replace(/"/g, '&quot;')
+      + '" tabindex="0" aria-label="' + esc(f.label + ': ' + f.value + '. ' + f.title).replace(/"/g, '&quot;') + '"' : '';
     var cached = f.cached ? ' <span class="cached-tag">(cached)</span>' : '';
+    var explanation = f.title ? '<span class="fact-explanation" aria-hidden="true">' + esc(f.title) + '</span>' : '';
     return '<span class="detail-label">' + esc(f.label) + '</span>'
-      + '<span class="detail-value' + tone + '"' + title + '>' + esc(f.value) + cached + '</span>';
+      + '<span class="detail-value' + tone + '"' + title + '>' + esc(f.value) + cached + explanation + '</span>';
   }).join('');
 }
 
@@ -709,7 +734,8 @@ function render(data, quotaData) {
   for (let idx = 0; idx < profiles.length; idx++) {
     const p = profiles[idx];
     const isActive = p.id === active;
-    html += '<div class="profile-card' + (isActive ? ' active' : '') + '" id="' + esc(profileAnchorElementId(p.id)) + '" data-id="' + esc(p.id) + '" data-index="' + idx + '">';
+    const needsLogin = isUnusable({ loggedIn: p.loggedIn, error: (quotaById[p.id] || {}).error });
+    html += '<div class="profile-card' + (isActive ? ' active' : '') + (needsLogin ? ' needs-login' : '') + '" id="' + esc(profileAnchorElementId(p.id)) + '" data-id="' + esc(p.id) + '" data-index="' + idx + '">';
     html += '<div class="profile-card-header">';
     if (editingProfile === p.id) {
       html += "<input class=\\"rename-input\\" id=\\"rename-input\\" value=\\"" + esc(p.id) + "\\" spellcheck=\\"false\\" autocomplete=\\"off\\""
@@ -725,6 +751,7 @@ function render(data, quotaData) {
       html += "<a class=\\"profile-name\\" href=\\"#" + esc(encodeURIComponent(p.id)) + "\\" title=\\"Link to this profile\\">" + esc(p.id) + "</a>";
       if (isActive) html += "<span class=\\"profile-badge badge-active\\">active</span>";
       html += "<span class=\\"profile-badge badge-type\\">" + esc(p.type || "claude-max") + "</span>";
+      if (needsLogin) html += "<span class=\\"profile-badge badge-needs-login\\" title=\\"Cannot serve requests. Log in again below.\\">needs login</span>";
       html += renderSpentBadge((quotaById[p.id] || {}).spent);
       html += "<span class=\\"profile-card-actions\\">";
       html += "<button class=\\"icon-btn\\" title=\\"Rename profile\\" onclick=\\"startRename(&quot;"+esc(p.id)+"&quot;)\\">" + ICON_PENCIL + "</button>";

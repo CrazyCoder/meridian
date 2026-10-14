@@ -7,8 +7,9 @@ Meridian bridges supported coding clients to Claude through the Agent SDK and to
 Continue authorized implementation through relevant verification, corrections, and a PR. Preserve the user's checkout; use an isolated feature branch from current `origin/main`. Do not push directly to main. An instruction cleanup or typo fix does not start the contributor backlog, run live model calls, or publish a release.
 
 - Use `ARCHITECTURE.md` for module and dependency changes, `DESIGN.md` for user-facing UI/brand changes, and `E2E.md` for affected-client live verification.
-- Use [meridian-upstream-review](.agents/skills/meridian-upstream-review/SKILL.md) for contributor review/incorporation or authorized release work. Read `docs/maintenance/REVIEW_HANDOFF.md` only when continuing that work; refresh live GitHub status before relying on a dated checkpoint.
+- Use [meridian-upstream-review](.agents/skills/meridian-upstream-review/SKILL.md) for contributor review or authorized release work. Read `docs/maintenance/REVIEW_HANDOFF.md` only when continuing that work; refresh live GitHub status before relying on a dated checkpoint.
 - Use [meridian-backlog](.agents/skills/meridian-backlog/SKILL.md) for an authorized PR/issue queue across Meridian and the owner's scrub repositories. Use [meridian-evidence](.agents/skills/meridian-evidence/SKILL.md) for adversarial review and proof of a fix, merge, or release.
+- A contributor's change lands by merging **their own PR**, with them as commit `Author`. Never carry their commits into a maintainer PR, and never close their PR silently or for work that shipped. See [Contributor pull requests](.agents/references/contributing.md#contributor-pull-requests).
 - For commits/PRs/merges, use [contribution workflow](.agents/references/contributing.md). Normal PRs squash with `--match-head-commit`; Release Please PRs merge with `--merge`. Required final-head CI, including `test`, remains a merge gate. Never bypass checks routinely.
 - External comments/messages need explicit authorization. Release authorization is separate from completing a change. Never manually run `npm version`, push tags, or `npm publish`; use the release reference in the review skill.
 - Adversarially review every proposed PR and release before landing it. Record the concrete product-fit, regression, and evidence findings in its PR or review handoff; fix material findings before merge.
@@ -20,6 +21,8 @@ Keep `server.ts` focused on orchestration. `session/lineage.ts` is pure: no I/O 
 Keep agent-specific logic in the adapter boundary. When changing existing special cases, consult the Agent-Specific Logic section of `ARCHITECTURE.md`, retain useful `NOTE:` markers, and avoid spreading them into unrelated modules. Do not use `as any`, `@ts-ignore`, `@ts-expect-error`, or empty catch blocks.
 
 Public plugin interfaces require owner approval and an issue before modification; an existing explicit request covering the change supplies approval. Consult [API contract](.agents/references/api-contract.md) when touching exported proxy configuration/lifecycle, session/profile headers, health, messages or profile routes. Internal fixes that preserve these interfaces do not require new approval.
+
+Changes to `flake.nix`, anything under `nix/`, or the dependencies in `package.json` and `bun.lock` follow [Nix packaging](.agents/references/nix-packaging.md). A dependency change also updates the hash in `nix/pkgs/meridian/node_modules.nix`.
 
 UI uses `DESIGN.md`, color tokens from `themeCss` in `src/telemetry/profileBar.ts`, and the shared `profileBarCss/Html/Js` header. Pages do not set their own body background. Blue `--accent` means interactive/active; violet `--accent2` means code/meta/secondary brand.
 

@@ -147,6 +147,31 @@ meridian profile add ci --oauth-token sk-ant-oat01-...
 
 OAuth-token profiles store the token in `profiles.json` and feed it to the SDK via `CLAUDE_CODE_OAUTH_TOKEN` — no Keychain entry, no browser handshake. To prevent the SDK's 401-recovery from silently falling back to the host's `~/.claude` credentials, OAuth-token profiles also pin `CLAUDE_CONFIG_DIR` to an isolated per-profile directory under `~/.config/meridian/profiles/<name>/`. That directory holds only SDK state (sessions, settings) — never `.credentials.json`, since the token is delivered through the env.
 
+### Current login expiry
+
+Meridian preserves a valid refresh deadline when its OAuth token exchange reports
+one. The Profiles page and home details show this account's current stored
+refresh deadline and access-token expiry, with the exact recorded time on hover
+or keyboard focus. Access expiry may be estimated when the provider omits it.
+Authentication is checked separately: a deadline does not prove logout,
+revocation, a fixed login lifetime or how long an account will serve requests.
+
+`GET /profiles/list` adds four fields, read from one fresh snapshot of each
+stored-Claude profile's own credential:
+
+| Field | Meaning |
+| --- | --- |
+| `refreshTokenExpiresAt` | Current stored refresh deadline in epoch milliseconds, or `null` when unavailable |
+| `daysUntilRenewal` | `Math.ceil((refreshTokenExpiresAt - now) / 86400000)`, or `null`; zero includes a deadline less than one day past |
+| `renewalRequiredSoon` | Rounded days are at or below `MERIDIAN_AUTH_RENEWAL_WARN_DAYS` (default 3), matching `/health`; false with a null deadline means unknown/not applicable |
+| `accessTokenExpiresAt` | Current stored access-token expiry in epoch milliseconds, or `null`; advisory and possibly estimated |
+
+API-key and supplied setup-token profiles report null timestamps/day count and
+false without consulting the host's stored login. Failed credential reads also
+return unavailable expiry facts and preserve the existing authentication
+provenance. A changed or missing current deadline replaces the displayed value;
+Meridian does not infer a new login or retain a separate login-history file.
+
 ### Switching profiles
 
 ```bash

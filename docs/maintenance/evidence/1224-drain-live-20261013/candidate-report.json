@@ -1,0 +1,159 @@
+{
+    "result": "PASS",
+    "model": "claude-opus-5-5",
+    "expectBaseline": false,
+    "platform": "darwin/arm64",
+    "observed": {
+        "drainStart": {
+            "keyless": 401,
+            "keyed": 200,
+            "body": {
+                "started": true,
+                "drain": {
+                    "active": true,
+                    "startedAt": "2026-10-14T02:45:00.916Z",
+                    "endsAt": "2026-10-14T02:55:00.916Z",
+                    "holdMs": 240000,
+                    "held": 0,
+                    "admittedAtCap": 0,
+                    "lastEnded": null
+                }
+            }
+        },
+        "whileHeld": {
+            "scope": "client-http",
+            "at": "2026-10-14T02:45:00.920Z",
+            "total": 1,
+            "oldestStartedAt": "2026-10-14T02:45:00.266Z",
+            "upstreams": {
+                "claude": {
+                    "streams": 1,
+                    "requests": 0,
+                    "queued": 0
+                }
+            },
+            "draining": true,
+            "drain": {
+                "active": true,
+                "startedAt": "2026-10-14T02:45:00.916Z",
+                "endsAt": "2026-10-14T02:55:00.916Z",
+                "holdMs": 240000,
+                "held": 1,
+                "admittedAtCap": 0,
+                "lastEnded": null
+            }
+        },
+        "first": {
+            "status": 200,
+            "stop": "end_turn",
+            "text": true,
+            "errorFrame": false,
+            "finishedAt": 1791945908100,
+            "ms": 7859
+        },
+        "idleWindow": {
+            "scope": "client-http",
+            "at": "2026-10-14T02:45:08.102Z",
+            "total": 0,
+            "oldestStartedAt": null,
+            "upstreams": {
+                "claude": {
+                    "streams": 0,
+                    "requests": 0,
+                    "queued": 0
+                }
+            },
+            "draining": true,
+            "drain": {
+                "active": true,
+                "startedAt": "2026-10-14T02:45:00.916Z",
+                "endsAt": "2026-10-14T02:55:00.916Z",
+                "holdMs": 240000,
+                "held": 1,
+                "admittedAtCap": 0,
+                "lastEnded": null
+            }
+        },
+        "second": {
+            "status": 200,
+            "stop": "end_turn",
+            "text": true,
+            "errorFrame": false,
+            "finishedAt": 1791945910360,
+            "ms": 9443
+        },
+        "after": {
+            "scope": "client-http",
+            "at": "2026-10-14T02:45:10.361Z",
+            "total": 0,
+            "oldestStartedAt": null,
+            "upstreams": {
+                "claude": {
+                    "streams": 0,
+                    "requests": 0,
+                    "queued": 0
+                }
+            },
+            "draining": false,
+            "drain": {
+                "active": false,
+                "startedAt": null,
+                "endsAt": null,
+                "holdMs": null,
+                "held": 0,
+                "admittedAtCap": 0,
+                "lastEnded": {
+                    "at": "2026-10-14T02:45:08.105Z",
+                    "reason": "cancelled"
+                }
+            }
+        }
+    },
+    "checks": [
+        {
+            "ok": true,
+            "label": "a keyless POST /drain is refused",
+            "detail": "status=401"
+        },
+        {
+            "ok": true,
+            "label": "the keyed POST /drain starts a drain",
+            "detail": "{\"started\":true,\"drain\":{\"active\":true,\"startedAt\":\"2026-10-14T02:45:00.916Z\",\"endsAt\":\"2026-10-14T02:55:00.916Z\",\"holdMs\":240000,\"held\":0,\"admittedAtCap\":0,\"lastEnded\":null}}"
+        },
+        {
+            "ok": true,
+            "label": "the second request is held outside total while the first runs",
+            "detail": "total=1 held=1"
+        },
+        {
+            "ok": true,
+            "label": "no SDK query has started for the held request",
+            "detail": "queries=1"
+        },
+        {
+            "ok": true,
+            "label": "the first stream finishes untouched",
+            "detail": "{\"status\":200,\"stop\":\"end_turn\",\"text\":true,\"errorFrame\":false,\"finishedAt\":1791945908100,\"ms\":7859}"
+        },
+        {
+            "ok": true,
+            "label": "total reaches 0 with the second request still held",
+            "detail": "total=0 held=1 queries=1"
+        },
+        {
+            "ok": true,
+            "label": "only the keyed DELETE /drain ends the drain",
+            "detail": "keyless=401 keyed=200 {\"ended\":true,\"drain\":{\"active\":false,\"startedAt\":null,\"endsAt\":null,\"holdMs\":null,\"held\":0,\"admittedAtCap\":0,\"lastEnded\":{\"at\":\"2026-10-14T02:45:08.105Z\",\"reason\":\"cancelled\"}}}"
+        },
+        {
+            "ok": true,
+            "label": "the held request runs after release and completes",
+            "detail": "{\"status\":200,\"stop\":\"end_turn\",\"text\":true,\"errorFrame\":false,\"finishedAt\":1791945910360,\"ms\":9443,\"queries\":2}"
+        },
+        {
+            "ok": true,
+            "label": "nothing is left held or in flight",
+            "detail": "{\"active\":false,\"startedAt\":null,\"endsAt\":null,\"holdMs\":null,\"held\":0,\"admittedAtCap\":0,\"lastEnded\":{\"at\":\"2026-10-14T02:45:08.105Z\",\"reason\":\"cancelled\"}}"
+        }
+    ]
+}

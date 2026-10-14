@@ -1,0 +1,8 @@
+=== consecutive auxiliary replays (model=claude-sonnet-5-5, darwin/arm64, expectBaseline=false) ===
+  rounds=4 status=200 auxiliary=true cache_write=10810 cache_read=757 input=2 "Reading src/module3.ts"
+  rounds=5 status=200 auxiliary=true cache_write=4788 cache_read=8882 input=2 "Reading src/module4.ts"
+  rounds=6 status=200 auxiliary=true cache_write=4788 cache_read=10961 input=2 "Reading src/module5.ts"
+  PASS  every caption answered — [200,200,200]
+  PASS  every caption was handled as an auxiliary request
+  PASS  the first caption wrote its history to the cache — 10810
+  PASS  later captions read the shared history and write well under half of the first — [{"write":4788,"read":8882},{"write":4788,"read":10961}]

@@ -1,0 +1,24 @@
+=== Claude Code Agent-tool subagent session isolation ===
+  client: 2.1.296 (Claude Code)   adapter: claude-code   model: sonnet
+  turn 1 (two parallel subagents) (8 proxy requests) exit=0: DONE
+    main adapter=claude-code model=sonnet stream=true tools=12 lineage=new session=new diverged=not-found sessionWait=4ms msgCount=2
+    agent:ac062c2c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=not-found sessionWait=1ms msgCount=2
+    agent:a2d82435 adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=not-found sessionWait=1ms msgCount=2
+    agent:ac062c2c adapter=claude-code model=sonnet stream=true tools=10 lineage=continuation session=93d8e369 sessionWait=1ms msgCount=5
+    agent:a2d82435 adapter=claude-code model=sonnet stream=true tools=10 lineage=continuation session=253ce566 sessionWait=2ms msgCount=5
+    agent:ac062c2c adapter=claude-code model=sonnet stream=true tools=10 lineage=continuation session=dcfa9e05 sessionWait=2ms msgCount=8
+    agent:a2d82435 adapter=claude-code model=sonnet stream=true tools=10 lineage=continuation session=17a2b850 sessionWait=1ms msgCount=8
+    main adapter=claude-code model=sonnet stream=true tools=12 lineage=continuation session=bf03d59f sessionWait=1ms msgCount=5
+  turn 2 (--resume) (1 proxy requests) exit=0: AGAIN
+    main adapter=claude-code model=sonnet stream=true tools=12 lineage=continuation session=df6c5c62 sessionWait=2ms msgCount=8
+  PASS  every client invocation succeeded — 0,0
+  PASS  every turn answered — "DONE" "AGAIN"
+  PASS  every proxy request line maps to a relayed request — 0 unmapped
+  PASS  at least two subagents ran multi-turn conversations — ac062c2c×3 a2d82435×3
+  PASS  every subagent turn after its first resumes its own session — 4 of 4 resumed
+  PASS  every main request after the first resumes the conversation — 2 of 2 resumed
+  PASS  no request collides with another flow — across 9 requests
+  PASS  no main or subagent request waited over 1000ms on a session lease — max 4ms
+  PASS  no invocation was refused with a 4xx — all accepted
+=== verdict ===
+  PASS: Agent-tool subagents no longer break Claude Code session resume

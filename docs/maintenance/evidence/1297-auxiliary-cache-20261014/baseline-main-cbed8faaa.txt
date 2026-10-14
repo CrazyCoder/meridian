@@ -1,0 +1,8 @@
+=== consecutive auxiliary replays (model=claude-sonnet-5-5, darwin/arm64, expectBaseline=true) ===
+  rounds=4 status=200 auxiliary=true cache_write=11572 cache_read=0 input=2 "Reading module3.ts exports"
+  rounds=5 status=200 auxiliary=true cache_write=11383 cache_read=2292 input=2 "Summarizing module4.ts exports"
+  rounds=6 status=200 auxiliary=true cache_write=13464 cache_read=2292 input=2 "Summarizing module5.ts exports"
+  PASS  every caption answered — [200,200,200]
+  PASS  every caption was handled as an auxiliary request
+  PASS  the first caption wrote its history to the cache — 11572
+  PASS  without the fix, later captions rewrite their history (unfixed build) — [{"write":11383,"read":2292},{"write":13464,"read":2292}]

@@ -1,0 +1,121 @@
+{
+    "result": "PASS",
+    "model": "claude-opus-5-5",
+    "platform": "darwin/arm64",
+    "observed": {
+        "reached": {
+            "request": 200,
+            "upstream": {
+                "state": "ok",
+                "since": "2026-10-14T05:05:02.003Z",
+                "failingSince": null,
+                "consecutiveFailures": 0,
+                "lastReachedAt": "2026-10-14T05:05:04.093Z",
+                "lastFailureAt": null,
+                "lastErrorKind": null,
+                "holdUntil": null,
+                "override": null
+            },
+            "readyz": {
+                "status": 503,
+                "upstream": "ok",
+                "text": "[-]profiles failed: no profiles configured\n[+]claude-executable ok\n[+]upstream-claude ok\nreadyz check failed"
+            }
+        },
+        "down": {
+            "requests": [
+                500,
+                500
+            ],
+            "upstream": {
+                "state": "unreachable",
+                "since": "2026-10-14T05:05:06.100Z",
+                "failingSince": "2026-10-14T05:05:04.736Z",
+                "consecutiveFailures": 2,
+                "lastReachedAt": "2026-10-14T05:05:04.093Z",
+                "lastFailureAt": "2026-10-14T05:05:06.100Z",
+                "lastErrorKind": "refused",
+                "holdUntil": "2026-10-14T05:05:14.100Z",
+                "override": null
+            },
+            "readyz": {
+                "status": 503,
+                "upstream": "failed",
+                "text": "[-]profiles failed: no profiles configured\n[+]claude-executable ok\n[-]upstream-claude failed: This instance's configured Claude egress failed since 2026-10-14T05:05:04.736Z (last error: refused, 2 connection failures, last answered 2026-10-14T05:05:04.093Z)\nreadyz check failed"
+            },
+            "livez": 200
+        },
+        "recovered": {
+            "probing": {
+                "state": "probing",
+                "since": "2026-10-14T05:05:14.100Z",
+                "failingSince": "2026-10-14T05:05:04.736Z",
+                "consecutiveFailures": 2,
+                "lastReachedAt": "2026-10-14T05:05:04.093Z",
+                "lastFailureAt": "2026-10-14T05:05:06.100Z",
+                "lastErrorKind": "refused",
+                "holdUntil": null,
+                "override": null
+            },
+            "probingReady": {
+                "status": 503,
+                "upstream": "ok",
+                "text": "[-]profiles failed: no profiles configured\n[+]claude-executable ok\n[+]upstream-claude ok\nreadyz check failed"
+            },
+            "request": 200,
+            "upstream": {
+                "state": "ok",
+                "since": "2026-10-14T05:05:16.580Z",
+                "failingSince": null,
+                "consecutiveFailures": 0,
+                "lastReachedAt": "2026-10-14T05:05:16.580Z",
+                "lastFailureAt": "2026-10-14T05:05:06.100Z",
+                "lastErrorKind": "refused",
+                "holdUntil": null,
+                "override": null
+            },
+            "readyz": {
+                "status": 503,
+                "upstream": "ok",
+                "text": "[-]profiles failed: no profiles configured\n[+]claude-executable ok\n[+]upstream-claude ok\nreadyz check failed"
+            }
+        }
+    },
+    "checks": [
+        {
+            "ok": true,
+            "label": "a real answer is recorded and readiness passes",
+            "detail": "{\"request\":200,\"upstream\":{\"state\":\"ok\",\"since\":\"2026-10-14T05:05:02.003Z\",\"failingSince\":null,\"consecutiveFailures\":0,\"lastReachedAt\":\"2026-10-14T05:05:04.093Z\",\"lastFailureAt\":null,\"lastErrorKind\":null,\"holdUntil\":null,\"override\":null},\"readyz\":{\"status\":503,\"upstream\":\"ok\",\"text\":\"[-]profiles failed: no profiles configured\\n[+]claude-executable ok\\n[+]upstream-claude ok\\nreadyz check failed\"}}"
+        },
+        {
+            "ok": true,
+            "label": "requests fail while the egress is cut",
+            "detail": "[500,500]"
+        },
+        {
+            "ok": true,
+            "label": "/health reports the egress unreachable with the connection failure kind",
+            "detail": "{\"state\":\"unreachable\",\"since\":\"2026-10-14T05:05:06.100Z\",\"failingSince\":\"2026-10-14T05:05:04.736Z\",\"consecutiveFailures\":2,\"lastReachedAt\":\"2026-10-14T05:05:04.093Z\",\"lastFailureAt\":\"2026-10-14T05:05:06.100Z\",\"lastErrorKind\":\"refused\",\"holdUntil\":\"2026-10-14T05:05:14.100Z\",\"override\":null}"
+        },
+        {
+            "ok": true,
+            "label": "/readyz fails on upstream-claude while /livez stays up",
+            "detail": "{\"readyz\":{\"status\":503,\"upstream\":\"failed\",\"text\":\"[-]profiles failed: no profiles configured\\n[+]claude-executable ok\\n[-]upstream-claude failed: This instance's configured Claude egress failed since 2026-10-14T05:05:04.736Z (last error: refused, 2 connection failures, last answered 2026-10-14T05:05:04.093Z)\\nreadyz check failed\"},\"livez\":200}"
+        },
+        {
+            "ok": true,
+            "label": "it took no more failures than the configured minimum plus one",
+            "detail": "2"
+        },
+        {
+            "ok": true,
+            "label": "after the hold readiness admits traffic to probe",
+            "detail": "{\"probing\":{\"state\":\"probing\",\"since\":\"2026-10-14T05:05:14.100Z\",\"failingSince\":\"2026-10-14T05:05:04.736Z\",\"consecutiveFailures\":2,\"lastReachedAt\":\"2026-10-14T05:05:04.093Z\",\"lastFailureAt\":\"2026-10-14T05:05:06.100Z\",\"lastErrorKind\":\"refused\",\"holdUntil\":null,\"override\":null},\"probingReady\":{\"status\":503,\"upstream\":\"ok\",\"text\":\"[-]profiles failed: no profiles configured\\n[+]claude-executable ok\\n[+]upstream-claude ok\\nreadyz check failed\"}}"
+        },
+        {
+            "ok": true,
+            "label": "one real answer clears the outage",
+            "detail": "{\"probing\":{\"state\":\"probing\",\"since\":\"2026-10-14T05:05:14.100Z\",\"failingSince\":\"2026-10-14T05:05:04.736Z\",\"consecutiveFailures\":2,\"lastReachedAt\":\"2026-10-14T05:05:04.093Z\",\"lastFailureAt\":\"2026-10-14T05:05:06.100Z\",\"lastErrorKind\":\"refused\",\"holdUntil\":null,\"override\":null},\"probingReady\":{\"status\":503,\"upstream\":\"ok\",\"text\":\"[-]profiles failed: no profiles configured\\n[+]claude-executable ok\\n[+]upstream-claude ok\\nreadyz check failed\"},\"request\":200,\"upstream\":{\"state\":\"ok\",\"since\":\"2026-10-14T05:05:16.580Z\",\"failingSince\":null,\"consecutiveFailures\":0,\"lastReachedAt\":\"2026-10-14T05:05:16.580Z\",\"lastFailureAt\":\"2026-10-14T05:05:06.100Z\",\"lastErrorKind\":\"refused\",\"holdUntil\":null,\"override\":null},\"readyz\":{\"status\":503,\"upstream\":\"ok\",\"text\":\"[-]profiles failed: no profiles configured\\n[+]claude-executable ok\\n[+]upstream-claude ok\\nreadyz check failed\"}}"
+        }
+    ]
+}

@@ -97,8 +97,19 @@ Usage bars and percentage readouts color by value: `< 60%` green,
 `≥ 60%` yellow, `≥ 85%` red. Health dot: healthy green (with soft glow),
 degraded yellow, offline red. With the opt-in `showHostname` setting the pill
 names the machine after its status (`Operational · nwkr-desktop`), first DNS
-label only with the full name on hover; at phone width the name stays beside
-the dot, ellipsized, without the separator.
+label only with the full name on hover; at phone width the name stays,
+ellipsized, and keeps its separator only where the status text stays too.
+When native Claude traffic from this instance reports definite connection failures,
+the health pill becomes a red tinted pill ("Claude connection failed") and a
+yellow one ("Rechecking Claude connection") while traffic is let back in.
+Details identify this instance's configured Claude egress and are available
+on hover across the trigger, gap and panel or native-button activation;
+Escape or blur dismisses them. The button's accessible name always includes
+the current status and any displayed opt-in hostname, including at phone width.
+Both keep their text at phone width, where the plain status shows only its dot.
+Draining and offline status retain precedence; combined instances name Claude
+explicitly and do not imply Antigravity is unavailable. Existing hostname and
+provenance composition remains shared across pages.
 
 ## 3. The backsplash
 

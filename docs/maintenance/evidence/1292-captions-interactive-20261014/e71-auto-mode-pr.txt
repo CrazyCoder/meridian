@@ -1,0 +1,24 @@
+  turn 1 (3 proxy requests, request-class: none,none,none) exit=0: ONE
+    adapter=claude-code model=sonnet stream=true tools=12 lineage=new session=new diverged=not-found sessionWait=5ms msgCount=2
+    adapter=claude-code model=sonnet stream=false tools=0 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=1
+    adapter=claude-code model=sonnet stream=true tools=12 lineage=continuation session=6c54a83c sessionWait=2ms msgCount=5
+  turn 2 (--resume) (3 proxy requests, request-class: none,none,none) exit=0: TWO
+    adapter=claude-code model=sonnet stream=true tools=12 lineage=continuation session=1977d91a sessionWait=1ms msgCount=8
+    adapter=claude-code model=sonnet stream=false tools=0 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=1
+    adapter=claude-code model=sonnet stream=true tools=12 lineage=continuation session=53537806 sessionWait=1ms msgCount=11
+  turn 3 (--resume) (1 proxy requests, request-class: none) exit=0: THREE
+    adapter=claude-code model=sonnet stream=true tools=12 lineage=continuation session=95b79fb3 sessionWait=2ms msgCount=14
+  turn 4 (--resume, request-class header) (3 proxy requests, request-class: main,auxiliary,main) exit=0: FOUR
+    adapter=claude-code model=sonnet stream=true tools=12 lineage=continuation session=a5c53260 sessionWait=2ms msgCount=17
+    adapter=claude-code model=sonnet stream=false tools=0 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=1
+    adapter=claude-code model=sonnet stream=true tools=12 lineage=continuation session=afffe30b sessionWait=1ms msgCount=20
+  PASS  every client invocation succeeded — 0,0,0,0 stderr=We're changing auto mode to no longer charge for classifier requests in Claude Code. However, this session isn't eligible because your requests go through 127.0
+  PASS  every turn answered — "ONE" "TWO" "THREE" "FOUR"
+  PASS  the auto-mode classifier ran and was isolated as auxiliary — 3 auxiliary request(s) of 10
+  PASS  turns 1-3 send no request-class header (shape path) — none,none,none | none,none,none | none
+  PASS  turn 4 sends a request-class header on every request — main,auxiliary,main
+  PASS  the request-class header path isolates exactly the requests labelled auxiliary — 1 labelled auxiliary, 1 isolated in turn 4
+  PASS  every main request after the first resumes the conversation — 6 of 6 resumed
+  PASS  no request collides with the conversation — across 10 requests
+  PASS  no invocation was refused with a 4xx — all accepted
+  PASS: auto mode no longer breaks Claude Code session resume

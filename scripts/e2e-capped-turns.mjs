@@ -16,7 +16,11 @@ const headerless = process.argv.includes("--headerless")
 // the bare name (and once with the registered name, which the hook drops as
 // the hidden digest) until the real CLI reports max_turns (4).
 const deferred = process.argv.includes("--deferred")
+// #1364: the model names a tool the client never declared. The CLI refuses it
+// the same way; the request is OpenCode-shaped, where the failure was reported.
+const undeclared = process.argv.find(arg => arg.startsWith("--undeclared="))?.slice(13)
 if (deferred) assert(mode === "client-refusal", "The deferred budget is only tested with CLI refusal recovery")
+if (undeclared !== undefined) assert(undeclared && mode === "client-refusal" && !headerless, "An undeclared name is only tested with keyed CLI refusal recovery")
 if (headerless) assert(mode === "client-refusal", "Headerless Pi is only tested with CLI refusal recovery")
 assert(["partial", "empty", "thinking", "unhandled", "retry", "retry-resume", "pinned", "client-refusal"].includes(mode))
 if (mode === "client-refusal") assert(stream, "CLI refusal recovery is streaming-only")
@@ -41,6 +45,7 @@ const results = []
 const hooks = []
 const rejections = []
 const tool = { name: "read_fixture", description: "Read synthetic data without side effects", input_schema: { type: "object", properties: {} } }
+const emittedName = undeclared ?? tool.name
 const deferredTool = { name: "aux_fixture", description: "Unused deferred fixture tool", input_schema: { type: "object", properties: {} }, defer_loading: true }
 const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
   try {
@@ -61,7 +66,8 @@ const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request
     if (apiPhase === "followup") {
       const history = JSON.stringify(body.messages)
       assert(history.includes(receipt), "The fresh CLI must receive the client's real result")
-      if (mode === "client-refusal") {
+      if (undeclared) assert(history.includes(undeclared), "Fresh replay lost the undeclared tool name")
+      else if (mode === "client-refusal") {
         const registeredName = body.tools.find(candidate => candidate.name.endsWith(tool.name))?.name
         assert(history.includes(registeredName), "Fresh replay did not use the registered MCP tool name")
       }
@@ -71,8 +77,8 @@ const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request
     const text = apiPhase === "seed" ? "The fixture is ready." : apiPhase === "followup" ? receipt : mode === "empty" ? "" : "A partial answer"
     const registeredName = body.tools.find(candidate => candidate.name.endsWith(tool.name))?.name
     const blocks = mode === "client-refusal" && capFault
-      ? [apiCalls === 1 ? { type: "tool_use", id: toolId, name: tool.name, input: {} }
-        : { type: "tool_use", id: `${toolId}_retry${apiCalls}`, name: apiCalls === 2 ? registeredName : tool.name, input: {} }]
+      ? [apiCalls === 1 ? { type: "tool_use", id: toolId, name: emittedName, input: {} }
+        : { type: "tool_use", id: `${toolId}_retry${apiCalls}`, name: apiCalls === 2 ? registeredName : emittedName, input: {} }]
       : handoff ? [{ type: "tool_use", id: toolId, name: body.tools.find(candidate => candidate.name.endsWith(tool.name)).name, input: {} }]
       : [mode === "thinking" ? { type: "thinking", thinking: "internal fixture reasoning", signature: "fixture-signature" } : { type: "text", text },
         ...(capFault ? [{ type: "tool_use", id: "toolu_missing_fixture", name: "__cap_fixture_missing__", input: {} }] : [])]
@@ -151,7 +157,7 @@ const address = proxy.server.address()
 assert(address && typeof address === "object")
 async function request(messages, includeTools = true) {
   const headers = { "content-type": "application/json" }
-  if (mode === "client-refusal") {
+  if (mode === "client-refusal" && !undeclared) {
     headers["x-meridian-agent"] = "pi"
     headers["user-agent"] = "pi/0.85.0"
     if (!headerless) headers["x-session-affinity"] = "cap-cli-refusal"
@@ -236,15 +242,17 @@ try {
     success(response, "tool_use")
     assert.equal(response.content.length, 1)
     assert.equal(response.content[0].id, toolId)
-    assert.equal(response.content[0].name, tool.name)
+    assert.equal(response.content[0].name, emittedName)
     if (!headerless) assert.equal(capQueries[0].resume, source)
     assert(!hooks.some(hook => hook.phase === "cap" && hook.id === toolId), "CLI executed a client tool instead of rejecting the bare name")
     assert(rejections.some(result => result.phase === "cap" && result.attempt === 1 && result.id === toolId &&
-      JSON.stringify(result.content).includes("No such tool available: " + tool.name)),
-    "Real CLI did not reject the bare declared tool")
+      JSON.stringify(result.content).includes("No such tool available: " + emittedName)),
+    "Real CLI did not reject the unregistered tool name")
     phase = "followup"
+    // Pi omits `tools` on the result turn; OpenCode resends them and answers
+    // an unknown name with its own error result.
     const followup = await request([...messages, { role: "assistant", content: response.content },
-      { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: receipt }] }], false)
+      { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: receipt, ...(undeclared ? { is_error: true } : {}) }] }], Boolean(undeclared))
     success(followup, "end_turn")
     assert.equal(followup.content.filter(block => block.type === "text").map(block => block.text).join(""), receipt)
     assert.equal(queries.at(-1).resume, undefined, "Rejected SDK checkpoint was reused")
@@ -257,7 +265,7 @@ try {
     else assert.equal(response.status, 500, response.raw)
   }
   assert.deepEqual(upstreamErrors, [])
-  console.log(JSON.stringify({ result: "PASS", mode, stream, deferred, root, withheld, queries, results,
+  console.log(JSON.stringify({ result: "PASS", mode, stream, deferred, undeclared, root, withheld, queries, results,
     rejections: rejections.map(({ phase, attempt, id }) => ({ phase, attempt, id })), upstreamCalls }))
 } finally {
   await proxy.close()

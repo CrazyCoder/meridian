@@ -19,12 +19,28 @@ External plugins depend on these interfaces. **Changes require project owner app
 | `/health` optional `build.latest` / `build.updateAvailable`, authenticated `GET` / `PUT /settings/api/updates` | `server.ts`, `updateCheck.ts` | Explicit opt-in registry checks and shared settings UI (#1226) |
 | `/health` optional `hostname`, authenticated `GET` / `PUT /settings/api/header` | `headerSettings.ts`, `server.ts`, `backends/antigravity.ts` | Default-off `showHostname` setting naming the machine in the shared header; owner-approved in #1259 |
 | Authenticated `GET` / `PUT /settings/api/layout` | `server.ts`, `telemetry/pageLayout.ts` | Contained/wide page layout setting and shared settings UI |
+| Authenticated `GET` / `PUT /settings/api/claude-executable`; `/health` `claudeExecutable.source` value `custom` | `claudeExecutableSettings.ts`, `claudeExecutablePreference.ts`, `models.ts` | System/bundled/custom Claude Code executable choice, applied to the next turn; same-origin browser writes; `MERIDIAN_CLAUDE_PATH` still wins |
 | `GET /build-status` | `buildRuntime.ts` | Local/dev runtime versus disk provenance (#1170); optional API-key protection, npm returns 404 |
 | `POST /v1/messages` request/response format | `server.ts` | All agents (Anthropic API contract) |
 | `GET /profiles/list` response shape | `server.ts` | Profile management UI and CLI |
 | `GET /inflight` response shape and loopback-only access | `server.ts`, `inflight.ts` | Loopback supervisors observing `scope: client-http`; not a restart/admission barrier (#1216) |
+| `POST`/`DELETE /drain` request/response and local operator access | `server.ts`, `admissionHold.ts` | Owner-approved #1282: bounded per-instance generation delay; actual loopback/no forwarding/no Origin, configured API key required; aggregate `draining`/`drain` in `GET /inflight`, no restart guarantee |
+| `GET /readyz` status and `upstream-claude` check, `/health` `upstream.claude` block, loopback-only `PUT /upstream-reachability` | `server.ts`, `probes.ts`, `upstreamReachability.ts` | Instance-local native-Claude transport failure observations, default readiness policy and bounded operator override; owner-approved in #1281 |
 | `POST /profiles/active` request/response | `server.ts` | Profile switching from CLI and UI |
 If you need to modify any of these, open an issue first — breaking changes affect downstream plugin authors.
+
+The owner approved executable selection in #1319 on 2026-10-08. System remains
+the default; `MERIDIAN_CLAUDE_PATH` has highest priority. The authenticated
+GET/PUT uses no-store responses and the existing same-origin browser-write
+policy. Custom paths must be absolute and pass a bounded shell-free version
+check. Changes apply to subsequent turns; a started turn retains its selected
+path through retries. Concurrent selection changes during vetting return 409;
+cancelled/unconfirmed path-vetting probes return 503 before saving the choice. The health
+contract adds only `custom` to the existing executable-source enum.
+
+As with an HTTP write whose response is interrupted, a completed preference
+write is not rolled back if a subsequent state-description probe or disconnect
+fails. Read GET to confirm the saved preference after an ambiguous response.
 
 The hostname contract was approved by the owner on 2026-10-04 in #1259's
 review conversation. Claude and standalone Antigravity share the persisted
@@ -76,3 +92,16 @@ unresolved guard. This is not active-process restoration or client-tool executio
 journaling. Failed official read-only probes impose a five-second readiness
 cooldown with HTTP 503 and Retry-After. Both changes are within #1073's recovery
 and failure-handling scope.
+
+The owner approved #1281's corrected full reachability contract on 2026-10-05.
+Claude/combined health adds aggregate `upstream.claude` observations without raw
+errors or account identities. The state is local and ephemeral; configured-egress
+transport answers do not prove Anthropic origin, account validity or inference.
+Default readiness requires three definite connection failures spanning 120 seconds
+and holds until 300 seconds after the latest failure; the subsequent probing state
+is passive. Null retry statuses and generic read timeouts do not establish failure.
+The loopback override has optional configured-key protection, the exact existing
+hostname Origin policy and a bounded TTL; no public ProxyConfig or global CORS
+expansion is approved. Standalone/mounted Antigravity probes remain unchanged.
+Correctness, actual affected-flow evidence and final-head CI remain acceptance
+gates distinct from this approval. No release is authorized.

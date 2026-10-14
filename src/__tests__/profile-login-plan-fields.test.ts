@@ -243,6 +243,45 @@ describe("buildLoginCredentials", () => {
     const creds = buildLoginCredentials({ ...TOKEN_DATA, expires_at: 42 }, {}, 1_000_000)
     expect(creds.claudeAiOauth.expiresAt).toBe(42)
   })
+
+  it("persists the provider's relative refresh deadline at login", () => {
+    const now = 1_790_000_000_000
+    const creds = buildLoginCredentials({ ...TOKEN_DATA, refresh_token_expires_in: 29 * 86400 }, {}, now)
+    expect(creds.claudeAiOauth.refreshTokenExpiresAt).toBe(now + 29 * 86400 * 1000)
+  })
+
+  it("prefers the absolute refresh deadline without changing access expiry or plan", () => {
+    const now = 1_790_000_000_000
+    const deadline = now + 28 * 86400 * 1000
+    const creds = buildLoginCredentials({ ...TOKEN_DATA, refresh_token_expires_at: deadline,
+      refresh_token_expires_in: 29 * 86400 }, { subscriptionType: "team", seatTier: "team_tier_1" }, now)
+    expect(creds.claudeAiOauth.refreshTokenExpiresAt).toBe(deadline)
+    expect(creds.claudeAiOauth.expiresAt).toBe(now + 3600 * 1000)
+    expect(creds.claudeAiOauth.scopes).toEqual(["user:profile", "user:inference"])
+    expect(creds.claudeAiOauth.subscriptionType).toBe("team")
+    expect(creds.claudeAiOauth.seatTier).toBe("team_tier_1")
+  })
+
+  it("omits absent refresh metadata instead of inventing a login lifetime", () => {
+    const creds = buildLoginCredentials(TOKEN_DATA, {}, 1_790_000_000_000)
+    expect("refreshTokenExpiresAt" in creds.claudeAiOauth).toBe(false)
+  })
+
+  it("omits nonpositive, nonfinite and unrepresentable relative deadlines", () => {
+    for (const seconds of [0, -1, NaN, Infinity, -Infinity, Number.MAX_VALUE]) {
+      const creds = buildLoginCredentials({ ...TOKEN_DATA, refresh_token_expires_in: seconds }, {}, 1_790_000_000_000)
+      expect("refreshTokenExpiresAt" in creds.claudeAiOauth).toBe(false)
+    }
+  })
+
+  it("omits invalid absolute deadlines without guessing units or using the relative fallback", () => {
+    const now = 1_790_000_000_000
+    for (const deadline of [0, -1, now, now - 1, now / 1000, NaN, Infinity, 8.64e15 + 1]) {
+      const creds = buildLoginCredentials({ ...TOKEN_DATA, refresh_token_expires_at: deadline,
+        refresh_token_expires_in: 29 * 86400 }, {}, now)
+      expect("refreshTokenExpiresAt" in creds.claudeAiOauth).toBe(false)
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------

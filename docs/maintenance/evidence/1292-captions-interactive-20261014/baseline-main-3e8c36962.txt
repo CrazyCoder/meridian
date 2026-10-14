@@ -1,0 +1,24 @@
+=== Claude Code Agent-tool subagent session isolation ===
+  client: 2.1.299 (Claude Code)   adapter: claude-code   model: sonnet
+  interactive driver: NO_DONE []
+    main adapter=claude-code model=sonnet stream=true tools=0 lineage=new session=new diverged=not-found sessionWait=2ms msgCount=1
+    main adapter=claude-code model=sonnet stream=true tools=13 lineage=new session=new diverged=unrelated-history sessionWait=4062ms msgCount=2
+    agent:a265da4f adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=not-found sessionWait=1ms msgCount=2
+    agent:aab8d9eb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=not-found sessionWait=1ms msgCount=2
+    main adapter=claude-code model=sonnet stream=true tools=13 lineage=continuation session=84b56418 sessionWait=1ms msgCount=5
+    agent:a265da4f adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=unrelated-history sessionWait=1ms msgCount=2
+    agent:aab8d9eb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=unrelated-history sessionWait=27ms msgCount=2
+    agent:a265da4f adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=unrelated-history sessionWait=2ms msgCount=5
+    agent:aab8d9eb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=unrelated-history sessionWait=1ms msgCount=5
+    agent:a265da4f adapter=claude-code model=sonnet stream=true tools=8 lineage=continuation session=3d7cd849 sessionWait=1ms msgCount=7
+    agent:aab8d9eb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=unrelated-history sessionWait=1ms msgCount=5
+    agent:a265da4f adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=modified-history sessionWait=0ms msgCount=8
+    agent:aab8d9eb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=modified-history sessionWait=1ms msgCount=8
+    agent:a265da4f adapter=claude-code model=sonnet stream=true tools=8 lineage=continuation session=886cab86 sessionWait=1ms msgCount=11
+    agent:aab8d9eb adapter=claude-code model=sonnet stream=true tools=8 lineage=continuation session=34078854 sessionWait=2ms msgCount=11
+    main adapter=claude-code model=sonnet stream=true tools=13 lineage=continuation session=bff8264d sessionWait=1ms msgCount=7
+    main adapter=claude-code model=sonnet stream=true tools=13 lineage=continuation session=c1ee7489 sessionWait=1ms msgCount=9
+  auxiliary requests: 0
+  FAIL  the interactive client sent side calls that were isolated as auxiliary — 0
+  FAIL  every working request after each flow's first resumed — msgCount=2 lineage=new diverged=unrelated-history | msgCount=2 lineage=new diverged=unrelated-history | msgCount=2 lineage=new diverged=unrelated-history | msgCount=5 lineage=new diverged=unrelated-history | msgCount=5 lineage=new diverged=unrelated-history | msgCount=5 lineage=new diverged=unrelated-history | msgCount=8 lineage=new diverged=modified-history | msgCount=8 lineage=new diverged=modified-history
+  FAIL: 2

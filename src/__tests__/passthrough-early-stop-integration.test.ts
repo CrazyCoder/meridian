@@ -10,6 +10,7 @@ import { describe, it, expect, mock, spyOn, beforeAll, beforeEach, afterEach, af
 import { installSdkMock } from "./sdkMock"
 import { installLoggerMock } from "./loggerMock"
 import { installMcpToolsMock } from "./mcpToolsMock"
+import { progressBody, PROGRESS_WORK } from "./fixtures/claude-code-progress"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -27,6 +28,8 @@ let capturedQueryParamsAll: any[] = []
 let mockTerminalError: Error | undefined
 let mockBeforeTerminalError: (() => void) | undefined
 let mockLogObserver: ((event: string) => void) | undefined
+/** What each PostToolBatch hook returned for a `test_post_tool_batch` step. */
+let postToolBatchResults: Array<{ ids: string[]; result: unknown }> = []
 /**
  * Per-attempt SDK scripts, consumed one per `query()` call. Retry paths need
  * the second attempt to behave differently from the first; without this every
@@ -55,6 +58,17 @@ installSdkMock(() => ({
       const explicitlyHookedIds = new Set<string>()
       for (const msg of script ? script.messages : mockMessages) {
         yieldedCount++
+        if (msg?.type === "test_post_tool_batch") {
+          const toolCalls = msg.tool_use_ids.map((id: string) => ({ tool_name: "read", tool_input: {}, tool_use_id: id }))
+          for (const matcher of params?.options?.hooks?.PostToolBatch ?? []) {
+            for (const hook of matcher.hooks) {
+              const result = await hook({ hook_event_name: "PostToolBatch", tool_calls: toolCalls }, undefined,
+                { signal: new AbortController().signal })
+              postToolBatchResults.push({ ids: msg.tool_use_ids, result })
+            }
+          }
+          continue
+        }
         if (msg?.type === "test_pre_tool_hook") {
           explicitlyHookedIds.add(msg.tool_use_id)
           if (preHook) {
@@ -263,6 +277,7 @@ describe("Integration: passthrough early stop", () => {
     mockTerminalError = undefined
     mockBeforeTerminalError = undefined
     mockLogObserver = undefined
+    postToolBatchResults = []
     mockAttemptScripts = []
     forkSessionSequence = 0
     mockBaseSessionId = `test-session-${crypto.randomUUID()}`
@@ -422,6 +437,42 @@ describe("Integration: passthrough early stop", () => {
       { type: "tool_result", tool_use_id: "tu1", content: "hi" },
     ])
   })
+
+  for (const fails of [false, true]) {
+    it(`keeps the pending tool checkpoint for the next turn after a ${fails ? "failing" : "successful"} progress caption`, async () => {
+      const sessionId = `progress-checkpoint-${crypto.randomUUID()}`
+      const agentId = "checkpoint-agent"
+      const key = `${sessionId}:agent:${agentId}`
+      usedSessionKeys.add(key)
+      const headers = { "x-claude-code-agent-id": agentId }
+      const body = progressBody(sessionId)
+      const toolTurn = assistantMessage([
+        { type: "tool_use", id: "read-1", name: "Read", input: { file_path: "alpha.txt" } },
+      ])
+      mockMessages = [toolTurn, userDenyMessage("read-1")]
+      const first = await postClaudeCode(app, { ...body, stream: false, messages: PROGRESS_WORK.slice(0, 1) }, sessionId, headers)
+      expect(first.status).toBe(200)
+      const published = lookupSharedSession(key)
+      expect(published?.passthroughToolCallIds).toEqual(["read-1"])
+      expect(published?.passthroughToolCallAssistantUuid).toBe(toolTurn.uuid)
+
+      mockMessages = fails ? [] : [assistantMessage([{ type: "text", text: "Reading alpha.txt" }])]
+      mockTerminalError = fails ? new Error("No conversation found with session ID") : undefined
+      const summary = await postClaudeCode(app, body, sessionId, headers)
+      const wire = await summary.text()
+      expect(wire).toContain(fails ? "event: error" : "message_stop")
+      expect(capturedQueryParams.options.resume).toBeUndefined()
+      expect(capturedQueryParams.options.resumeSessionAt).toBeUndefined()
+      expect(lookupSharedSession(key)).toEqual(published)
+
+      mockTerminalError = undefined
+      mockMessages = [assistantMessage([{ type: "text", text: "ALPHA" }])]
+      const next = await postClaudeCode(app, { ...body, stream: false, messages: PROGRESS_WORK }, sessionId, headers)
+      expect(next.status).toBe(200)
+      expect(capturedQueryParams.options.resume).toBe(published?.claudeSessionId)
+      expect(capturedQueryParams.options.resumeSessionAt).toBe(toolTurn.uuid)
+    })
+  }
 
   it("non-stream: replays changed earlier history even when pending tool IDs match", async () => {
     const assistantToolTurn = assistantMessage([
@@ -1201,6 +1252,39 @@ describe("Integration: passthrough early stop", () => {
     expect(capturedQueryParams.options.abortController?.signal?.aborted ?? false).toBe(false)
   })
 
+  it("non-stream: a lifted budget stops after the batch holding a call captured for the client, not a dropped repeat (#1367)", async () => {
+    mockMessages = [
+      messageStart("msg_ns_forwarded_batch"),
+      toolUseBlockStart(0, "read", "fb-1"),
+      inputJsonDelta(0, '{"file_path":"a"}'),
+      blockStop(0),
+      messageDelta("tool_use"),
+      { type: "test_pre_tool_hook", tool_name: "read", tool_use_id: "fb-1", tool_input: { file_path: "a" } },
+      // The same call under a fresh id is an exact repeat: denied, not forwarded.
+      { type: "test_pre_tool_hook", tool_name: "read", tool_use_id: "fb-repeat", tool_input: { file_path: "a" } },
+      { type: "test_post_tool_batch", tool_use_ids: ["fb-repeat"] },
+      { type: "test_post_tool_batch", tool_use_ids: ["fb-1"] },
+      assistantMessage([{ type: "tool_use", id: "fb-1", name: "read", input: { file_path: "a" } }]),
+      userDenyMessage("fb-1"),
+    ]
+
+    const res = await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 400,
+      stream: false,
+      tools: [READ_TOOL, { name: "aux", description: "Deferred fixture tool", input_schema: { type: "object", properties: {} }, defer_loading: true }],
+      messages: [{ role: "user", content: "read a" }],
+    }, "es-forwarded-batch")
+    expect(res.status).toBe(200)
+    expect(capturedQueryParams.options.maxTurns).toBe(4)
+    expect(postToolBatchResults).toEqual([
+      { ids: ["fb-repeat"], result: {} },
+      { ids: ["fb-1"], result: { continue: false, stopReason: expect.any(String) } },
+    ])
+    const body = await res.json() as { content: Array<{ type: string; id?: string }> }
+    expect(body.content.filter((block) => block.type === "tool_use").map((block) => block.id)).toEqual(["fb-1"])
+  })
+
   it("kill switch restores the legacy full drain", async () => {
     process.env.MERIDIAN_PASSTHROUGH_EARLY_STOP = "0"
     mockMessages = [
@@ -1307,19 +1391,20 @@ describe("Integration: passthrough early stop", () => {
   // trailing system reminder (assistant[tool_use] -> user[tool_result] ->
   // system[text]); the generic helpers reject role=system and forced a fresh
   // replay. Oh My Pi (adapter pi) produces the same tail when it upgrades a
-  // developer-origin note to a mid-conversation system turn. The opt-in must
-  // resume and deliver the reminder as user text.
+  // developer-origin note to a mid-conversation system turn, and OpenCode 2
+  // for an instruction update. The opt-in must resume and
+  // deliver the reminder as user text; Crush stands for every other adapter.
   const reminderCases = [false, true].flatMap(stream =>
-    ["claude-code", "pi", "opencode"].flatMap(adapter =>
+    ["claude-code", "pi", "opencode", "crush"].flatMap(adapter =>
       ["unchanged", "revised", "inserted"].flatMap(historyChange =>
         [false, true].map(image => ({ stream, adapter, historyChange, image })))))
   for (const { stream, adapter, historyChange, image } of reminderCases) {
-    it(`scopes trailing reminder checkpoint resume to Claude Code and pi (adapter=${adapter}, stream=${stream}, historyChange=${historyChange}, image=${image})`, async () => {
+    it(`scopes trailing reminder checkpoint resume to Claude Code, pi and OpenCode (adapter=${adapter}, stream=${stream}, historyChange=${historyChange}, image=${image})`, async () => {
       const sessionId = `cc-delta-${adapter}-${stream}-${historyChange}-${image}-${TEST_RUN_ID}`
       const resultContent = image
         ? [{ type: "text", text: "hi" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "test-image" } }]
         : "hi"
-      const headers = { "x-meridian-agent": adapter, "x-opencode-session": sessionId }
+      const headers = { "x-meridian-agent": adapter, [adapter === "crush" ? "x-session-id" : "x-opencode-session"]: sessionId }
       const initialSystemText = "You are Claude Code, Anthropic's official CLI for Claude."
       const trailingSystemText = "<system-reminder>Total tokens: 4151</system-reminder>"
       const toolTurn = assistantMessage([
@@ -1391,7 +1476,7 @@ describe("Integration: passthrough early stop", () => {
       expect(secondBody).toContain("the file says hi")
       expect(secondBody).not.toContain("CC_DELTA_GARBAGE_DIGEST")
 
-      const optsIn = adapter === "claude-code" || adapter === "pi"
+      const optsIn = adapter !== "crush"
       if (!optsIn || historyChange !== "unchanged") {
         expect(capturedQueryParamsAll[1].options.resume).toBeUndefined()
         expect(capturedQueryParamsAll[1].options.resumeSessionAt).toBeUndefined()
@@ -1524,23 +1609,26 @@ describe("Integration: passthrough early stop", () => {
   })
 
   // The gate is the adapter check in server.ts: the same wire shape on any
-  // other adapter gets no opt-in and stays a fresh replay.
-  it("stream: non-claude-code adapters never opt in — reminder shape stays a fresh replay", async () => {
+  // adapter outside the opt-in gets no exception and stays a fresh replay.
+  it("stream: adapters outside the opt-in never resume the reminder shape — it stays a fresh replay", async () => {
+    const sessionKey = `es-crush-gate-${TEST_RUN_ID}`
+    const crush = { "x-meridian-agent": "crush", "x-session-id": sessionKey }
     const toolTurn = assistantMessage([
-      { type: "tool_use", id: "oc-gate-tu1", name: "read", input: { file_path: "x" } },
+      { type: "tool_use", id: "crush-gate-tu1", name: "read", input: { file_path: "x" } },
     ])
 
-    // Turn 1 through the generic OpenCode adapter: arm the checkpoint.
-    mockMessages = [toolTurn, userDenyMessage("oc-gate-tu1")]
+    // Turn 1 through the Crush adapter: arm the checkpoint.
+    mockMessages = [toolTurn, userDenyMessage("crush-gate-tu1")]
     const first = await post(app, {
       model: "claude-sonnet-4-5",
       max_tokens: 400,
       stream: false,
       tools: [READ_TOOL],
       messages: [{ role: "user", content: "read gate x" }],
-    }, "es-oc-gate")
+    }, "es-crush-gate", crush)
     expect(first.status).toBe(200)
     await first.text()
+    expect(lookupSharedSession(sessionKey)?.passthroughToolCallIds).toEqual(["crush-gate-tu1"])
 
     // Turn 2: the accepted shape, but this adapter carries no opt-in.
     mockMessages = [assistantMessage([{ type: "text", text: "continued" }])]
@@ -1551,15 +1639,73 @@ describe("Integration: passthrough early stop", () => {
       tools: [READ_TOOL],
       messages: [
         { role: "user", content: "read gate x" },
-        { role: "assistant", content: [{ type: "tool_use", id: "oc-gate-tu1", name: "read", input: { file_path: "x" } }] },
-        { role: "user", content: [{ type: "tool_result", tool_use_id: "oc-gate-tu1", content: "hi" }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "crush-gate-tu1", name: "read", input: { file_path: "x" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "crush-gate-tu1", content: "hi" }] },
         { role: "system", content: [{ type: "text", text: "<system-reminder>Tokens: 4151</system-reminder>" }] },
       ],
-    }, "es-oc-gate")
+    }, "es-crush-gate", crush)
     expect(second.status).toBe(200)
     await second.text()
     expect(capturedQueryParamsAll[1].options.resume).toBeUndefined()
     expect(capturedQueryParamsAll[1].options.resumeSessionAt).toBeUndefined()
+  })
+
+  // OpenCode 2 sends an instruction update (here a changed AGENTS.md) as a
+  // native system update after the tool results, also when the user queued a
+  // message during the tool call.
+  it("non-stream: OpenCode instruction update after tool results and queued user text resumes the checkpoint", async () => {
+    const update = "The instructions changed:\nInstructions from: /repo/AGENTS.md\n# Rules\nRun the gate before pushing."
+    const toolTurn = assistantMessage([
+      { type: "thinking", thinking: "write the file", signature: "sig" },
+      { type: "tool_use", id: "oc-update-tu1", name: "write", input: { file_path: "AGENTS.md" } },
+    ])
+    mockMessages = [toolTurn, userDenyMessage("oc-update-tu1")]
+    const first = await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 400,
+      stream: false,
+      tools: [READ_TOOL],
+      messages: [{ role: "user", content: "rewrite AGENTS.md" }],
+    }, "es-oc-update")
+    expect(first.status).toBe(200)
+    await first.text()
+
+    mockMessages = [assistantMessage([{ type: "text", text: "rules updated" }])]
+    const requestId = `oc-update-turn2-${TEST_RUN_ID}`
+    expect((await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 400,
+      stream: false,
+      tools: [READ_TOOL],
+      messages: [
+        { role: "user", content: "rewrite AGENTS.md" },
+        { role: "assistant", content: toolTurn.message.content },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "oc-update-tu1", content: "Wrote file successfully." }] },
+        { role: "user", content: "then commit it" },
+        { role: "system", content: [{ type: "text", text: update, cache_control: { type: "ephemeral" } }] },
+      ],
+    }, "es-oc-update", { "x-request-id": requestId })).status).toBe(200)
+
+    const resumed = capturedQueryParamsAll[1]
+    expect(resumed.options.resume).toBe(initialManagedSessionId())
+    expect(resumed.options.resumeSessionAt).toBe(toolTurn.uuid)
+    expect(JSON.stringify(resumed.options.systemPrompt ?? "")).not.toContain("Run the gate before pushing.")
+    const promptMessages: any[] = []
+    for await (const message of resumed.prompt) promptMessages.push(message)
+    expect(promptMessages).toHaveLength(1)
+    expect(promptMessages[0].message.content).toEqual([
+      { type: "tool_result", tool_use_id: "oc-update-tu1", content: "Wrote file successfully." },
+      { type: "text", text: "then commit it" },
+      { type: "text", text: update },
+    ])
+
+    let row: any
+    for (let i = 0; i < 500 && !row; i++) {
+      row = telemetryStore.getRecent({ limit: 200 }).find((m: any) => m.requestId === requestId)
+      if (!row) await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    expect(row?.adapter).toBe("opencode")
+    expect(row?.isResume).toBe(true)
   })
 
   it("resumes pi 0.85+ tool checkpoint across mid-conversation effort system messages (#1047)", async () => {
@@ -2843,7 +2989,7 @@ describe("Integration: passthrough early stop", () => {
   // The SDK can stream a declared client call but reject its bare name before
   // PreToolUse runs ("No such tool available: read"). The proxy must deliver
   // that complete call to the client, then evict the unusable SDK checkpoint.
-  // Incomplete or undeclared calls must remain errors.
+  // Incomplete calls must remain errors.
   it("stream: uncaptured declared Pi calls complete the handoff by default", async () => {
     delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
     const sessionHeader = "es-capped-dangling"
@@ -3457,6 +3603,222 @@ describe("Integration: passthrough early stop", () => {
     }, "es-capped-other-error", { "x-meridian-agent": "pi" })
     expect(await res.text()).toContain("event: error")
   })
+
+  // #1364: the model can emit a name the client never declared. The CLI
+  // rejects it like any other unregistered name, so nothing ran, and the
+  // client must get the call back to answer with its own invalid-tool result.
+  const BASH_TOOL = { name: "bash", input_schema: { type: "object",
+    properties: { command: { type: "string" } }, required: ["command"] } }
+  const rejectedTurn = (calls: Array<{ id: string; name: string; rejected?: boolean }>, maxTurns = 1) => {
+    mockMessages = [
+      messageStart("msg_undeclared"),
+      ...calls.flatMap(({ id, name }, index) => [
+        toolUseBlockStart(index, name, id), inputJsonDelta(index, '{"command":"ls"}'), blockStop(index),
+      ]),
+      messageDelta("tool_use"),
+      messageStop(),
+      { ...assistantMessage(calls.map(({ id, name }) => ({ type: "tool_use", id, name, input: { command: "ls" } }))),
+        test_skip_pre_tool_hook: true },
+      ...calls.filter(call => call.rejected !== false).map(({ id, name }) => unavailableToolMessage(id, name)),
+      { type: "result", subtype: "error_max_turns", is_error: true, session_id: "test-session" },
+    ]
+    mockTerminalError = new Error(`Claude Code returned an error result: Reached maximum number of turns (${maxTurns})`)
+  }
+  const streamedToolCalls = (events: ReturnType<typeof parseSSE>) => events.flatMap(({ event, data }) => {
+    const block = data.content_block as { type?: string; id?: string; name?: string } | undefined
+    return event === "content_block_start" && block?.type === "tool_use" ? [`${block.id}:${block.name}`] : []
+  })
+  const stopReasons = (events: ReturnType<typeof parseSSE>) => events.flatMap(({ event, data }) => {
+    const delta = data.delta as { stop_reason?: string } | undefined
+    return event === "message_delta" && typeof delta?.stop_reason === "string" ? [delta.stop_reason] : []
+  })
+
+  for (const name of ["bash_placeholder", "mcp:oc__bash"]) {
+    it(`stream: a CLI-rejected undeclared call (${name}) is handed to the client`, async () => {
+      delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+      const sessionHeader = `es-undeclared-${name.replace(/\W/g, "-")}`
+      mockMessages = [assistantMessage([{ type: "text", text: "seed" }])]
+      await (await post(app, {
+        model: "claude-sonnet-4-5", max_tokens: 400, stream: false,
+        tools: [BASH_TOOL], messages: [{ role: "user", content: "seed" }],
+      }, sessionHeader)).text()
+      expect(lookupSharedSession(`${sessionHeader}-${TEST_RUN_ID}`)).toBeDefined()
+      rejectedTurn([{ id: "toolu_undeclared", name }])
+
+      const res = await post(app, {
+        model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+        messages: [
+          { role: "user", content: "seed" },
+          { role: "assistant", content: "seed" },
+          { role: "user", content: "list the files" },
+        ],
+      }, sessionHeader)
+      expect(res.status).toBe(200)
+      const events = parseSSE(await res.text())
+      expect(events.filter(e => e.event === "error")).toHaveLength(0)
+      expect(streamedToolCalls(events)).toEqual([`toolu_undeclared:${name}`])
+      expect(stopReasons(events)).toEqual(["tool_use"])
+      expect(events.filter(e => e.event === "message_stop")).toHaveLength(1)
+      // The SDK session holds the rejection, not the client's result.
+      expect(lookupSharedSession(`${sessionHeader}-${TEST_RUN_ID}`)).toBeUndefined()
+    })
+  }
+
+  it("stream: a rejected batch mixing declared and undeclared names is handed over whole", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    rejectedTurn([{ id: "toolu_bare", name: "bash" }, { id: "toolu_invented", name: "bash_placeholder" }])
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-batch")
+    const events = parseSSE(await res.text())
+    expect(events.filter(e => e.event === "error")).toHaveLength(0)
+    expect(streamedToolCalls(events)).toEqual(["toolu_bare:bash", "toolu_invented:bash_placeholder"])
+    expect(stopReasons(events)).toEqual(["tool_use"])
+  })
+
+  it("stream: a rejected undeclared call recovers at the deferred-tools turn budget", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    rejectedTurn([{ id: "toolu_invented", name: "bash_placeholder" }], 4)
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true,
+      tools: [BASH_TOOL, { name: "lsp_diagnostics", defer_loading: true, input_schema: { type: "object", properties: {} } }],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-deferred")
+    const events = parseSSE(await res.text())
+    expect(capturedQueryParamsAll[0]?.options.maxTurns).toBe(4)
+    expect(events.filter(e => e.event === "error")).toHaveLength(0)
+    expect(streamedToolCalls(events)).toEqual(["toolu_invented:bash_placeholder"])
+    expect(stopReasons(events)).toEqual(["tool_use"])
+  })
+
+  // Controls: the rejection is the only thing that excuses an undeclared name.
+  it("stream: an undeclared call without a CLI rejection still errors under the opt-in", async () => {
+    process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY = "1"
+    rejectedTurn([{ id: "toolu_invented", name: "bash_placeholder", rejected: false }])
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-unproven")
+    const events = parseSSE(await res.text())
+    expect(events.filter(e => e.event === "error")).toHaveLength(1)
+    expect(stopReasons(events)).not.toContain("tool_use")
+  })
+
+  it("stream: one unrejected call keeps an undeclared rejected call an error", async () => {
+    process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY = "1"
+    rejectedTurn([
+      { id: "toolu_unproven", name: "bash", rejected: false },
+      { id: "toolu_invented", name: "bash_placeholder" },
+    ])
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-partial-proof")
+    const events = parseSSE(await res.text())
+    expect(events.filter(e => e.event === "error")).toHaveLength(1)
+    expect(stopReasons(events)).not.toContain("tool_use")
+  })
+
+  it("stream: a rejection naming another tool does not cover an undeclared call", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    rejectedTurn([{ id: "toolu_invented", name: "bash_placeholder", rejected: false }])
+    mockMessages.splice(-1, 0, unavailableToolMessage("toolu_invented", "bash"))
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-name-mismatch")
+    expect(parseSSE(await res.text()).filter(e => e.event === "error")).toHaveLength(1)
+  })
+
+  // A batch where the hook captured one call is the captured recovery's, with
+  // or without #1364: both blocks already streamed, so the client gets both
+  // and answers the invented one itself.
+  it("stream: a captured call beside a rejected undeclared call hands over both", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    const sessionHeader = "es-undeclared-beside-captured"
+    mockMessages = [
+      messageStart("msg_mixed"),
+      toolUseBlockStart(0, "mcp__oc__bash", "toolu_real"), inputJsonDelta(0, '{"command":"ls"}'), blockStop(0),
+      toolUseBlockStart(1, "bash_placeholder", "toolu_invented"), inputJsonDelta(1, '{"command":"ls"}'), blockStop(1),
+      messageDelta("tool_use"),
+      messageStop(),
+      { type: "test_pre_tool_hook", tool_name: "mcp__oc__bash", tool_use_id: "toolu_real", tool_input: { command: "ls" } },
+      { ...assistantMessage([
+        { type: "tool_use", id: "toolu_real", name: "mcp__oc__bash", input: { command: "ls" } },
+        { type: "tool_use", id: "toolu_invented", name: "bash_placeholder", input: { command: "ls" } },
+      ]), test_skip_pre_tool_hook: true },
+      userDenyMessage("toolu_real"),
+      unavailableToolMessage("toolu_invented", "bash_placeholder"),
+      { type: "result", subtype: "error_max_turns", is_error: true, session_id: "test-session" },
+    ]
+    mockTerminalError = new Error("Claude Code returned an error result: Reached maximum number of turns (1)")
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, sessionHeader)
+    const events = parseSSE(await res.text())
+    expect(events.filter(e => e.event === "error")).toHaveLength(0)
+    expect(streamedToolCalls(events)).toEqual(["toolu_real:bash", "toolu_invented:bash_placeholder"])
+    expect(stopReasons(events)).toEqual(["tool_use"])
+    expect(lookupSharedSession(`${sessionHeader}-${TEST_RUN_ID}`)?.passthroughToolCallIds)
+      .toEqual(["toolu_real", "toolu_invented"])
+  })
+
+  // A name under another MCP server's prefix is hidden from the client as an
+  // SDK-internal tool, so there is no streamed call to hand over.
+  it("stream: a rejected call under a foreign MCP prefix was never forwarded and still errors", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    rejectedTurn([{ id: "toolu_invented", name: "mcp__other__bash" }])
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-foreign-prefix")
+    const events = parseSSE(await res.text())
+    expect(streamedToolCalls(events)).toEqual([])
+    expect(events.filter(e => e.event === "error")).toHaveLength(1)
+  })
+
+  // Rejection recovery is streaming-only (docs/configuration.md); a declared
+  // and an undeclared name fail alike without it.
+  for (const name of ["bash", "bash_placeholder"]) {
+    it(`non-stream: a CLI-rejected call (${name}) is not recovered`, async () => {
+      delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+      rejectedTurn([{ id: "toolu_rejected", name }])
+      const res = await post(app, {
+        model: "claude-sonnet-4-5", max_tokens: 400, stream: false, tools: [BASH_TOOL],
+        messages: [{ role: "user", content: "list the files" }],
+      }, `es-rejected-nonstream-${name}`)
+      expect(res.status).toBe(500)
+      expect((await res.json()).error.message).toContain("Reached maximum number of turns (1)")
+    })
+  }
+
+  // Claude Code 2.1.296 explains the refusal of a disabled built-in after the
+  // name. Only the bare form is recognized as proof today, so the model
+  // writing `Bash` for a declared `bash` still ends the turn in an error.
+  it("stream: a built-in name refused with an explanation is not yet recognized as rejected", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    rejectedTurn([{ id: "toolu_builtin", name: "Bash", rejected: false }])
+    mockMessages.splice(-1, 0, unavailableToolMessage("toolu_builtin",
+      "Bash. Bash is disabled for this session, in subagents as well as here."))
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-builtin")
+    expect(parseSSE(await res.text()).filter(e => e.event === "error")).toHaveLength(1)
+  })
+
+  it("stream: disabling uncaptured recovery also keeps an undeclared rejected call an error", async () => {
+    process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY = "0"
+    rejectedTurn([{ id: "toolu_invented", name: "bash_placeholder" }])
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-disabled")
+    expect(parseSSE(await res.text()).filter(e => e.event === "error")).toHaveLength(1)
+  })
+
 
 
   it("stream: uncaptured recovery can be disabled", async () => {

@@ -288,18 +288,37 @@ export function credentialsFilePathForProfile(claudeConfigDir?: string): string 
  */
 export type StoredCredentialPresence = "present" | "absent" | "unknown"
 
-export async function readStoredCredentialPresence(
-  store: CredentialStore,
-): Promise<StoredCredentialPresence> {
+/** Current, uncached facts about this store; deadlines do not establish auth. */
+export interface StoredCredentialSnapshot {
+  presence: StoredCredentialPresence
+  refreshTokenExpiresAt?: number
+  accessTokenExpiresAt?: number
+}
+
+function validStoredExpiry(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 8.64e15
+    ? value : undefined
+}
+
+export async function readStoredCredentialSnapshot(store: CredentialStore): Promise<StoredCredentialSnapshot> {
   let credentials: CredentialsFile | null
   try {
     credentials = await store.read()
   } catch {
-    return "unknown"
+    return { presence: "unknown" }
   }
-  if (!credentials) return "unknown"
-  const accessToken = credentials.claudeAiOauth?.accessToken
-  return typeof accessToken === "string" && accessToken.length > 0 ? "present" : "absent"
+  if (!credentials) return { presence: "unknown" }
+  const oauth = credentials.claudeAiOauth
+  const accessToken = oauth?.accessToken
+  return {
+    presence: typeof accessToken === "string" && accessToken.length > 0 ? "present" : "absent",
+    refreshTokenExpiresAt: validStoredExpiry(oauth?.refreshTokenExpiresAt),
+    accessTokenExpiresAt: validStoredExpiry(oauth?.expiresAt),
+  }
+}
+
+export async function readStoredCredentialPresence(store: CredentialStore): Promise<StoredCredentialPresence> {
+  return (await readStoredCredentialSnapshot(store)).presence
 }
 
 // ---------------------------------------------------------------------------
@@ -667,9 +686,18 @@ export async function getAuthRenewalStatus(
   // Only the READ is cached. The day count and the flag are recomputed every
   // call so elapsed time and a changed warnDays are always reflected.
   const { refreshTokenExpiresAt } = await readCredentialFacts(s)
+  return renewalStatusFor(refreshTokenExpiresAt, warnDays)
+}
+
+/** The existing /health rounded-day warning rule, reused for profile expiry. */
+export function renewalStatusFor(
+  refreshTokenExpiresAt: number | undefined,
+  warnDays = DEFAULT_RENEWAL_WARN_DAYS,
+  now: number = Date.now(),
+): AuthRenewalStatus {
   if (!refreshTokenExpiresAt) return { renewalRequiredSoon: false }
 
-  const msRemaining = refreshTokenExpiresAt - Date.now()
+  const msRemaining = refreshTokenExpiresAt - now
   // Ceil, matching the CLI's own `Math.ceil(remaining / 86400000)` so this
   // number reads identically to the "Your login expires in N days" warning
   // Claude Code prints. Flooring here would report one day fewer than the

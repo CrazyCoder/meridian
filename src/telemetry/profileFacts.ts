@@ -24,6 +24,39 @@ function timeAgo(ts) {
   return new Date(ts).toLocaleString();
 }
 
+// The two largest units of an advisory stored expiry countdown.
+function expirySpan(ms) {
+  var mins = Math.floor(Math.abs(ms) / 60000);
+  var d = Math.floor(mins / 1440);
+  mins -= d * 1440;
+  var h = Math.floor(mins / 60);
+  var m = mins - h * 60;
+  if (d > 0) return d + 'd ' + h + 'h';
+  if (h > 0) return h + 'h ' + m + 'm';
+  return m + 'm';
+}
+
+function expiryFacts(p, now) {
+  var facts = [];
+  if (p.refreshTokenExpiresAt) {
+    var left = p.refreshTokenExpiresAt - now;
+    facts.push({ label: 'Refresh deadline',
+      value: left > 0 ? 'in ' + expirySpan(left) : 'passed \\u2014 login may need renewal',
+      tone: left <= 0 || p.renewalRequiredSoon ? 'warn' : '',
+      title: new Date(p.refreshTokenExpiresAt).toLocaleString()
+        + '. Reported by the stored credential; log in again before then. Authentication is checked separately.' });
+  }
+  if (p.accessTokenExpiresAt) {
+    var accessLeft = p.accessTokenExpiresAt - now;
+    facts.push({ label: 'Stored access token',
+      value: accessLeft > 0 ? 'expires in ' + expirySpan(accessLeft) : 'expiry passed',
+      tone: accessLeft <= 0 ? 'warn' : '',
+      title: new Date(p.accessTokenExpiresAt).toLocaleString()
+        + '. Recorded expiry, which may be estimated. Authentication is checked separately.' });
+  }
+  return facts;
+}
+
 function profileFacts(p) {
   var facts = [];
   var authStale = p.authProvenance && p.authProvenance !== 'live';
@@ -34,6 +67,7 @@ function profileFacts(p) {
     tone: p.loggedIn ? 'ok' : 'err',
     cached: authStale && p.authProvenance !== 'never'
   });
+  facts = facts.concat(expiryFacts(p, Date.now()));
   if (p.email) facts.push({ label: 'Email', value: p.email, tone: '', cached: authStale });
   if (p.organizationName) facts.push({ label: 'Organization', value: p.organizationName, tone: '' });
   if (p.accountType) facts.push({ label: 'Account', value: p.accountType, tone: '' });

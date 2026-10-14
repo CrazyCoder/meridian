@@ -54,6 +54,9 @@ export interface ReadinessInput {
   readonly profileCount: number
   /** Whether a Claude executable resolves for this instance. */
   readonly claudeExecutableResolved: boolean
+  /** Why this instance's configured Claude egress is declared unreachable,
+   *  or null/absent when no outage is declared. See ./upstreamReachability.ts. */
+  readonly claudeUnreachable?: string | null
 }
 
 /**
@@ -79,8 +82,18 @@ export interface ReadinessInput {
  *                      own `node_modules`, or its platform package - all
  *                      per-instance, and without one no request can be served
  *                      (#478).
+ *   upstream-claude    declared connection outage on this instance's configured
+ *                      Claude egress. A dead
+ *                      resolver or a broken route is local to one machine
+ *                      while its network still serves HTTP, so a neighbour on
+ *                      another host serves fine. It fails only on evidence
+ *                      from real traffic (connection-class errors and nothing
+ *                      else, for minutes), and it turns back on its own after a
+ *                      hold, so even an outage every instance shares costs a
+ *                      bounded window rather than taking the fleet out for good.
  */
 export function readinessReport(input: ReadinessInput): ProbeReport {
+  const claudeUnreachable = input.claudeUnreachable ?? null
   const checks: ProbeCheck[] = [
     {
       name: "profiles",
@@ -93,6 +106,11 @@ export function readinessReport(input: ReadinessInput): ProbeReport {
       ...(input.claudeExecutableResolved
         ? {}
         : { detail: "no Claude executable resolved (set MERIDIAN_CLAUDE_PATH or install @anthropic-ai/claude-code)" }),
+    },
+    {
+      name: "upstream-claude",
+      ok: claudeUnreachable === null,
+      ...(claudeUnreachable === null ? {} : { detail: claudeUnreachable }),
     },
   ]
   return { ok: checks.every(c => c.ok), checks }

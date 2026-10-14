@@ -1,0 +1,24 @@
+=== Claude Code Agent-tool subagent session isolation ===
+  client: 2.1.296 (Claude Code)   adapter: claude-code   model: sonnet
+  turn 1 (two parallel subagents) (8 proxy requests) exit=0: DONE
+    main adapter=claude-code model=sonnet stream=true tools=12 lineage=new session=new diverged=not-found sessionWait=1ms msgCount=2
+    agent:a4b9172c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=unrelated-history sessionWait=649ms msgCount=2
+    agent:a84b253c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=unrelated-history sessionWait=2022ms msgCount=2
+    agent:a4b9172c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=unrelated-history sessionWait=1629ms msgCount=5
+    agent:a84b253c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=unrelated-history sessionWait=1874ms msgCount=5
+    agent:a4b9172c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=unrelated-history sessionWait=3465ms msgCount=8
+    agent:a84b253c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=unrelated-history sessionWait=1947ms msgCount=8
+    main adapter=claude-code model=sonnet stream=true tools=12 lineage=new session=new diverged=unrelated-history sessionWait=1ms msgCount=5
+  turn 2 (--resume) (1 proxy requests) exit=0: AGAIN
+    main adapter=claude-code model=sonnet stream=true tools=12 lineage=continuation session=1a88e937 sessionWait=1ms msgCount=8
+  PASS  every client invocation succeeded — 0,0
+  PASS  every turn answered — "DONE" "AGAIN"
+  PASS  every proxy request line maps to a relayed request — 0 unmapped
+  PASS  at least two subagents ran multi-turn conversations — a4b9172c×3 a84b253c×3
+  FAIL  every subagent turn after its first resumes its own session — a4b9172c msgCount=5 lineage=new diverged=unrelated-history | a4b9172c msgCount=8 lineage=new diverged=unrelated-history | a84b253c msgCount=5 lineage=new diverged=unrelated-history | a84b253c msgCount=8 lineage=new diverged=unrelated-history
+  FAIL  every main request after the first resumes the conversation — msgCount=5 lineage=new diverged=unrelated-history
+  FAIL  no request collides with another flow — agent:a4b9172c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=unrelated-history sessionWait=649ms msgCount=2 | agent:a84b253c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=unrelated-history sessionWait=2022ms msgCount=2 | agent:a4b9172c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=unrelated-history sessionWait=1629ms msgCount=5 | agent:a84b253c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=unrelated-history sessionWait=1874ms msgCount=5 | agent:a4b9172c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=unrelated-history sessionWait=3465ms msgCount=8 | agent:a84b253c adapter=claude-code model=sonnet stream=true tools=10 lineage=new session=new diverged=unrelated-history sessionWait=1947ms msgCount=8 | main adapter=claude-code model=sonnet stream=true tools=12 lineage=new session=new diverged=unrelated-history sessionWait=1ms msgCount=5
+  FAIL  no main or subagent request waited over 1000ms on a session lease — agent:a84b253c sessionWait=2022ms | agent:a4b9172c sessionWait=1629ms | agent:a84b253c sessionWait=1874ms | agent:a4b9172c sessionWait=3465ms | agent:a84b253c sessionWait=1947ms
+  PASS  no invocation was refused with a 4xx — all accepted
+=== verdict ===
+  FAIL: 4 check(s)

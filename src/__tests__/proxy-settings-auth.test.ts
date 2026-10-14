@@ -135,6 +135,9 @@ describe("auth audit: every registered prefix is protected when MERIDIAN_API_KEY
   //     An attacker who could guess a live `state` would still be handing
   //     Anthropic's own authorization code to the user's own profile — the
   //     PKCE verifier it would be exchanged against is held here, not by them.
+  //
+  // `/drain` mutates admission, so #1282 requires the configured API key in
+  // addition to the actual loopback/no-Origin/no-forwarding checks.
   const PUBLIC_PREFIXES = new Set(["/", "/health", "/livez", "/readyz", "/inflight", "/callback"])
 
   it("rejects unauthenticated requests to every non-public route prefix", async () => {

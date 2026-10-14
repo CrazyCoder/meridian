@@ -34,7 +34,7 @@ import { join } from "node:path"
  * "hang" models a spawn stalled on a loaded host: the callback is parked in
  * `hungSpawns` until the test settles it with `releaseHungSpawns`.
  */
-let authBehavior: "success" | "fail" | "hang" | "timeout" | "exit1" | "exit2" = "success"
+let authBehavior: "success" | "fail" | "hang" | "timeout" | "exit1" | "exit2" | "logout-killed" | "logout-signal" | "logout-truncated" | "logout-exit2" = "success"
 let execFileCalls = 0
 /** Options the probe passed to execFile, so spawn flags can be asserted. */
 let execFileOptions: realChildProcess.ExecFileOptions | undefined
@@ -121,6 +121,14 @@ mock.module("child_process", () => ({
         // Node's callback error does not carry stdout: only promisify adds it.
         complete(Object.assign(new Error("Command failed: /fake/claude auth status\n"), { killed: false, signal: null, code: 1 }), { stdout, stderr: "" }); return
       }
+      if (authBehavior.startsWith("logout-")) {
+        const stdout = authBehavior === "logout-truncated" ? '{"loggedIn":false' : JSON.stringify({ loggedIn: false })
+        complete(Object.assign(new Error("Unavailable auth probe"), {
+          killed: authBehavior === "logout-killed",
+          signal: authBehavior === "logout-signal" ? "SIGTERM" : null,
+          code: authBehavior === "logout-exit2" ? 2 : 1,
+        }), { stdout, stderr: "" }); return
+      }
       if (authBehavior === "exit2") {
         complete(Object.assign(new Error("Command failed: /fake/claude auth status\n"), { killed: false, signal: null, code: 2, stdout: "not json" }), { stdout: "not json", stderr: "" }); return
       }
@@ -145,6 +153,8 @@ mock.module("../proxy/tokenRefresh", () => ({
   createPlatformCredentialStore: () => ({ read: async () => null,
     write: async () => { throw new Error("Fixture must not write credentials") } }),
   readStoredCredentialPresence: async () => "absent",
+  readStoredCredentialSnapshot: async () => ({ presence: "absent" }),
+  renewalStatusFor: () => ({ renewalRequiredSoon: false }),
   refreshOAuthToken: async () => false,
   ensureFreshToken: async () => false,
   startBackgroundRefresh: () => undefined,
@@ -759,6 +769,66 @@ describe("auth-status warnings", () => {
     expect(warnings().join("\n")).not.toContain('"email"')
   })
 
+  it("replaces a remembered login when the CLI explicitly reports logged out", async () => {
+    const p = nextProfile()
+    await getClaudeAuthStatusAsync(p)
+    const verifiedAt = getAuthCacheInfo(p).lastSuccessAt
+
+    authBehavior = "exit1"
+    await failAgain(p)
+
+    expect((await getClaudeAuthStatusAsync(p))?.loggedIn).toBe(false)
+    expect(getAuthCacheInfo(p).lastSuccessAt).toBe(verifiedAt)
+    expect(getAuthCacheInfo(p).isFailure).toBe(false)
+  })
+
+  it("keeps an explicit logout when the following check times out", async () => {
+    const p = nextProfile()
+    await getClaudeAuthStatusAsync(p)
+    authBehavior = "exit1"
+    await failAgain(p)
+
+    authBehavior = "timeout"
+    await failAgain(p)
+
+    expect((await getClaudeAuthStatusAsync(p))?.loggedIn).toBe(false)
+  })
+
+  it("reports a cold explicit logout rather than an unknown status", async () => {
+    authBehavior = "exit1"
+
+    const status = await getClaudeAuthStatusAsync(nextProfile())
+
+    expect(status?.loggedIn).toBe(false)
+  })
+
+  for (const behavior of ["logout-killed", "logout-signal", "logout-truncated", "logout-exit2"] as const) {
+    it(`preserves the previous login for an unavailable negative answer (${behavior})`, async () => {
+      const p = nextProfile()
+      await getClaudeAuthStatusAsync(p)
+      const verifiedAt = getAuthCacheInfo(p).lastSuccessAt
+      authBehavior = behavior
+      await failAgain(p)
+      expect((await getClaudeAuthStatusAsync(p))?.loggedIn).toBe(true)
+      expect(getAuthCacheInfo(p).isFailure).toBe(true)
+      expect(getAuthCacheInfo(p).lastSuccessAt).toBe(verifiedAt)
+    })
+  }
+
+  it("does not advance the default account's successful-check time on logout", async () => {
+    await getClaudeAuthStatusAsync()
+    const verifiedAt = getAuthCacheInfo().lastSuccessAt
+    setSystemTime(verifiedAt + 60_000)
+    authBehavior = "exit1"
+    expireAuthStatusCache()
+
+    await getClaudeAuthStatusAsync()
+    await pendingAuthStatusRefresh()
+
+    expect((await getClaudeAuthStatusAsync())?.loggedIn).toBe(false)
+    expect(getAuthCacheInfo().lastSuccessAt).toBe(verifiedAt)
+  })
+
   it("reports a non-zero exit whose output is not JSON by its code alone", async () => {
     authBehavior = "exit2"
     await getClaudeAuthStatusAsync(nextProfile())
@@ -1074,5 +1144,33 @@ describe('auth refresh owns the actual asynchronous resolver path', () => {
     expect(resolverLookups).toBe(1); expect(resolverVersions).toBe(0); expect(execFileCalls).toBe(0)
     resolverChildren[0]!.callback(null, { stdout: ownedExecutable, stderr: '' }); resolverChildren[0]!.witnesses()
     await tick(); expect(pendingAuthStatusRefresh(profile)).toBeNull()
+  })
+  it('a preference change cannot bypass an older resolver with unconfirmed custody', async () => {
+    const { getSetting, setSetting } = await import('../settings')
+    const saved = getSetting('claudeExecutable')
+    const owner = (await owners())()
+    const answer = owner.run(() => getClaudeAuthStatusAsync(nextProfile())); await tick()
+    try {
+      await expect(owner.close()).rejects.toThrow('cleanup is unconfirmed')
+      await answer
+      setSetting('claudeExecutable', 'bundled')
+      await expect(resolveClaudeExecutableAsync()).rejects.toThrow('cleanup is unconfirmed')
+      expect(resolverLookups).toBe(1); expect(resolverVersions).toBe(0)
+    } finally { setSetting('claudeExecutable', saved) }
+  })
+  it('settings retain a failed version slot and bounded shutdown until real pipe witnesses arrive', async () => {
+    const { readClaudeVersion } = await import('../proxy/models')
+    const { createClaudeProbeOwner } = await import('../proxy/claudeProbeOwnership')
+    const owner = createClaudeProbeOwner()
+    const pending = owner.run(new AbortController().signal, () => readClaudeVersion(ownedExecutable, 10))
+    void pending.catch(() => undefined)
+    await expect(pending).rejects.toThrow('cleanup is unconfirmed')
+    expect(resolverVersions).toBe(1)
+    await expect(owner.close()).rejects.toThrow('cleanup is unconfirmed')
+    await expect(owner.close()).rejects.toThrow('cleanup is unconfirmed')
+    await expect(readClaudeVersion(ownedExecutable, 10)).rejects.toThrow('cleanup is unconfirmed')
+    expect(resolverVersions).toBe(1)
+    resolverChildren[0]!.callback(null, { stdout: '2.1.999 (Claude Code)', stderr: '' })
+    resolverChildren[0]!.witnesses(); await tick()
   })
 })

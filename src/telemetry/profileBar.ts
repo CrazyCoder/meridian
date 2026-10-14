@@ -12,6 +12,8 @@
 
 import { buildDriftView, buildIdentityView } from "./buildBadge"
 import { hostLabelView } from "./hostLabel"
+import { statusPillView } from "./statusPill"
+import { bindStatusDetails } from "./statusDetails"
 
 /**
  * Canonical Meridian theme.
@@ -215,6 +217,7 @@ export const profileBarCss = `
     color: var(--accent2, #bc8cff); font-size: 10px;
   }
   .meridian-header .mh-status {
+    appearance: none; border: 0; padding: 0; background: transparent; font-family: inherit; text-align: left; cursor: pointer;
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 11px; color: var(--muted, #8b949e); white-space: nowrap;
   }
@@ -225,6 +228,36 @@ export const profileBarCss = `
   .meridian-header .mh-dot.healthy { background: var(--green, #3fb950); box-shadow: 0 0 6px rgba(63,185,80,0.5); }
   .meridian-header .mh-dot.degraded { background: var(--yellow, #d29922); }
   .meridian-header .mh-dot.unhealthy { background: var(--red, #f85149); }
+  .meridian-header .mh-status:disabled { opacity: 1; cursor: default; }
+  .meridian-header .mh-status:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .meridian-header .mh-status-wrap { position: relative; display: inline-flex; min-width: 0; max-width: 100%; }
+  .meridian-header .mh-status-details {
+    position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+    width: min(320px, calc(100vw - 40px)); box-sizing: border-box;
+    background: var(--surface); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px; font-size: 11px; line-height: 1.5;
+    white-space: pre-line; text-align: left; pointer-events: auto;
+  }
+  /* Cover the six-pixel visual gap and the panel border with a descendant hit
+     region so moving off the trigger toward the details keeps region hover. */
+  .meridian-header .mh-status-details::before {
+    content: ""; position: absolute; top: -7px; height: 7px; left: -1px; right: -1px;
+  }
+  .meridian-header .mh-status-details[hidden] { display: none; }
+  .meridian-header .mh-status.outage,
+  .meridian-header .mh-status.recovering {
+    font-weight: 500; line-height: 16px; padding: 3px 10px; border-radius: 12px; cursor: help;
+  }
+  .meridian-header .mh-status.outage {
+    color: var(--red, #f85149);
+    background: rgba(248,81,73,0.12);
+    border: 1px solid rgba(248,81,73,0.35);
+  }
+  .meridian-header .mh-status.recovering {
+    color: var(--yellow, #d29922);
+    background: rgba(210,153,34,0.12);
+    border: 1px solid rgba(210,153,34,0.35);
+  }
   .meridian-header .mh-host {
     display: inline-block; min-width: 0; max-width: 24ch;
     overflow: hidden; text-overflow: ellipsis; vertical-align: bottom;
@@ -240,8 +273,12 @@ export const profileBarCss = `
     .meridian-header .mh-nav a { flex-shrink: 0; }
     .meridian-header .mh-right { flex: 1 1 0; }
     .meridian-header .mh-status .mh-status-text { display: none; }
+    .meridian-header .mh-status.outage .mh-status-text,
+    .meridian-header .mh-status.recovering .mh-status-text { display: inline; }
     .meridian-header .mh-host { max-width: 14ch; }
     .meridian-header .mh-host::before { content: none; }
+    .meridian-header .mh-status.outage .mh-host::before,
+    .meridian-header .mh-status.recovering .mh-host::before { content: "·"; }
   }
   /* Wide layout (Settings, Layout): every page drops its centered column and
      spans the window, keeping an edge margin that grows with the screen. The
@@ -272,7 +309,7 @@ export const profileBarHtml = `
     <span class="mh-prov" id="mhProv" role="group"></span>
     <span class="mh-drift" id="mhDrift" role="status" hidden></span>
     <a class="mh-profile" id="mhProfile" href="/" title="Active profile — switch from the home page"></a>
-    <span class="mh-status" id="mhStatus"><span class="mh-dot" id="mhDot"></span><span class="mh-status-text" id="mhStatusText"></span><span class="mh-host" id="mhHost" hidden></span></span>
+    <span class="mh-status-wrap" id="mhStatusWrap"><button type="button" class="mh-status" id="mhStatus" aria-label="Status unavailable" aria-controls="mhStatusDetails" aria-describedby="mhStatusDetails" aria-expanded="false" disabled><span class="mh-dot" id="mhDot"></span><span class="mh-status-text" id="mhStatusText"></span><span class="mh-host" id="mhHost" hidden></span></button><span class="mh-status-details" id="mhStatusDetails" hidden></span></span>
     <span class="mh-build" id="mhBuild"></span>
     <a class="mh-update" id="mhUpdate" href="https://github.com/rynfar/meridian/releases" target="_blank" rel="noopener"></a>
   </div>
@@ -284,6 +321,7 @@ export const profileBarJs = `
   var profileChip = document.getElementById('mhProfile');
   var buildChip = document.getElementById('mhBuild');
   var updateChip = document.getElementById('mhUpdate');
+  var statusPill = document.getElementById('mhStatus');
   var statusDot = document.getElementById('mhDot');
   var statusText = document.getElementById('mhStatusText');
   var hostChip = document.getElementById('mhHost');
@@ -302,6 +340,22 @@ export const profileBarJs = `
   // Inlined from src/telemetry/buildBadge.ts, unit-tested in build-badge.test.ts.
   var buildIdentityView = ${buildIdentityView.toString()};
   var buildDriftView = ${buildDriftView.toString()};
+  // Inlined from src/telemetry/statusPill.ts, unit-tested in status-pill.test.ts.
+  var statusPillView = ${statusPillView.toString()};
+
+  var bindStatusDetails = ${bindStatusDetails.toString()};
+  var statusDetails = bindStatusDetails(statusPill, document.getElementById('mhStatusDetails'), document.getElementById('mhStatusWrap'), document);
+
+  function renderStatus(view) {
+    statusPill.className = 'mh-status' + (view.alert ? ' ' + view.alert : '');
+    statusDot.className = 'mh-dot ' + view.tone;
+    statusText.textContent = view.text;
+    // Plain status text is hidden at phone width. Its name must still include
+    // the current status and only the hostname actually shown by this poll.
+    statusPill.setAttribute('aria-label', view.text + (hostChip.hidden ? '' : ' · ' + hostChip.textContent) + (view.title ? '; status details' : ''));
+    statusDetails.refresh(view.title);
+  }
+
   // Inlined from src/telemetry/hostLabel.ts, unit-tested in host-label.test.ts.
   var hostLabelView = ${hostLabelView.toString()};
 
@@ -522,10 +576,8 @@ export const profileBarJs = `
     var generation = ++healthGeneration;
     fetch('/health', { cache: 'no-store' }).then(function(r) { return r.json(); }).then(function(h) {
       if (generation !== healthGeneration) return;
-      var st = h.status === 'healthy' ? 'healthy' : h.status === 'degraded' ? 'degraded' : 'unhealthy';
-      statusDot.className = 'mh-dot ' + st;
-      statusText.textContent = st === 'healthy' ? 'Operational' : st === 'degraded' ? 'Degraded' : 'Offline';
       renderHost(h.hostname);
+      renderStatus(statusPillView(h));
       renderBuild(h.build);
       if (h.backend === 'antigravity') {
         ['nav-telemetry','nav-profiles','nav-settings','nav-plugins'].forEach(function(id) { document.getElementById(id).hidden = true; });
@@ -533,9 +585,8 @@ export const profileBarJs = `
       }
     }).catch(function() {
       if (generation !== healthGeneration) return;
-      statusDot.className = 'mh-dot unhealthy';
-      statusText.textContent = 'Offline';
       renderHost(undefined);
+      renderStatus(statusPillView(null));
     });
 
     fetch('/profiles/list').then(function(r) { return r.json(); }).then(function(data) {

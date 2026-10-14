@@ -1,0 +1,51 @@
+{
+    "result": "PASS",
+    "model": "claude-opus-5-5",
+    "expectBaseline": true,
+    "platform": "darwin/arm64",
+    "observed": {
+        "drainStart": {
+            "keyless": 404,
+            "keyed": 404,
+            "body": {
+                "error": {
+                    "type": "not_found",
+                    "message": "Endpoint not supported: POST /drain"
+                }
+            }
+        },
+        "first": {
+            "status": 200,
+            "stop": "end_turn",
+            "text": true,
+            "errorFrame": false,
+            "finishedAt": 1791937339381,
+            "ms": 7301
+        },
+        "second": {
+            "status": 200,
+            "stop": "end_turn",
+            "text": true,
+            "errorFrame": false,
+            "finishedAt": 1791937333917,
+            "ms": 1780
+        }
+    },
+    "checks": [
+        {
+            "ok": true,
+            "label": "build without the route: POST /drain is 404",
+            "detail": "status=404"
+        },
+        {
+            "ok": true,
+            "label": "the second request runs beside the first, so total never has to reach 0",
+            "detail": "total=2"
+        },
+        {
+            "ok": true,
+            "label": "both requests complete",
+            "detail": "{\"first\":{\"status\":200,\"stop\":\"end_turn\",\"text\":true,\"errorFrame\":false,\"finishedAt\":1791937339381,\"ms\":7301},\"second\":{\"status\":200,\"stop\":\"end_turn\",\"text\":true,\"errorFrame\":false,\"finishedAt\":1791937333917,\"ms\":1780}}"
+        }
+    ]
+}

@@ -17,7 +17,7 @@ import { pluginPageHtml } from "../proxy/plugins/pluginPage"
 import { profileBarCss, profileBarHtml, profileBarJs } from "../telemetry/profileBar"
 import { ICON_PATH } from "../telemetry/icon"
 import { DEFAULT_PROFILE_SORT, PROFILE_SORT_MODES } from "../telemetry/profileSort"
-import { FADE_FROM, GENERAL_WINDOW_TYPES, SPENT_AT } from "../telemetry/profileSpent"
+import { FADE_FROM, GENERAL_WINDOW_TYPES, SPENT_AT, isUnusableJs } from "../telemetry/profileSpent"
 import { renderLoginCallbackPage } from "../telemetry/loginCallbackPage"
 
 const allPages: Array<[string, string]> = [
@@ -47,11 +47,27 @@ describe("shared site header", () => {
     expect(profileBarJs).toContain("/health")
   })
 
+  // An unreachable upstream renders as an alert pill, and keeps its text at
+  // phone width where the plain status shows only its dot.
+  test("status pill can render an upstream outage", () => {
+    expect(profileBarJs).toContain("statusPillView")
+    expect(profileBarJs).toContain("Claude connection failed")
+    expect(profileBarCss).toContain(".mh-status.outage")
+    expect(profileBarCss).toContain(".mh-status.recovering")
+    expect(profileBarCss).toMatch(/@media \(max-width: 720px\)[\s\S]*\.mh-status\.outage \.mh-status-text[\s\S]*display: inline/)
+  })
+
   test("status pill can name the machine, hidden until /health reports one", () => {
     expect(profileBarHtml).toContain('<span class="mh-host" id="mhHost" hidden></span>')
     expect(profileBarJs).toContain("hostLabelView")
     expect(profileBarJs).toContain("renderHost(h.hostname)")
     expect(settingsPageHtml).toContain("/settings/api/header")
+  })
+
+  // At phone width the plain status drops its text, and the separator before
+  // the hostname with it; an outage keeps its text, so it keeps the separator.
+  test("an outage pill at phone width still separates its text from the hostname", () => {
+    expect(profileBarCss).toMatch(/@media \(max-width: 720px\)[\s\S]*\.mh-status\.outage \.mh-host::before[\s\S]*content: "·"/)
   })
 
   test("header shows active profile chip, not a dropdown", () => {
@@ -179,6 +195,13 @@ describe("landing page layout", () => {
     expect(landingHtml).toContain(`var GENERAL_WINDOW_TYPES=${JSON.stringify(GENERAL_WINDOW_TYPES)}`)
     expect(landingHtml).toContain("--spend-fade")
     expect(landingHtml).toContain("needs login")
+  })
+
+  test("an account that cannot serve gets a solid red border, flagged by the rule /profiles shares", () => {
+    expect(landingHtml).toContain(isUnusableJs)
+    expect(profilePageHtml).toContain(isUnusableJs)
+    expect(landingHtml).toContain(".profile-card.needs-login { border-color: var(--red); }")
+    expect(landingHtml).not.toContain("dashed")
   })
 
   test("the fade never reaches the card itself, so the active ring survives it", () => {
