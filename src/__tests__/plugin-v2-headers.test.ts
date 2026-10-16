@@ -9,6 +9,7 @@ import MeridianV2Plugin, {
   fallbackAgentTraits,
   findLatestV2HumanMessageId,
   isRootV2Session,
+  meridianProviderIDs,
   shouldDetachFromParentSession,
   type AgentTraits,
 } from "../../plugin/meridian-v2"
@@ -52,6 +53,19 @@ describe("plugin/meridian-v2.ts export", () => {
   test("uses the V2 object contract", () => {
     expect(MeridianV2Plugin.id).toBe("meridian")
     expect(typeof MeridianV2Plugin.setup).toBe("function")
+  })
+})
+
+describe("plugin/meridian-v2.ts routed providers", () => {
+  test("defaults to the anthropic and meridian providers", () => {
+    expect([...meridianProviderIDs(undefined)]).toEqual(["anthropic", "meridian"])
+    expect([...meridianProviderIDs("")]).toEqual(["anthropic", "meridian"])
+  })
+
+  test("MERIDIAN_OPENCODE_PROVIDERS replaces the default set", () => {
+    const ids = meridianProviderIDs(" meridian , anthropic-local,,")
+    expect([...ids]).toEqual(["meridian", "anthropic-local"])
+    expect(ids.has("anthropic")).toBe(false)
   })
 })
 

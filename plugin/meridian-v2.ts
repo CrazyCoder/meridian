@@ -33,7 +33,23 @@ import {
 /** SDK contract used to compile this plugin; setup gates separately validated host versions. */
 export const SUPPORTED_OPENCODE_V2_VERSION = "0.0.0-beta-18314"
 
-const MERIDIAN_PROVIDERS = new Set(["anthropic", "meridian"])
+/**
+ * Provider IDs whose traffic goes through Meridian.
+ *
+ * Same contract as the V1 plugin: MERIDIAN_OPENCODE_PROVIDERS (comma-separated)
+ * replaces the default set, so a setup that also reaches Anthropic directly can
+ * leave the direct `anthropic` provider out. The proxy headers mean nothing to
+ * api.anthropic.com and only widen the request fingerprint.
+ */
+export function meridianProviderIDs(configured: string | undefined): Set<string> {
+  const ids = (configured ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+  return new Set(ids.length > 0 ? ids : ["anthropic", "meridian"])
+}
+
+const MERIDIAN_PROVIDERS = meridianProviderIDs(process.env.MERIDIAN_OPENCODE_PROVIDERS)
 const MERIDIAN_CATALOG_PROVIDER = "meridian"
 const PARENT_SESSION_ONE_SHOTS = new Set(["title", "summary"])
 const ATTACHED_COMPACTION_AGENT = "compaction"
