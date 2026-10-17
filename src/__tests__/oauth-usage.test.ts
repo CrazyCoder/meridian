@@ -8,8 +8,8 @@
  * token-refresh.test.ts and other tests that swap globalThis.fetch.
  */
 
-import { describe, expect, test, beforeEach } from "bun:test"
-import { fetchOAuthUsage, fetchOAuthUsageResult, resetOAuthUsageCache, toUsageEntry } from "../proxy/oauthUsage"
+import { describe, expect, test, beforeEach, afterEach, setSystemTime } from "bun:test"
+import { clearOAuthUsageForProfile, fetchOAuthUsage, fetchOAuthUsageResult, peekOAuthUsage, resetOAuthUsageCache, toUsageEntry } from "../proxy/oauthUsage"
 import type { CredentialStore } from "../proxy/tokenRefresh"
 
 const SAMPLE_RESPONSE = {
@@ -35,7 +35,9 @@ function makeStore(token: string | null): CredentialStore {
   return {
     async read() {
       if (!token) return null
-      return { claudeAiOauth: { accessToken: token, refreshToken: "rt", expiresAt: Date.now() + 60_000 } } as any
+      // An hour out, well clear of the refresh-before-expiry margin, so these
+      // tests never reach the real token endpoint.
+      return { claudeAiOauth: { accessToken: token, refreshToken: "rt", expiresAt: Date.now() + 3_600_000 } } as any
     },
     async write() { return true },
   }
@@ -397,7 +399,9 @@ describe("oauthUsage", () => {
     const store: CredentialStore = {
       async read() {
         if (!token) return null
-        return { claudeAiOauth: { accessToken: token, refreshToken: "rt", expiresAt: Date.now() + 60_000 } } as any
+        // An hour out, well clear of the refresh-before-expiry margin, so these
+      // tests never reach the real token endpoint.
+      return { claudeAiOauth: { accessToken: token, refreshToken: "rt", expiresAt: Date.now() + 3_600_000 } } as any
       },
       async write() { return true },
     }
@@ -638,5 +642,262 @@ describe("toUsageEntry", () => {
     expect(entry.stale).toBe(true)
     expect(entry.error).toBe("upstream_error")
     expect(entry.failure?.consecutiveFailures).toBe(1)
+  })
+})
+
+/**
+ * A stuck access token: one host kept a token that had expired 39 hours
+ * earlier, and the usage endpoint answered every check with 429 — 235 in a
+ * row — while other hosts on the same account read fine. The endpoint limits
+ * per access token, so only a new token gets out of that bucket.
+ */
+describe("token refresh outside the 401 path", () => {
+  const HOUR = 60 * 60_000
+
+  /** A store whose token each successful refresh rotates (old → new1 → new2),
+   *  so a test can see which token every upstream call carried. */
+  function rotatingStore(opts: { expiresAt?: number; refreshOk?: boolean } = {}) {
+    let creds = { accessToken: "old", refreshToken: "rt", expiresAt: opts.expiresAt ?? Date.now() + 8 * HOUR }
+    let refreshes = 0
+    const store: CredentialStore = {
+      async read() { return { claudeAiOauth: { ...creds } } },
+      async write() { return true },
+    }
+    const refreshImpl = async () => {
+      refreshes++
+      if (opts.refreshOk === false) return false
+      creds = { ...creds, accessToken: `new${refreshes}`, expiresAt: Date.now() + 8 * HOUR }
+      return true
+    }
+    return { store, refreshImpl, getRefreshes: () => refreshes }
+  }
+
+  /** Answers by the bearer token, and records which token each call used. */
+  function tokenFetch(respond: (token: string) => Response) {
+    const seen: string[] = []
+    const fetchImpl: FetchLike = async (_url, init) => {
+      const token = new Headers(init?.headers).get("authorization")!.replace(/^Bearer /, "")
+      seen.push(token)
+      return respond(token)
+    }
+    return { fetchImpl, seen }
+  }
+
+  const ok = () => new Response(JSON.stringify(SAMPLE_RESPONSE), { status: 200 })
+  const limited = () => new Response("rate limited", { status: 429, headers: { "Retry-After": "0" } })
+
+  beforeEach(() => {
+    resetOAuthUsageCache()
+  })
+
+  afterEach(() => {
+    setSystemTime()
+    delete process.env.MERIDIAN_CREDENTIALS_READONLY
+  })
+
+  test("refreshes an expired token before the usage call", async () => {
+    const { store, refreshImpl, getRefreshes } = rotatingStore({ expiresAt: Date.now() - 39 * HOUR })
+    const { fetchImpl, seen } = tokenFetch(token => token === "old" ? limited() : ok())
+
+    const result = await fetchOAuthUsageResult({ force: true, store, refreshImpl, fetchImpl, profileId: "expired" })
+
+    expect(getRefreshes()).toBe(1)
+    expect(seen).toEqual(["new1"])
+    expect(result.error).toBeNull()
+    expect(result.snapshot).not.toBeNull()
+  })
+
+  test("refreshes a token inside the expiry margin", async () => {
+    const { store, refreshImpl, getRefreshes } = rotatingStore({ expiresAt: Date.now() + 10_000 })
+    const { fetchImpl, seen } = tokenFetch(ok)
+
+    await fetchOAuthUsageResult({ force: true, store, refreshImpl, fetchImpl, profileId: "expiring" })
+
+    expect(getRefreshes()).toBe(1)
+    expect(seen).toEqual(["new1"])
+  })
+
+  test("does not refresh a token that is not near expiry", async () => {
+    const { store, refreshImpl, getRefreshes } = rotatingStore()
+    const { fetchImpl, seen } = tokenFetch(ok)
+
+    await fetchOAuthUsageResult({ force: true, store, refreshImpl, fetchImpl, profileId: "fresh" })
+
+    expect(getRefreshes()).toBe(0)
+    expect(seen).toEqual(["old"])
+  })
+
+  test("a failed expiry refresh still makes the call with the stored token", async () => {
+    const { store, refreshImpl, getRefreshes } = rotatingStore({ expiresAt: Date.now() - HOUR, refreshOk: false })
+    const { fetchImpl, seen } = tokenFetch(limited)
+
+    const result = await fetchOAuthUsageResult({ force: true, store, refreshImpl, fetchImpl, profileId: "expired-dead" })
+
+    expect(getRefreshes()).toBe(1)
+    expect(seen).toEqual(["old"])
+    expect(result.error).toBe("rate_limited")
+  })
+
+  test("a run of 429s on one token refreshes once and retries with the new token", async () => {
+    const { store, refreshImpl, getRefreshes } = rotatingStore()
+    const { fetchImpl, seen } = tokenFetch(token => token === "old" ? limited() : ok())
+    const opts = { force: true, store, refreshImpl, fetchImpl, profileId: "run-429", rateLimitBackoffMs: 0 }
+
+    expect((await fetchOAuthUsageResult(opts)).error).toBe("rate_limited")
+    expect((await fetchOAuthUsageResult(opts)).error).toBe("rate_limited")
+    expect(getRefreshes()).toBe(0)
+
+    const third = await fetchOAuthUsageResult(opts)
+    expect(getRefreshes()).toBe(1)
+    expect(seen).toEqual(["old", "old", "old", "new1"])
+    expect(third.error).toBeNull()
+    expect(third.snapshot).not.toBeNull()
+    expect(third.failure).toBeNull()
+  })
+
+  test("a second 429 run inside the window does not refresh again", async () => {
+    const { store, refreshImpl, getRefreshes } = rotatingStore()
+    const { fetchImpl } = tokenFetch(limited)
+    const opts = { force: true, store, refreshImpl, fetchImpl, profileId: "window", rateLimitBackoffMs: 0 }
+
+    for (let i = 0; i < 3; i++) await fetchOAuthUsageResult(opts)
+    expect(getRefreshes()).toBe(1)
+
+    // The retry on new1 opened a fresh run; push it well past the threshold.
+    for (let i = 0; i < 5; i++) await fetchOAuthUsageResult(opts)
+    expect(getRefreshes()).toBe(1)
+  })
+
+  test("allows another 429 refresh once the window has passed", async () => {
+    const start = Date.now()
+    setSystemTime(start)
+    const { store, refreshImpl, getRefreshes } = rotatingStore()
+    const { fetchImpl } = tokenFetch(limited)
+    const opts = { force: true, store, refreshImpl, fetchImpl, profileId: "window-lapsed", rateLimitBackoffMs: 0 }
+
+    for (let i = 0; i < 3; i++) await fetchOAuthUsageResult(opts)
+    expect(getRefreshes()).toBe(1)
+
+    setSystemTime(start + HOUR + 1_000)
+    for (let i = 0; i < 3; i++) await fetchOAuthUsageResult(opts)
+    expect(getRefreshes()).toBe(2)
+  })
+
+  test("a success between 429s breaks the run", async () => {
+    const { store, refreshImpl, getRefreshes } = rotatingStore()
+    let call = 0
+    const { fetchImpl } = tokenFetch(() => ++call === 3 ? ok() : limited())
+    const opts = { force: true, store, refreshImpl, fetchImpl, profileId: "broken-run", rateLimitBackoffMs: 0 }
+
+    for (let i = 0; i < 4; i++) await fetchOAuthUsageResult(opts)
+
+    expect(getRefreshes()).toBe(0)
+  })
+
+  test("a token rotated by someone else starts a new run", async () => {
+    const { store, refreshImpl, getRefreshes } = rotatingStore()
+    const { fetchImpl } = tokenFetch(limited)
+    const opts = { force: true, store, refreshImpl, fetchImpl, profileId: "rotated", rateLimitBackoffMs: 0 }
+
+    await fetchOAuthUsageResult(opts)
+    await fetchOAuthUsageResult(opts)
+    // Another process (the CLI, the background scheduler) renews the token.
+    await refreshImpl()
+    await fetchOAuthUsageResult(opts)
+    await fetchOAuthUsageResult(opts)
+
+    expect(getRefreshes()).toBe(1)
+  })
+
+  test("a failed 429 refresh leaves the cooldown in force", async () => {
+    const { store, refreshImpl, getRefreshes } = rotatingStore({ refreshOk: false })
+    const { fetchImpl, seen } = tokenFetch(limited)
+    const opts = { force: true, store, refreshImpl, fetchImpl, profileId: "refresh-dead", rateLimitBackoffMs: 0 }
+
+    await fetchOAuthUsageResult(opts)
+    await fetchOAuthUsageResult(opts)
+    const third = await fetchOAuthUsageResult({ ...opts, rateLimitBackoffMs: 60_000 })
+    expect(getRefreshes()).toBe(1)
+    expect(third.error).toBe("rate_limited")
+    expect(third.failure?.consecutiveFailures).toBe(3)
+
+    const suppressed = await fetchOAuthUsageResult({ ...opts, rateLimitBackoffMs: 60_000 })
+    expect(suppressed.error).toBe("rate_limited")
+    expect(seen).toEqual(["old", "old", "old"])
+  })
+
+  test("a read-only instance refreshes neither on expiry nor on a 429 run", async () => {
+    process.env.MERIDIAN_CREDENTIALS_READONLY = "1"
+    const { store, refreshImpl, getRefreshes } = rotatingStore({ expiresAt: Date.now() - HOUR })
+    const { fetchImpl, seen } = tokenFetch(limited)
+    const opts = { force: true, store, refreshImpl, fetchImpl, profileId: "readonly", rateLimitBackoffMs: 0 }
+
+    for (let i = 0; i < 4; i++) await fetchOAuthUsageResult(opts)
+
+    expect(getRefreshes()).toBe(0)
+    expect(seen).toEqual(["old", "old", "old", "old"])
+  })
+
+  test("a 401 still refreshes and retries with the new token", async () => {
+    const { store, refreshImpl, getRefreshes } = rotatingStore()
+    const { fetchImpl, seen } = tokenFetch(token =>
+      token === "old" ? new Response("unauthorized", { status: 401 }) : ok())
+
+    const result = await fetchOAuthUsageResult({ force: true, store, refreshImpl, fetchImpl, profileId: "unauthorized" })
+
+    expect(getRefreshes()).toBe(1)
+    expect(seen).toEqual(["old", "new1"])
+    expect(result.error).toBeNull()
+  })
+
+  test("a 401 whose refresh fails reports upstream_error", async () => {
+    const { store, refreshImpl } = rotatingStore({ refreshOk: false })
+    const { fetchImpl, seen } = tokenFetch(() => new Response("unauthorized", { status: 401 }))
+
+    const result = await fetchOAuthUsageResult({ force: true, store, refreshImpl, fetchImpl, profileId: "unauthorized-dead" })
+
+    expect(seen).toEqual(["old"])
+    expect(result.error).toBe("upstream_error")
+  })
+
+  test("clearOAuthUsageForProfile drops cached snapshot and 429 cooldown for only the target profile", async () => {
+    const { store: workStore, refreshImpl: workRefresh } = rotatingStore()
+    const { store: personalStore, refreshImpl: personalRefresh } = rotatingStore()
+
+    await fetchOAuthUsageResult({ force: true, store: workStore, refreshImpl: workRefresh, fetchImpl: tokenFetch(ok).fetchImpl, profileId: "work" })
+    await fetchOAuthUsageResult({ force: true, store: personalStore, refreshImpl: personalRefresh, fetchImpl: tokenFetch(ok).fetchImpl, profileId: "personal" })
+    expect(peekOAuthUsage("work")).toBeDefined()
+    expect(peekOAuthUsage("personal")).toBeDefined()
+
+    const throttled = await fetchOAuthUsageResult({
+      force: true,
+      store: workStore,
+      refreshImpl: workRefresh,
+      fetchImpl: tokenFetch(limited).fetchImpl,
+      profileId: "work",
+      rateLimitBackoffMs: 60_000,
+    })
+    expect(throttled.failure?.reason).toBe("rate_limited")
+    expect(throttled.snapshot?.stale).toBe(true)
+
+    clearOAuthUsageForProfile("work")
+    expect(peekOAuthUsage("work")).toBeUndefined()
+    expect(peekOAuthUsage("personal")).toBeDefined()
+
+    let freshCalls = 0
+    const afterClear = await fetchOAuthUsageResult({
+      force: true,
+      store: workStore,
+      refreshImpl: workRefresh,
+      fetchImpl: async () => {
+        freshCalls++
+        return ok()
+      },
+      profileId: "work",
+      rateLimitBackoffMs: 60_000,
+    })
+    expect(freshCalls).toBe(1)
+    expect(afterClear.error).toBeNull()
+    expect(afterClear.failure).toBeNull()
   })
 })

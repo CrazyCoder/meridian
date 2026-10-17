@@ -19,11 +19,17 @@ const deferred = process.argv.includes("--deferred")
 // #1364: the model names a tool the client never declared. The CLI refuses it
 // the same way; the request is OpenCode-shaped, where the failure was reported.
 const undeclared = process.argv.find(arg => arg.startsWith("--undeclared="))?.slice(13)
-if (deferred) assert(mode === "client-refusal", "The deferred budget is only tested with CLI refusal recovery")
+// unparsed-input: the fixture streams a registered-name call whose arguments
+// hold a raw TAB inside a string, a shape that fine-grained tool streaming
+// lets through. The real CLI must reject it as unparseable before
+// PreToolUse; Pi receives the complete call and repairs it.
+const unparsed = mode === "unparsed-input"
+const cliRejection = mode === "client-refusal" || unparsed
+if (deferred) assert(cliRejection, "The deferred budget is only tested with CLI refusal recovery")
 if (undeclared !== undefined) assert(undeclared && mode === "client-refusal" && !headerless, "An undeclared name is only tested with keyed CLI refusal recovery")
-if (headerless) assert(mode === "client-refusal", "Headerless Pi is only tested with CLI refusal recovery")
-assert(["partial", "empty", "thinking", "unhandled", "retry", "retry-resume", "pinned", "client-refusal"].includes(mode))
-if (mode === "client-refusal") assert(stream, "CLI refusal recovery is streaming-only")
+if (headerless) assert(cliRejection, "Headerless Pi is only tested with CLI refusal recovery")
+assert(["partial", "empty", "thinking", "unhandled", "retry", "retry-resume", "pinned", "client-refusal", "unparsed-input"].includes(mode))
+if (cliRejection) assert(stream, "CLI refusal recovery is streaming-only")
 const retry = mode.startsWith("retry")
 const silent = retry || mode === "pinned"
 for (const key of Object.keys(process.env)) {
@@ -32,7 +38,8 @@ for (const key of Object.keys(process.env)) {
 Object.assign(process.env, { MERIDIAN_CONFIG_DIR: join(root, "config"), MERIDIAN_SESSION_DIR: join(root, "sessions"),
   MERIDIAN_WORKDIR: root, MERIDIAN_PASSTHROUGH: "1", MERIDIAN_TELEMETRY_PERSIST: "0" })
 if (mode === "pinned") process.env.MERIDIAN_PASSTHROUGH_MAX_TURNS = "1"
-let phase = mode === "retry-resume" || mode === "client-refusal" ? "seed" : "cap"
+if (unparsed) process.env.CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING = "1"
+let phase = mode === "retry-resume" || cliRejection ? "seed" : "cap"
 let capAttempt = 0
 const apiCallsByQuery = new Map()
 const upstreamErrors = []
@@ -44,8 +51,16 @@ const queries = []
 const results = []
 const hooks = []
 const rejections = []
-const tool = { name: "read_fixture", description: "Read synthetic data without side effects", input_schema: { type: "object", properties: {} } }
+const tool = unparsed
+  ? { name: "edit_fixture", description: "Record a synthetic edit without side effects", input_schema: { type: "object",
+    properties: { path: { type: "string" }, edits: { type: "array", items: { type: "object",
+      properties: { oldText: { type: "string" }, newText: { type: "string" } }, required: ["oldText", "newText"] } } },
+    required: ["path", "edits"] } }
+  : { name: "read_fixture", description: "Read synthetic data without side effects", input_schema: { type: "object", properties: {} } }
 const emittedName = undeclared ?? tool.name
+// The TABs are literal characters inside JSON strings, split mid-string.
+const rawTabDeltas = ['{"path":"/fixture/render.ts","edits":[{"oldText":"\tlet text = \\"\\";', '\\n\\treturn text;","newText":"\tconst text = \\"\\";"}]}']
+const rawTabInput = { path: "/fixture/render.ts", edits: [{ oldText: "\tlet text = \"\";\n\treturn text;", newText: "\tconst text = \"\";" }] }
 const deferredTool = { name: "aux_fixture", description: "Unused deferred fixture tool", input_schema: { type: "object", properties: {} }, defer_loading: true }
 const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
   try {
@@ -67,16 +82,22 @@ const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request
       const history = JSON.stringify(body.messages)
       assert(history.includes(receipt), "The fresh CLI must receive the client's real result")
       if (undeclared) assert(history.includes(undeclared), "Fresh replay lost the undeclared tool name")
-      else if (mode === "client-refusal") {
+      else if (cliRejection) {
         const registeredName = body.tools.find(candidate => candidate.name.endsWith(tool.name))?.name
         assert(history.includes(registeredName), "Fresh replay did not use the registered MCP tool name")
       }
-      if (mode !== "client-refusal") assert(body.messages.some(message => Array.isArray(message.content) && message.content.some(block =>
+      if (!cliRejection) assert(body.messages.some(message => Array.isArray(message.content) && message.content.some(block =>
         block.type === "tool_result" && block.tool_use_id === toolId)), "Resumed CLI lost structured tool result")
     }
     const text = apiPhase === "seed" ? "The fixture is ready." : apiPhase === "followup" ? receipt : mode === "empty" ? "" : "A partial answer"
     const registeredName = body.tools.find(candidate => candidate.name.endsWith(tool.name))?.name
-    const blocks = mode === "client-refusal" && capFault
+    const blocks = unparsed && capFault
+      // A deferred budget lets the model retry: once with valid JSON (dropped
+      // by the hook as the hidden digest), then raw TABs again until the cap.
+      ? [apiCalls === 2
+        ? { type: "tool_use", id: `${toolId}_retry${apiCalls}`, name: registeredName, input: {}, partialJson: [JSON.stringify(rawTabInput)] }
+        : { type: "tool_use", id: apiCalls === 1 ? toolId : `${toolId}_retry${apiCalls}`, name: registeredName, input: {}, partialJson: rawTabDeltas }]
+      : mode === "client-refusal" && capFault
       ? [apiCalls === 1 ? { type: "tool_use", id: toolId, name: emittedName, input: {} }
         : { type: "tool_use", id: `${toolId}_retry${apiCalls}`, name: apiCalls === 2 ? registeredName : emittedName, input: {} }]
       : handoff ? [{ type: "tool_use", id: toolId, name: body.tools.find(candidate => candidate.name.endsWith(tool.name)).name, input: {} }]
@@ -92,8 +113,10 @@ const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request
           { type: "content_block_stop", index })
         continue
       }
-      events.push({ type: "content_block_start", index, content_block: block.type === "text" ? { type: "text", text: "" } : block },
-        { type: "content_block_delta", index, delta: block.type === "text" ? { type: "text_delta", text: block.text } : { type: "input_json_delta", partial_json: "{}" } },
+      const { partialJson = ["{}"], ...startBlock } = block
+      events.push({ type: "content_block_start", index, content_block: block.type === "text" ? { type: "text", text: "" } : startBlock },
+        ...(block.type === "text" ? [{ type: "content_block_delta", index, delta: { type: "text_delta", text: block.text } }]
+          : partialJson.map(partial_json => ({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json } }))),
         { type: "content_block_stop", index })
     }
     events.push({ type: "message_delta", delta: { stop_reason: capFault || handoff ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 20 } },
@@ -126,7 +149,9 @@ const observer = spyOn(sdk, "query").mockImplementation(input => {
         if (message.type === "result") results.push({ phase: queryPhase, attempt, subtype: message.subtype })
         if (message.type === "user") {
           for (const block of message.message?.content ?? []) {
-            if (block.type === "tool_result" && JSON.stringify(block.content).includes("No such tool available:")) {
+            const resultText = JSON.stringify(block.content)
+            if (block.type === "tool_result" && (resultText.includes("No such tool available:") ||
+              resultText.includes("could not be parsed as JSON"))) {
               rejections.push({ phase: queryPhase, attempt, id: block.tool_use_id, content: block.content })
             }
           }
@@ -134,7 +159,7 @@ const observer = spyOn(sdk, "query").mockImplementation(input => {
         // The unknown fixture tool makes the REAL CLI spend its capped turn
         // without executing a tool. Withhold its wire/assistant content, or all
         // content for silent recovery. The CLI result and session stay real.
-        if (queryPhase === "cap" && attempt === 1 && mode !== "unhandled" && mode !== "client-refusal") {
+        if (queryPhase === "cap" && attempt === 1 && mode !== "unhandled" && !cliRejection) {
           if (message.type === "stream_event" && (silent || message.event?.index === 1)) { withheld++; continue }
           if (message.type === "assistant") {
             withheld++
@@ -155,9 +180,14 @@ const proxy = await startProxyServer({ port: 0, host: "127.0.0.1", silent: true,
 })
 const address = proxy.server.address()
 assert(address && typeof address === "object")
+// Keep unparseable delivered arguments visible instead of throwing, so a
+// failing run reports the response it got rather than a harness parse error.
+function parseClientInput(json) {
+  try { return JSON.parse(json) } catch (error) { return { unparsedClientInput: json, error: String(error) } }
+}
 async function request(messages, includeTools = true) {
   const headers = { "content-type": "application/json" }
-  if (mode === "client-refusal" && !undeclared) {
+  if (cliRejection && !undeclared) {
     headers["x-meridian-agent"] = "pi"
     headers["user-agent"] = "pi/0.85.0"
     if (!headerless) headers["x-session-affinity"] = "cap-cli-refusal"
@@ -173,7 +203,7 @@ async function request(messages, includeTools = true) {
     if (event.type === "content_block_start") content[event.index] = { ...event.content_block, json: "" }
     if (event.delta?.type === "text_delta") content[event.index].text += event.delta.text
     if (event.delta?.type === "input_json_delta") content[event.index].json += event.delta.partial_json
-    if (event.type === "content_block_stop" && content[event.index]?.type === "tool_use") content[event.index].input = JSON.parse(content[event.index].json || "{}")
+    if (event.type === "content_block_stop" && content[event.index]?.type === "tool_use") content[event.index].input = parseClientInput(content[event.index].json || "{}")
   }
   const stop = stream ? events.findLast(event => event.type === "message_delta")?.delta.stop_reason : JSON.parse(raw).stop_reason
   return { status: response.status, raw, content: content.filter(Boolean).map(({ json, ...block }) => block), events, stop }
@@ -238,16 +268,17 @@ try {
     assert(last.resumeSessionAt)
     assert.deepEqual(await sdk.getSessionMessages(capQueries[1].sessionId, { dir: root }), history)
     if (source) assert.deepEqual(await sdk.getSessionMessages(source, { dir: root }), sourceHistory)
-  } else if (mode === "client-refusal") {
+  } else if (cliRejection) {
     success(response, "tool_use")
     assert.equal(response.content.length, 1)
     assert.equal(response.content[0].id, toolId)
     assert.equal(response.content[0].name, emittedName)
+    if (unparsed) assert.deepEqual(response.content[0].input, rawTabInput)
     if (!headerless) assert.equal(capQueries[0].resume, source)
-    assert(!hooks.some(hook => hook.phase === "cap" && hook.id === toolId), "CLI executed a client tool instead of rejecting the bare name")
+    assert(!hooks.some(hook => hook.phase === "cap" && hook.id === toolId), "CLI executed a client tool instead of rejecting it")
     assert(rejections.some(result => result.phase === "cap" && result.attempt === 1 && result.id === toolId &&
-      JSON.stringify(result.content).includes("No such tool available: " + emittedName)),
-    "Real CLI did not reject the unregistered tool name")
+      JSON.stringify(result.content).includes(unparsed ? "could not be parsed as JSON" : "No such tool available: " + emittedName)),
+    "Real CLI did not reject the tool call")
     phase = "followup"
     // Pi omits `tools` on the result turn; OpenCode resends them and answers
     // an unknown name with its own error result.

@@ -2595,7 +2595,7 @@ describe("Integration: passthrough early stop", () => {
     }
   })
 
-  it("stream: a capped checkpoint fork does not store parent rollback UUIDs", async () => {
+  it("stream: a capped checkpoint fork retains parent rollback UUIDs across managed forks (#1371)", async () => {
     const parentToolTurn = assistantMessage([
       { type: "tool_use", id: "capped-fork-parent", name: "read", input: { file_path: "parent" } },
     ])
@@ -2661,9 +2661,9 @@ describe("Integration: passthrough early stop", () => {
         ] },
       ],
     }, "es-capped-fork-map")).status).toBe(200)
-    expect(capturedQueryParamsAll[2].options.resume).toBeUndefined()
-    expect(capturedQueryParamsAll[2].options.resumeSessionAt).toBeUndefined()
-    expect(capturedQueryParamsAll[2].options.forkSession).toBeUndefined()
+    expect(capturedQueryParamsAll[2].options.resume).toBe(capturedQueryParamsAll[1].options.sessionId)
+    expect(capturedQueryParamsAll[2].options.resumeSessionAt).toBe(parentToolTurn.uuid)
+    expect(capturedQueryParamsAll[2].options.forkSession).toBe(true)
   })
 
   it("non-stream: stores the checkpoint at the capped stop so the next turn resumes", async () => {
@@ -3204,6 +3204,264 @@ describe("Integration: passthrough early stop", () => {
     const events = parseSSE(await res.text())
     expect(capturedQueryParamsAll[0]?.options.maxTurns).toBe(4)
     expect(events.filter(e => e.event === "error")).toHaveLength(1)
+  })
+
+  // When fine-grained tool streaming is on, a model that edits a tab-indented
+  // file can put a raw TAB inside a string of its edit arguments. Claude Code
+  // cannot parse them, rejects the call with InputValidationError before
+  // PreToolUse, and hits the one-turn cap. The client already holds the
+  // complete streamed call (Pi repairs that JSON), but got an SSE api_error
+  // frame, "Reached maximum number of turns (1)", instead.
+  const EDIT_TOOL = {
+    name: "edit",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        edits: { type: "array", items: { type: "object",
+          properties: { oldText: { type: "string" }, newText: { type: "string" } } } },
+      },
+      required: ["path", "edits"],
+    },
+  }
+  // Split mid-string, as the API streams it; the TABs are literal.
+  const RAW_TAB_EDIT_DELTAS = [
+    '{"path": "/repo/lib/render.ts", "edits": [{"oldText":"\tlet text = \\"\\";\\n',
+    '\\tif (x) {","newText":"\tlet text = \\"y\\";"}]}',
+  ]
+  const RAW_TAB_EDIT_INPUT = {
+    path: "/repo/lib/render.ts",
+    edits: [{ oldText: "\tlet text = \"\";\n\tif (x) {", newText: "\tlet text = \"y\";" }],
+  }
+  const unparsedInputMessage = (toolUseId: string, raw: string) => ({
+    ...userDenyMessage(toolUseId),
+    message: {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: toolUseId, is_error: true,
+        content: "<tool_use_error>InputValidationError: mcp__oc__edit was called with input that could not be parsed as JSON.\n" +
+          `You sent (first ${Math.min(raw.length, 200)} of ${raw.length} bytes): ${raw.slice(0, 200)}\n` +
+          "Common causes: unescaped backslashes in file paths (use / or \\\\), unescaped control characters, or truncated output. Retry with valid JSON.</tool_use_error>" }],
+    },
+  })
+  const rawTabEditTurn = (toolUseId: string, deltas: string[]) => {
+    const raw = deltas.join("")
+    return [
+      messageStart(`msg_${toolUseId}`),
+      { type: "stream_event", event: { type: "content_block_start", index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" } } },
+      blockStop(0),
+      toolUseBlockStart(1, "mcp__oc__edit", toolUseId),
+      ...deltas.map(delta => inputJsonDelta(1, delta)),
+      blockStop(1),
+      messageDelta("tool_use"),
+      messageStop(),
+      { ...assistantMessage([
+        { type: "tool_use", id: toolUseId, name: "mcp__oc__edit",
+          input: { __unparsedToolInput: { raw, len: raw.length } } },
+      ]), test_skip_pre_tool_hook: true },
+      unparsedInputMessage(toolUseId, raw),
+    ]
+  }
+  const deliveredToolInputs = (events: Array<{ event: string; data: any }>) => {
+    const starts = new Map<number, { id: string; name: string; json: string }>()
+    for (const { event, data } of events) {
+      if (event === "content_block_start" && data.content_block?.type === "tool_use") {
+        starts.set(data.index, { id: data.content_block.id, name: data.content_block.name, json: "" })
+      } else if (event === "content_block_delta" && data.delta?.type === "input_json_delta") {
+        const block = starts.get(data.index)
+        if (block) block.json += data.delta.partial_json
+      }
+    }
+    return [...starts.values()]
+  }
+
+  for (const flag of [undefined, "1"] as const) {
+    it(`stream: a CLI-rejected raw-tab edit completes the Pi handoff (recovery flag ${flag ?? "unset"})`, async () => {
+      if (flag === undefined) delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+      else process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY = flag
+      const sessionHeader = `es-raw-tab-edit-${flag ?? "unset"}`
+      const pi = { "x-meridian-agent": "pi", "x-session-affinity": sessionHeader, "user-agent": "pi/1.1.0" }
+      mockMessages = [assistantMessage([{ type: "text", text: "seed" }])]
+      const seed = await post(app, {
+        model: "claude-opus-4-5", max_tokens: 400, stream: false,
+        tools: [EDIT_TOOL], messages: [{ role: "user", content: "seed" }],
+      }, sessionHeader, pi)
+      await seed.text()
+      const sourceSessionId = lookupSharedSession(sessionHeader)?.claudeSessionId
+      expect(sourceSessionId).toBeDefined()
+      diagnosticLog.clear()
+
+      mockMessages = [
+        ...rawTabEditTurn("toolu_raw_tab", RAW_TAB_EDIT_DELTAS),
+        { type: "result", subtype: "error_max_turns", is_error: true },
+      ]
+      mockTerminalError = new Error("Claude Code returned an error result: Reached maximum number of turns (1)")
+      const res = await post(app, {
+        model: "claude-opus-4-5", max_tokens: 400, stream: true, tools: [EDIT_TOOL],
+        messages: [
+          { role: "user", content: "seed" },
+          { role: "assistant", content: "seed" },
+          { role: "user", content: "fix the tab-indented file" },
+        ],
+      }, sessionHeader, pi)
+      expect(res.status).toBe(200)
+      const events = parseSSE(await res.text())
+      expect(capturedQueryParamsAll[1]?.options.resume).toBe(sourceSessionId)
+      expect(capturedQueryParamsAll[1]?.options.maxTurns).toBe(1)
+      expect(events.filter(e => e.event === "error")).toHaveLength(0)
+      const delivered = deliveredToolInputs(events)
+      expect(delivered.map(({ id, name }) => `${id}:${name}`)).toEqual(["toolu_raw_tab:edit"])
+      // The buffered repair path hands the client strict JSON, so a client
+      // without Pi's own repair can run the call too.
+      expect(JSON.parse(delivered[0]!.json)).toEqual(RAW_TAB_EDIT_INPUT)
+      expect(stopReasons(events)).toEqual(["tool_use"])
+      expect(events.filter(e => e.event === "message_stop")).toHaveLength(1)
+      // The rejected SDK transcript is never offered for resume.
+      expect(lookupSharedSession(sessionHeader)).toBeUndefined()
+      const logs = diagnosticLog.getRecent({ limit: 50 }).map(entry => entry.message)
+      expect(logs.some(line => line.includes("sdk_termination_recovered_uncaptured"))).toBe(true)
+    })
+  }
+
+  // A tool with only string arguments is not buffered, so its raw deltas
+  // reach the client as the model wrote them. The completeness check must
+  // accept what the client repairs (Pi's parseJsonWithRepair) and nothing more.
+  it("stream: a CLI-rejected unbuffered call with a raw newline completes the Pi handoff", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    const bashTool = { name: "bash", input_schema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } }
+    const raw = '{"command":"printf \'a\nb\'"}'
+    mockMessages = [
+      messageStart("msg_raw_newline"),
+      toolUseBlockStart(0, "mcp__oc__bash", "toolu_raw_newline"),
+      inputJsonDelta(0, raw.slice(0, 20)),
+      inputJsonDelta(0, raw.slice(20)),
+      blockStop(0),
+      messageDelta("tool_use"),
+      messageStop(),
+      { ...assistantMessage([
+        { type: "tool_use", id: "toolu_raw_newline", name: "mcp__oc__bash",
+          input: { __unparsedToolInput: { raw, len: raw.length } } },
+      ]), test_skip_pre_tool_hook: true },
+      {
+        ...unparsedInputMessage("toolu_raw_newline", raw),
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_raw_newline", is_error: true,
+          content: "<tool_use_error>InputValidationError: mcp__oc__bash was called with input that could not be parsed as JSON.\n" +
+            `You sent (first ${raw.length} of ${raw.length} bytes): ${raw}\nCommon causes: truncated output. Retry with valid JSON.</tool_use_error>` }] },
+      },
+      { type: "result", subtype: "error_max_turns", is_error: true },
+    ]
+    mockTerminalError = new Error("Claude Code returned an error result: Reached maximum number of turns (1)")
+    const res = await post(app, {
+      model: "claude-opus-4-5", max_tokens: 400, stream: true, tools: [bashTool],
+      messages: [{ role: "user", content: "print two lines" }],
+    }, "es-raw-newline", { "x-meridian-agent": "pi", "user-agent": "pi/1.1.0" })
+    expect(res.status).toBe(200)
+    const events = parseSSE(await res.text())
+    expect(events.filter(e => e.event === "error")).toHaveLength(0)
+    const delivered = deliveredToolInputs(events)
+    expect(delivered.map(({ id, name }) => `${id}:${name}`)).toEqual(["toolu_raw_newline:bash"])
+    expect(delivered[0]!.json).toBe(raw)
+    expect(stopReasons(events)).toEqual(["tool_use"])
+  })
+
+  // The rejection proves only the call it names. A result for another id, or
+  // for another tool under the streamed id, must not authorize the handoff.
+  for (const mismatch of ["id", "name"] as const) {
+    it(`stream: an unparseable-input rejection with a mismatched ${mismatch} keeps the error frame`, async () => {
+      delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+      diagnosticLog.clear()
+      const turn = rawTabEditTurn("toolu_raw_tab_streamed", RAW_TAB_EDIT_DELTAS)
+      const raw = RAW_TAB_EDIT_DELTAS.join("")
+      const rejection = unparsedInputMessage(mismatch === "id" ? "toolu_raw_tab_other" : "toolu_raw_tab_streamed", raw)
+      if (mismatch === "name") {
+        const block = rejection.message.content[0]!
+        rejection.message.content[0] = { ...block, content: block.content.replace("mcp__oc__edit was called", "mcp__oc__write was called") }
+      }
+      mockMessages = [
+        ...turn.slice(0, -1),
+        rejection,
+        { type: "result", subtype: "error_max_turns", is_error: true },
+      ]
+      mockTerminalError = new Error("Claude Code returned an error result: Reached maximum number of turns (1)")
+      const res = await post(app, {
+        model: "claude-opus-4-5", max_tokens: 400, stream: true, tools: [EDIT_TOOL],
+        messages: [{ role: "user", content: "fix the tab-indented file" }],
+      }, `es-raw-tab-mismatch-${mismatch}`, { "x-meridian-agent": "pi", "user-agent": "pi/1.1.0" })
+      const events = parseSSE(await res.text())
+      expect(events.filter(e => e.event === "error")).toHaveLength(1)
+      expect(stopReasons(events)).not.toContain("tool_use")
+      const failure = diagnosticLog.getRecent({ limit: 50, category: "error" })
+        .map(entry => entry.message).find(line => line.includes("reason=max_turns"))
+      expect(failure).toContain("uncaptured_veto=disabled cli_rejected=1")
+    })
+  }
+
+  it("stream: MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY=0 keeps the raw-tab rejection an error", async () => {
+    process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY = "0"
+    diagnosticLog.clear()
+    mockMessages = [
+      ...rawTabEditTurn("toolu_raw_tab_off", RAW_TAB_EDIT_DELTAS),
+      { type: "result", subtype: "error_max_turns", is_error: true },
+    ]
+    mockTerminalError = new Error("Claude Code returned an error result: Reached maximum number of turns (1)")
+    const res = await post(app, {
+      model: "claude-opus-4-5", max_tokens: 400, stream: true, tools: [EDIT_TOOL],
+      messages: [{ role: "user", content: "fix the tab-indented file" }],
+    }, "es-raw-tab-edit-off", { "x-meridian-agent": "pi", "user-agent": "pi/1.1.0" })
+    const events = parseSSE(await res.text())
+    expect(events.filter(e => e.event === "error")).toHaveLength(1)
+    expect(stopReasons(events)).not.toContain("tool_use")
+    const failure = diagnosticLog.getRecent({ limit: 50, category: "error" })
+      .map(entry => entry.message).find(line => line.includes("reason=max_turns"))
+    expect(failure).toContain("uncaptured_veto=disabled")
+  })
+
+  it("stream: a CLI-rejected call with truncated arguments stays an error and names the veto", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    diagnosticLog.clear()
+    mockMessages = [
+      ...rawTabEditTurn("toolu_truncated", ['{"path": "/repo/lib/render.ts", "edits": [{"oldText":"\tlet']),
+      { type: "result", subtype: "error_max_turns", is_error: true },
+    ]
+    mockTerminalError = new Error("Claude Code returned an error result: Reached maximum number of turns (1)")
+    const res = await post(app, {
+      model: "claude-opus-4-5", max_tokens: 400, stream: true, tools: [EDIT_TOOL],
+      messages: [{ role: "user", content: "fix the tab-indented file" }],
+    }, "es-raw-tab-truncated", { "x-meridian-agent": "pi", "user-agent": "pi/1.1.0" })
+    const events = parseSSE(await res.text())
+    expect(events.filter(e => e.event === "error")).toHaveLength(1)
+    const failure = diagnosticLog.getRecent({ limit: 50, category: "error" })
+      .map(entry => entry.message).find(line => line.includes("reason=max_turns"))
+    expect(failure).toContain("uncaptured_veto=incomplete_json")
+  })
+
+  // Deferred tools lift the cap to 4. After the rejection the model retries
+  // with valid JSON under the registered name; the hook drops that retry as
+  // the hidden digest, and the turn still ends at max_turns.
+  it("stream: a CLI-rejected raw-tab edit recovers at the deferred-tools turn budget", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    const sessionHeader = "es-raw-tab-deferred"
+    const tools = [EDIT_TOOL,
+      { name: "lsp_diagnostics", defer_loading: true, input_schema: { type: "object", properties: { file: { type: "string" } } } }]
+    mockMessages = [
+      ...rawTabEditTurn("toolu_raw_tab_deferred", RAW_TAB_EDIT_DELTAS),
+      assistantMessage([{ type: "tool_use", id: "toolu_raw_tab_retry", name: "mcp__oc__edit", input: RAW_TAB_EDIT_INPUT }]),
+      userDenyMessage("toolu_raw_tab_retry"),
+      { type: "result", subtype: "error_max_turns", is_error: true },
+    ]
+    mockTerminalError = new Error("Claude Code returned an error result: Reached maximum number of turns (4)")
+    const res = await post(app, {
+      model: "claude-opus-4-5", max_tokens: 400, stream: true, tools,
+      messages: [{ role: "user", content: "fix the tab-indented file" }],
+    }, sessionHeader, { "x-meridian-agent": "pi", "x-session-affinity": sessionHeader, "user-agent": "pi/1.1.0" })
+    expect(res.status).toBe(200)
+    const events = parseSSE(await res.text())
+    expect(capturedQueryParamsAll[0]?.options.maxTurns).toBe(4)
+    expect(events.filter(e => e.event === "error")).toHaveLength(0)
+    expect(deliveredToolInputs(events).map(({ id, name }) => `${id}:${name}`)).toEqual(["toolu_raw_tab_deferred:edit"])
+    expect(stopReasons(events)).toEqual(["tool_use"])
+    expect(events.filter(e => e.event === "message_stop")).toHaveLength(1)
+    expect(lookupSharedSession(sessionHeader)).toBeUndefined()
   })
 
   it("stream: explicit empty tools do not spend the recovered grant", async () => {

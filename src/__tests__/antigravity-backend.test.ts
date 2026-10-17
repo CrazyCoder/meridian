@@ -455,7 +455,24 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
   })
   it("sends long conversation history on stdin instead of exceeding argv limits", async () => {
     const { send } = fixture()
-    expect((await send({ ...initial("a".repeat(200000)), tools: [] })).status).toBe(200)
+    // Above Linux's 128 KiB single-argument limit, below the byte limit past which agy drops the end of a prompt.
+    expect((await send({ ...initial("a".repeat(150000)), tools: [] })).status).toBe(200)
+  })
+  it("rejects a current request agy would silently cut short with a 400 instead of answering from part of it", async () => {
+    const { send } = fixture()
+    const response = await send({ ...initial("a".repeat(200000)), tools: [] })
+    expect(response.status).toBe(400)
+    expect(JSON.stringify(await response.json())).toMatch(/prompt is too long/)
+  })
+  it("shrinks an old tool result of a replayed history to fit agy's input limit and keeps the newest result intact", async () => {
+    const { send } = fixture()
+    const newest = "NEWEST_RESULT_" + "n".repeat(60000)
+    const use = (id: string) => ({ role: "assistant", content: [{ type: "tool_use", id, name: "lookup", input: { key: id } }] })
+    const result = (id: string, content: string) => ({ role: "user", content: [{ type: "tool_result", tool_use_id: id, content }] })
+    const messages = [{ role: "user", content: "Get receipt" }, use("call_old"), result("call_old", "OLD_RESULT_" + "o".repeat(150000)), { role: "assistant", content: "Done." }, { role: "user", content: "Now read the new file" }, use("call_new"), result("call_new", newest)]
+    const response = await send({ ...initial(), messages })
+    expect(response.status).toBe(200)
+    expect((await decode(response)).content[0]!.text).toBe(newest)
   })
   it("honors Meridian API keys while keeping health probes public", async () => {
     const previous = process.env.MERIDIAN_API_KEY

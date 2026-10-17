@@ -50,6 +50,67 @@ describe("Claude Code progress-caption classification", () => {
     }
   })
 
+  it("classifies a first-turn caption followed by a trailing system context message", async () => {
+    const systemText = "The following deferred tools are now available via ToolSearch.\n\n# Environment\n - Primary working directory: /tmp/project\n\nToday's date is 2026-10-14."
+    for (const systemContent of [
+      systemText,
+      [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }],
+      "<system-reminder>\n<total_tokens>4151 / 200000 tokens left</total_tokens>\n</system-reminder>",
+    ]) {
+      const messages = [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "<system-reminder>\nAttribution for git commits\n</system-reminder>" },
+            { type: "text", text: "Run `sleep 40` three times." },
+            { type: "text", text: PROGRESS_FIRST_PROMPT },
+          ],
+        },
+        { role: "system", content: systemContent },
+      ]
+      expect(await auxiliary({ ...progressBody(), messages })).toBe(true)
+    }
+
+    // Negative cases: the real Turn-1 subagent request (same [user, system]
+    // shape without the caption instruction), a system message containing the
+    // caption text, an empty system message, or two trailing system messages.
+    expect(await auxiliary({
+      ...progressBody(),
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "<system-reminder>\nAttribution for git commits\n</system-reminder>" },
+            { type: "text", text: "Run `sleep 40` three times." },
+          ],
+        },
+        { role: "system", content: systemText },
+      ],
+    })).toBe(false)
+    expect(await auxiliary({
+      ...progressBody(),
+      messages: [
+        { role: "user", content: "Run `sleep 40` three times." },
+        { role: "system", content: PROGRESS_FIRST_PROMPT },
+      ],
+    })).toBe(false)
+    expect(await auxiliary({
+      ...progressBody(),
+      messages: [
+        { role: "user", content: PROGRESS_FIRST_PROMPT },
+        { role: "system", content: "   " },
+      ],
+    })).toBe(false)
+    expect(await auxiliary({
+      ...progressBody(),
+      messages: [
+        { role: "user", content: PROGRESS_FIRST_PROMPT },
+        { role: "system", content: systemText },
+        { role: "system", content: systemText },
+      ],
+    })).toBe(false)
+  })
+
   it("lets an explicit request class override shape detection", async () => {
     expect(await auxiliary(progressBody(), { "x-claude-code-request-class": "main" })).toBe(false)
     expect(await auxiliary({}, { "x-claude-code-request-class": "auxiliary" })).toBe(true)

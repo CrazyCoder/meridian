@@ -105,6 +105,12 @@ or active-resume guarantee. No automatic client-side reconciliation UI is claime
 `MERIDIAN_AGY_IDLE_CONVERSATION_MS` keeps a completed conversation's live process
 for the next turn (default: the tool timeout); a later turn replays the full history.
 `MERIDIAN_AGY_MAX_CONCURRENT` bounds concurrent CLI processes (default 4).
+agy keeps only about 192,000 bytes of one input step and silently drops the rest;
+a started or replayed conversation sends its whole history in one step, history last.
+`MERIDIAN_AGY_MAX_PROMPT_BYTES` (default 190,000) keeps that prompt under the limit by
+shortening the oldest large tool results, arguments and text first and the newest round
+last, with a note to the model to re-read what it needs. A current request that alone does
+not fit fails with 400 `prompt is too long` instead of being answered from part of it.
 Request/response/attachment buffers are also bounded; see the backend guide.
 
 These controls do not cap the entire multi-turn task's tokens, number of tool

@@ -990,6 +990,49 @@ describe("POST /v1/chat/completions — streaming", () => {
     expect(argChunks.map(a => a.function!.arguments)).toEqual(['{"x":1}', '{"y":2}', '{"z":3}'])
   })
 
+  it("keeps each tool's arguments on its own call when they arrive after a later tool starts", async () => {
+    // Fragments for block 0 arrive after block 1 has started. Routing by the
+    // most recently started tool concatenates both inputs onto the second call
+    // ({"path":"a.txt"}{"path":"b.txt"}) and leaves the first call empty.
+    mockMessages = [
+      messageStart("msg_1"),
+      toolUseBlockStart(0, "read", "tu_a"),
+      toolUseBlockStart(1, "read", "tu_b"),
+      inputJsonDelta(0, '{"path":'),
+      inputJsonDelta(1, '{"path":"b.txt"}'),
+      inputJsonDelta(0, '"a.txt"}'),
+      blockStop(0),
+      blockStop(1),
+      messageDelta("tool_use"),
+      messageStop(),
+    ]
+    const app = createTestApp()
+
+    const res = await postChatCompletion(app, {
+      stream: true,
+      messages: [{ role: "user", content: "read a and b" }],
+    })
+
+    const calls = new Map<number, { id?: string; arguments: string }>()
+    for (const chunk of streamChunks(await readStream(res))) {
+      for (const tc of chunk.choices[0]?.delta.tool_calls ?? []) {
+        if (tc.index === undefined) continue
+        const call = calls.get(tc.index) ?? { arguments: "" }
+        if (tc.id) call.id = tc.id
+        call.arguments += tc.function?.arguments ?? ""
+        calls.set(tc.index, call)
+      }
+    }
+    const assembled = [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => ({
+      id: call.id,
+      input: JSON.parse(call.arguments),
+    }))
+    expect(assembled).toEqual([
+      { id: "tu_a", input: { path: "a.txt" } },
+      { id: "tu_b", input: { path: "b.txt" } },
+    ])
+  })
+
   it("text-then-tool stream: tool indexes start at 0 (not affected by preceding text block)", async () => {
     // tool_call_counter only increments on tool_use blocks, so a text block
     // before a tool_use should still result in index 0 for the first tool.

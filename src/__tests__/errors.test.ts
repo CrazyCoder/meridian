@@ -318,6 +318,21 @@ describe("classifyError", () => {
   })
 
   describe("context overflow", () => {
+    it.each([
+      "Claude Code returned an error result: Prompt is too long",
+      "input length and `max_tokens` exceed context limit: 197000 + 8192 > 200000",
+      "context_length_exceeded",
+    ])("keeps a client-recognizable overflow signal for %s", (message) => {
+      const error = classifyError(message)
+      // OpenCode recognizes Anthropic's canonical phrase to trigger reactive
+      // compaction. A generic invalid_request_error with reworded prose cannot
+      // distinguish overflow from an invalid tool schema or another bad input.
+      expect(error.message).toMatch(/prompt is too long/i)
+      expect(error.message).toMatch(/compact or trim/i)
+      expect(error.status).toBe(400)
+      expect(error.type).toBe("invalid_request_error")
+    })
+
     it("classifies the CLI's bare wording", () => {
       const r = classifyError("Claude Code returned an error result: Prompt is too long")
       expect(r.status).toBe(400)
@@ -595,6 +610,15 @@ describe("classifyError", () => {
 
     it("reads the refusal out of a longer message", () => {
       expect(classifyResumeRefusal(new Error("claude code returned an error result: No message found with message.uuid of: abc123"))).toBe("missing-message")
+    })
+
+    it("finds the missing-message refusal on stderr when the error only carries the exit code (#1371)", () => {
+      expect(
+        classifyResumeRefusal(
+          new Error("Claude Code process exited with code 1"),
+          "No message found with message.uuid of: e663b687-6d08-4cc4-b9a9-5245ce8f1e07",
+        ),
+      ).toBe("missing-message")
     })
 
     it("a session that would not open is unresumable, not proven gone", () => {

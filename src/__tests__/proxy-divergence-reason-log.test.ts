@@ -126,6 +126,62 @@ describe("divergence reason on the request line", () => {
     expect(lastRequestLine()).toContain("diverged=independent-request:auxiliary-request")
   })
 
+  it("names an interactive session-title request and a first-turn subagent progress caption with trailing system context as auxiliary", async () => {
+    const app = createTestApp()
+    const titleRes = await post(app, {
+      model: "claude-sonnet-4-6",
+      max_tokens: 32000,
+      stream: true,
+      tools: [],
+      system: [
+        { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
+        {
+          type: "text",
+          text: "You are naming a coding session so the user can pick it out of a long list of sessions. The title is a name for what the session is about, not a sentence describing the task.\n\nReturn JSON with a single \"title\" field. Capitalize the first letter of the title.",
+        },
+      ],
+      messages: [{
+        role: "user",
+        content: "<session>\nUse the Agent tool to launch two subagents\n</session>\n\nWrite the title in the predominant language of the session — a stray word or code token in another language doesn't change it, and neither does the English of these instructions.",
+      }],
+      metadata: { user_id: JSON.stringify({ session_id: "aux-interactive-session" }) },
+    }, {
+      "user-agent": "claude-cli/2.1.299",
+      "x-claude-code-session-id": "b2004dfc-6042-48d9-9c23-b4475f64b6f5",
+    })
+    await titleRes.text()
+    expect(lastRequestLine()).toContain("diverged=independent-request:auxiliary-request")
+
+    const captionRes = await post(app, {
+      model: "claude-sonnet-4-6",
+      max_tokens: 32000,
+      stream: true,
+      tools: [{ name: "Bash", description: "Run bash", input_schema: { type: "object", properties: {} } }],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Run `sleep 40` three times." },
+            {
+              type: "text",
+              text: "Describe your most recent action in 3-5 words using present tense (-ing). Name the file or function, not the branch. Do not use tools.\n\nGood: \"Reading runAgent.ts\"\nGood: \"Fixing null check in validate.ts\"\nGood: \"Running auth module tests\"\nGood: \"Adding retry logic to fetchUser\"\n\nBad (past tense): \"Analyzed the branch diff\"\nBad (too vague): \"Investigating the issue\"\nBad (too long): \"Reviewing full branch diff and AgentTool.tsx integration\"\nBad (branch name): \"Analyzed adam/background-summary branch diff\"",
+            },
+          ],
+        },
+        {
+          role: "system",
+          content: "The following deferred tools are now available via ToolSearch.\n\nToday's date is 2026-10-14.",
+        },
+      ],
+      metadata: { user_id: JSON.stringify({ session_id: "aux-interactive-session" }) },
+    }, {
+      "user-agent": "claude-cli/2.1.299",
+      "x-claude-code-agent-id": "a2656b86bfcb5c8cb",
+    })
+    await captionRes.text()
+    expect(lastRequestLine()).toContain("diverged=independent-request:auxiliary-request")
+  })
+
   it("names it from the request-class header too", async () => {
     const app = createTestApp()
     const { stop_sequences: _omitted, ...unshaped } = CLASSIFIER

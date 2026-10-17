@@ -16,8 +16,11 @@
 // dummy bearer token; the proxy keeps its real Claude Max authentication. A
 // recording relay ties each proxy log line to the agent id it carried.
 //
-// Pass: at least one caption was handled as an auxiliary request, and the next
-// request of each captioned subagent resumed (`lineage=continuation`).
+// Pass: at least one side call was handled as an auxiliary request, the next
+// request of each flow that already had a turn resumed (`lineage=continuation`),
+// and no working request diverged. The interactive client's session-title
+// request at startup and each subagent's first caption (sent while its first
+// tool call is still running) are among the side calls.
 // `--expect-baseline` is for a build without #1292: no caption is isolated and
 // at least one subagent's next turn after a caption-sized request diverges.
 // Costs real tokens (two subagents for about two minutes).
@@ -182,9 +185,14 @@ if (expectBaseline) {
     'a subagent turn diverges after its caption replaced the mapping', subagentTurns.filter(r => r.line.includes('modified-history')).map(describe).join(' | '))
 } else {
   check(aux.length > 0, 'captions were sent and handled as auxiliary requests', `${aux.length}`)
-  const after = aux.map(nextAfter).filter(Boolean)
+  // A side call sent before its flow's first working turn (the session title)
+  // is followed by that first turn, which is new by definition.
+  const hadTurnBefore = r => recs.slice(0, recs.indexOf(r)).some(p => p.agent === r.agent && !isAux(p))
+  const after = aux.filter(hadTurnBefore).map(nextAfter).filter(Boolean)
   check(after.length > 0 && after.every(r => r.line.includes('lineage=continuation')),
-    'the next turn of each captioned subagent resumed its session', after.map(describe).join(' | '))
+    'the next turn after each side call resumed its session', after.map(describe).join(' | '))
+  const diverged = recs.filter(r => !isAux(r) && /diverged=(unrelated-history|modified-history)/.test(r.line))
+  check(diverged.length === 0, 'no working request diverged', diverged.map(describe).join(' | '))
 }
 relay.stop(true)
 await inst.close?.()

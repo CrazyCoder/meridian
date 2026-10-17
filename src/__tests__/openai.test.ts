@@ -12,6 +12,7 @@ import {
   createSseTranslator,
   buildModelList,
 } from "../proxy/openai"
+import type { AnthropicSseEvent } from "../proxy/openai"
 
 // ---------------------------------------------------------------------------
 // extractOpenAiContent
@@ -1359,6 +1360,84 @@ describe("createSseTranslator", () => {
     expect(chunks[5]!.choices[0]!.finish_reason).toBe("tool_calls")
   })
 
+  /** Reassemble per-call arguments the way an OpenAI client does: by tool_calls[].index. */
+  function assembleToolCalls(chunks: Array<ReturnType<ReturnType<typeof createSseTranslator>>>) {
+    const calls = new Map<number, { id?: string; name?: string; arguments: string }>()
+    for (const chunk of chunks) {
+      for (const tc of chunk?.choices[0]?.delta.tool_calls ?? []) {
+        const call = calls.get(tc.index) ?? { arguments: "" }
+        if (tc.id) call.id = tc.id
+        if (tc.function?.name) call.name = tc.function.name
+        call.arguments += tc.function?.arguments ?? ""
+        calls.set(tc.index, call)
+      }
+    }
+    return [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call)
+  }
+
+  it("routes a tool's arguments to its own call when they arrive after a later tool starts", () => {
+    const translate = createSseTranslator(CTX)
+    const events: AnthropicSseEvent[] = [
+      { type: "message_start" },
+      { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "tu_a", name: "read", input: {} } },
+      { type: "content_block_start", index: 2, content_block: { type: "tool_use", id: "tu_b", name: "read", input: {} } },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"path":' } },
+      { type: "content_block_delta", index: 2, delta: { type: "input_json_delta", partial_json: '{"path":"b.txt"}' } },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '"a.txt"}' } },
+      { type: "content_block_stop", index: 1 },
+      { type: "content_block_stop", index: 2 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" } },
+    ]
+    const chunks = events.map(event => translate(event))
+
+    expect(assembleToolCalls(chunks)).toEqual([
+      { id: "tu_a", name: "read", arguments: '{"path":"a.txt"}' },
+      { id: "tu_b", name: "read", arguments: '{"path":"b.txt"}' },
+    ])
+  })
+
+  it("keeps per-block routing when text and thinking blocks interleave with tools", () => {
+    const translate = createSseTranslator(CTX)
+    const events: AnthropicSseEvent[] = [
+      { type: "content_block_start", index: 0, content_block: { type: "thinking" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "tu_a", name: "fn", input: {} } },
+      { type: "content_block_start", index: 2, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 2, delta: { type: "text_delta", text: "note" } },
+      { type: "content_block_start", index: 3, content_block: { type: "tool_use", id: "tu_b", name: "fn", input: {} } },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"a":1}' } },
+      { type: "content_block_delta", index: 3, delta: { type: "input_json_delta", partial_json: '{"b":2}' } },
+    ]
+    const chunks = events.map(event => translate(event))
+
+    expect(assembleToolCalls(chunks)).toEqual([
+      { id: "tu_a", name: "fn", arguments: '{"a":1}' },
+      { id: "tu_b", name: "fn", arguments: '{"b":2}' },
+    ])
+  })
+
+  it("drops an indexed argument delta whose block never started as a tool", () => {
+    const translate = createSseTranslator(CTX)
+    translate({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tu_a", name: "fn", input: {} } })
+    expect(translate({
+      type: "content_block_delta",
+      index: 7,
+      delta: { type: "input_json_delta", partial_json: '{"orphan":true}' },
+    })).toBeNull()
+  })
+
+  it("stops routing to a tool once its block index is reused by a non-tool block", () => {
+    const translate = createSseTranslator(CTX)
+    translate({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tu_a", name: "fn", input: {} } })
+    translate({ type: "content_block_stop", index: 0 })
+    translate({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })
+    expect(translate({
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "input_json_delta", partial_json: '{"stale":true}' },
+    })).toBeNull()
+  })
+
   it("buildUsageChunk returns null when includeUsage was not requested", () => {
     const translate = createSseTranslator(CTX)
     translate({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 10, output_tokens: 5 } })
@@ -1449,6 +1528,14 @@ describe("createSseTranslator", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildModelList", () => {
+  it("honors the SDK 1M disable switch for both included and native windows", () => {
+    for (const extended of [false, true]) {
+      const models = buildModelList(extended, 123, true)
+      expect(models.every(model => model.context_window === 200_000)).toBe(true)
+      expect(models.every(model => model.created === 123)).toBe(true)
+    }
+  })
+
   it("advertises Haiku 5.5 native 1M context and adaptive-only thinking on every plan", () => {
     for (const extended of [false, true]) {
       const models = buildModelList(extended)
@@ -1462,11 +1549,11 @@ describe("buildModelList", () => {
       expect(models.filter(m => m.id === "claude-haiku-5-5")).toHaveLength(1)
     }
   })
-  it("advertises Opus 5.5 adaptive thinking and plan-appropriate context", () => {
+  it("advertises Opus 5.5 adaptive thinking and native 1M context", () => {
     for (const extended of [false, true]) {
       const model = buildModelList(extended).find(m => m.id === "claude-opus-5-5")!
       expect(model.display_name).toBe("Claude Opus 5.5")
-      expect(model.context_window).toBe(extended ? 1_000_000 : 200_000)
+      expect(model.context_window).toBe(1_000_000)
       expect(model.capabilities!.thinking.types.adaptive.supported).toBe(true)
       expect(model.capabilities!.thinking.types.enabled.supported).toBe(false)
     }
@@ -1499,12 +1586,12 @@ describe("buildModelList", () => {
     expect(ids).toContain("claude-opus-4-8")
   })
 
-  it("Max subscription gets 1M context for every Fable version, 200k otherwise", () => {
+  it("every subscription gets the native 1M window for both Fable versions", () => {
     for (const id of ["claude-fable-5-1", "claude-fable-5"]) {
       const fableMax = buildModelList(true).find(m => m.id === id)!
       const fableFree = buildModelList(false).find(m => m.id === id)!
       expect(fableMax.context_window).toBe(1_000_000)
-      expect(fableFree.context_window).toBe(200_000)
+      expect(fableFree.context_window).toBe(1_000_000)
     }
   })
 
@@ -1522,7 +1609,7 @@ describe("buildModelList", () => {
     expect(opus48.context_window).toBe(1_000_000)
   })
 
-  it("non-Max gets 200k context for sonnet and all opus variants", () => {
+  it("non-Max keeps legacy Opus 4.6 at 200k and gives newer Opus its native 1M window", () => {
     const models = buildModelList(false)
     const sonnet = models.find(m => m.id === "claude-sonnet-4-6")!
     const opus5 = models.find(m => m.id === "claude-opus-5")!
@@ -1530,10 +1617,10 @@ describe("buildModelList", () => {
     const opus47 = models.find(m => m.id === "claude-opus-4-7")!
     const opus48 = models.find(m => m.id === "claude-opus-4-8")!
     expect(sonnet.context_window).toBe(200_000)
-    expect(opus5.context_window).toBe(200_000)
+    expect(opus5.context_window).toBe(1_000_000)
     expect(opus46.context_window).toBe(200_000)
-    expect(opus47.context_window).toBe(200_000)
-    expect(opus48.context_window).toBe(200_000)
+    expect(opus47.context_window).toBe(1_000_000)
+    expect(opus48.context_window).toBe(1_000_000)
   })
 
   // #498: Home Assistant 2026.5's Anthropic integration reads

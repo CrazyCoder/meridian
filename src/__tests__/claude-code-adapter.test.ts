@@ -398,6 +398,73 @@ describe("isClaudeCodeAuxiliaryRequest", () => {
     expect(isClaudeCodeAuxiliaryRequest(undefined, unkeyed, undefined, true)).toBe(false)
   })
 
+  // Interactive Claude Code generates a session title on the first user turn via
+  // its streamed toolFreeHelper path (`querySource: "generate_session_title"`).
+  it("recognises the interactive streamed session-title generator request", () => {
+    const titleSystem = [
+      { type: "text", text: "x-anthropic-billing-header: cc_version=2.1.299; cc_entrypoint=cli;" },
+      { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
+      {
+        type: "text",
+        text: "You are naming a coding session so the user can pick it out of a long list of sessions. The title is a name for what the session is about, not a sentence describing the task.\n\nReturn JSON with a single \"title\" field. Capitalize the first letter of the title.",
+      },
+    ]
+    const defaultLanguagePrompt =
+      "<session>\nUse the Agent tool to launch two general-purpose subagents in parallel.\n</session>\n\nWrite the title in the predominant language of the session — a stray word or code token in another language doesn't change it, and neither does the English of these instructions."
+    const configuredLanguagePrompt =
+      "<session>\nUse the Agent tool to launch two general-purpose subagents in parallel.\n</session>\n\nWrite the title in Japanese. Keep technical terms and code identifiers in their original form."
+    const titleRequest = {
+      model: "claude-sonnet-4-6",
+      max_tokens: 32000,
+      stream: true,
+      tools: [],
+      thinking: { type: "disabled" },
+      system: titleSystem,
+      messages: [{ role: "user", content: [{ type: "text", text: defaultLanguagePrompt }] }],
+      output_config: {
+        format: {
+          type: "json_schema",
+          schema: {
+            type: "object",
+            properties: { title: { type: "string" } },
+            required: ["title"],
+            additionalProperties: false,
+          },
+        },
+      },
+      metadata: classifier.metadata,
+    }
+
+    expect(isClaudeCodeAuxiliaryRequest(undefined, titleRequest)).toBe(true)
+    expect(isClaudeCodeAuxiliaryRequest(undefined, {
+      ...titleRequest,
+      messages: [{ role: "user", content: configuredLanguagePrompt }],
+    })).toBe(true)
+
+    // Negative cases: ordinary streamed tool-less turns, subagent turns, or
+    // turns declaring tools or normal system prompts are never isolated.
+    expect(isClaudeCodeAuxiliaryRequest(undefined, titleRequest, "a2656b86bfcb5c8cb")).toBe(false)
+    expect(isClaudeCodeAuxiliaryRequest(undefined, {
+      ...titleRequest,
+      tools: [{ name: "Read", input_schema: { type: "object" } }],
+    })).toBe(false)
+    expect(isClaudeCodeAuxiliaryRequest(undefined, {
+      ...titleRequest,
+      system: [{ type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." }],
+    })).toBe(false)
+    expect(isClaudeCodeAuxiliaryRequest(undefined, {
+      ...titleRequest,
+      messages: [{ role: "user", content: "Use the Agent tool to launch two subagents." }],
+    })).toBe(false)
+    expect(isClaudeCodeAuxiliaryRequest(undefined, {
+      ...titleRequest,
+      messages: [
+        ...titleRequest.messages,
+        { role: "assistant", content: "ok" },
+      ],
+    })).toBe(false)
+  })
+
   it("requires a Claude Code session key", () => {
     const { metadata: _omitted, ...unkeyed } = classifier
     expect(isClaudeCodeAuxiliaryRequest(undefined, unkeyed)).toBe(false)

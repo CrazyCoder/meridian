@@ -210,6 +210,7 @@ directories. Meridian does not edit or garbage-collect those private records.
 | `MERIDIAN_AGY_TURN_TIMEOUT_MS` | `300000` | Per-turn deadline, including preprocessing and tool waits |
 | `MERIDIAN_AGY_TOOL_TIMEOUT_MS` | `60000` | Pending client tool-result deadline |
 | `MERIDIAN_AGY_IDLE_CONVERSATION_MS` | tool timeout | How long a completed conversation keeps its live process for the next turn (explicit values: 1–86400000); afterwards that turn replays the full history. Unset preserves the existing tool timeout, including values above this new option's limit. |
+| `MERIDIAN_AGY_MAX_PROMPT_BYTES` | `190000` | UTF-8 byte limit of one prompt sent to agy, which keeps only about 192,000 bytes of an input step and drops the rest (the newest messages). Past it the oldest large tool results, arguments and text are shortened, the newest last; a current request that alone does not fit returns 400 `prompt is too long`. `0` disables it. |
 
 Capacity exhaustion returns 429 with `Retry-After`. No unbounded request queue
 is created. Bodies are capped at 8 MiB; upstream stdout is capped at 16 MiB.

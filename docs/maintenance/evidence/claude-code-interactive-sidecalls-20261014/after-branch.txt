@@ -1,0 +1,46 @@
+=== Claude Code progress captions (interactive client) ===
+  client: 2.1.300 (Claude Code)   adapter: claude-code   model: sonnet   expectBaseline=false
+  interactive driver: NO_DONE []
+    main adapter=claude-code model=sonnet stream=true tools=0 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=1
+    main adapter=claude-code model=sonnet stream=true tools=13 lineage=new session=new diverged=not-found sessionWait=2ms msgCount=2
+    agent:a834ca5f adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=not-found sessionWait=1ms msgCount=2
+    agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=not-found sessionWait=1ms msgCount=2
+    main adapter=claude-code model=sonnet stream=true tools=13 lineage=continuation session=97a5f910 sessionWait=1ms msgCount=5
+    agent:a834ca5f adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=2
+    agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=2
+    agent:a834ca5f adapter=claude-code model=sonnet stream=true tools=8 lineage=continuation session=b8ad1d3c sessionWait=1ms msgCount=5
+    agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=continuation session=f81ea6cc sessionWait=1ms msgCount=5
+    agent:a834ca5f adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=5
+    agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=5
+    agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=continuation session=896b95de sessionWait=1ms msgCount=8
+    agent:a834ca5f adapter=claude-code model=sonnet stream=true tools=8 lineage=continuation session=be2c1f9b sessionWait=1ms msgCount=8
+    agent:a834ca5f adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=8
+    agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=8
+    agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=continuation session=d7c0feea sessionWait=1ms msgCount=11
+    agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=11
+    agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=continuation session=8e5daa8c sessionWait=1ms msgCount=14
+    agent:a834ca5f adapter=claude-code model=sonnet stream=true tools=8 lineage=continuation session=eafd6edb sessionWait=1ms msgCount=11
+    main adapter=claude-code model=sonnet stream=true tools=13 lineage=continuation session=a9ce5dd0 sessionWait=1ms msgCount=7
+    agent:a834ca5f adapter=claude-code model=sonnet stream=true tools=8 lineage=continuation session=36278176 sessionWait=4ms msgCount=14
+    main adapter=claude-code model=sonnet stream=true tools=13 lineage=continuation session=7788152e sessionWait=0ms msgCount=9
+  auxiliary requests: 8
+    AUX main adapter=claude-code model=sonnet stream=true tools=0 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=1
+        usage: input=2 output=66 cache_write=4k cache=0%
+    AUX agent:a834ca5f adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=2
+        usage: input=2 output=95 cache_read=8k cache_write=4k cache=68%
+    AUX agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=2
+        usage: input=2 output=91 cache_read=8k cache_write=4k cache=68%
+    AUX agent:a834ca5f adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=5
+        usage: input=2 output=9 cache_read=8k cache_write=5k cache=61%
+    AUX agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=5
+        usage: input=2 output=9 cache_read=8k cache_write=5k cache=61%
+    AUX agent:a834ca5f adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=8
+        usage: input=2 output=9 cache_read=11k cache_write=2k cache=85%
+    AUX agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=8
+        usage: input=2 output=14 cache_read=11k cache_write=2k cache=85%
+    AUX agent:a538ceeb adapter=claude-code model=sonnet stream=true tools=8 lineage=new session=new diverged=independent-request:auxiliary-request sessionWait=0ms msgCount=11
+        usage: input=2 output=11 cache_read=12k cache_write=978 cache=93%
+  PASS  captions were sent and handled as auxiliary requests — 8
+  PASS  the next turn after each side call resumed its session — msgCount=5 lineage=continuation diverged=none | msgCount=5 lineage=continuation diverged=none | msgCount=8 lineage=continuation diverged=none | msgCount=8 lineage=continuation diverged=none | msgCount=11 lineage=continuation diverged=none | msgCount=11 lineage=continuation diverged=none | msgCount=14 lineage=continuation diverged=none
+  PASS  no working request diverged
+  PASS

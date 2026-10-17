@@ -75,6 +75,20 @@ server orchestration. The build packages self-contained retry integrations under
 `dist/antigravity-clients`; npm, Nix and Docker installations carry those assets.
 Setup prepares edits before writing, preserves unrelated settings, rejects malformed
 or conflicting input, creates private backups and uses per-file atomic replacement.
+`chatgpt/migrate/` implements `meridian chatgpt-migrate`: credential discovery
+(`sources.ts`), /proc scanning (`processes.ts`), opencode config resolution and
+jsonc editing (`opencodeConfig.ts`), stripping under oc-codex-multi-auth's own
+locks (`strip.ts`, `files.ts`), duplicate detection and naming on import
+(`duplicates.ts`), finding the running instance's store and config directory
+(`instance.ts`), the `--reverse` hand-back to the plugin (`reverse.ts`, with
+the pure store merge in `handback.ts`) and the owned-store adapter
+(`ownedStore.ts`), which writes only through `chatgpt/credentials.ts` under the
+writer lease. The server never imports it.
+`instanceImport/` implements `meridian instance-import`: the pure plan that names
+every seat the way the destination will (`plan.ts`), the telemetry copy keyed on
+`request_id` and its column-by-column verification (`telemetry.ts`), and the run
+under both stores' writer leases that retires the source by renaming its files
+(`importer.ts`). The server never imports it.
 `telemetry/providerSetup.ts` shares pure command generation and setup presentation
 between the web provider page and desktop. Desktop clipboard requests contain
 choices rather than arbitrary text; the main process validates them against its
@@ -198,6 +212,7 @@ src/
 │   │   └── forgecode.ts       ← ForgeCode adapter (fingerprint sessions, XML CWD, passthrough)
 │   ├── query.ts               ← SDK query options builder (shared between stream/non-stream paths)
 │   ├── errors.ts              ← Error classification (SDK errors → HTTP responses)
+│   ├── toolInputJson.ts       ← Tool input JSON repair for raw control characters in strings (PURE)
 │   ├── retryAfter.ts          ← Retry-After computation for 429/503/529 (PURE)
 │   ├── sseFailureSniff.ts     ← SSE framing/classification and bounded priority stream transport (leaf)
 │   ├── models.ts              ← Model mapping, Claude executable resolution
@@ -260,6 +275,9 @@ src/
 │   ├── dashboard.ts           ← HTML dashboard
 │   ├── pricing.ts             ← Static API list prices + cost estimation (pure)
 │   ├── pricingStore.ts        ← User pricing overrides (persisted JSON)
+│   ├── openaiPricingData.ts   ← Generated OpenAI list prices (scripts/update-openai-pricing.ts)
+│   ├── openaiPricingUpdate.ts ← Builds/validates that table from models.dev + LiteLLM (pure)
+│   ├── openaiOfficialPricing.ts ← Hand-kept official OpenAI rates guarding the update
 │   ├── profileBar.ts          ← Shared profile switcher bar (injected into HTML pages)
 │   ├── profilePage.ts         ← Profile management page HTML
 │   ├── pageLayout.ts          ← Contained/wide layout setting, stamped on each page as it is served
@@ -281,7 +299,8 @@ server.ts (HTTP layer)
     ├── adapter.ts (interface)
     ├── adapters/opencode.ts ──► messages.ts, session/fingerprint.ts, tools.ts
     ├── query.ts ──► adapter.ts, mcpTools.ts, passthroughTools.ts
-    ├── errors.ts
+    ├── errors.ts ──► toolInputJson.ts
+    ├── toolInputJson.ts
     ├── retryAfter.ts
     ├── requestAbort.ts
     ├── sessionTree.ts
@@ -307,7 +326,7 @@ server.ts (HTTP layer)
 
 2. **`session/cache.ts` owns all mutable session state.** No other module should create or manage LRU caches for sessions.
 
-3. **`errors.ts`, `retryAfter.ts`, `models.ts`, `tools.ts`, `messages.ts`, `profiles.ts`, `profileCli.ts`, `buildInfo.ts`, `updateCheck.ts`, `sseFailureSniff.ts` are leaf modules.** They must not import from `server.ts`, `session/`, or `adapter.ts`. `buildInfo.ts` and `retryAfter.ts` are additionally pure — every export is a function of its arguments (plus `process.env` for `buildInfo.ts`), so the registry I/O lives in `updateCheck.ts` instead. `sseFailureSniff.ts` keeps pure framing separate from reader/queue lifecycle helpers; account selection, publication and durable settlement remain in `server.ts`.
+3. **`errors.ts`, `retryAfter.ts`, `toolInputJson.ts`, `models.ts`, `tools.ts`, `messages.ts`, `profiles.ts`, `profileCli.ts`, `buildInfo.ts`, `updateCheck.ts`, `sseFailureSniff.ts` are leaf modules.** They must not import from `server.ts`, `session/`, or `adapter.ts`. `buildInfo.ts`, `retryAfter.ts` and `toolInputJson.ts` are additionally pure — every export is a function of its arguments (plus `process.env` for `buildInfo.ts`), so the registry I/O lives in `updateCheck.ts` instead. `sseFailureSniff.ts` keeps pure framing separate from reader/queue lifecycle helpers; account selection, publication and durable settlement remain in `server.ts`.
 
 4. **`server.ts` owns Hono route registration and orchestration.** Hono
    middleware stays at the proxy boundary. Standard `Request`/`Response`

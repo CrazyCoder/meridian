@@ -1093,6 +1093,39 @@ On unchanged `431ec201` all three end in an SSE `Reached maximum number of
 turns` error. A built-in name such as `Bash` still does: Claude Code 2.1.296
 appends an explanation to that refusal, which is not recognized as a rejection.
 
+The unparseable-arguments control covers a Pi failure seen with fine-grained
+tool streaming on: an edit call ended in `Reached maximum number of turns (1)`.
+The fixture streams a registered-name call whose arguments hold a raw TAB
+inside a JSON string. The real CLI rejects it before PreToolUse with
+`InputValidationError: … could not be parsed as JSON`. Meridian must deliver
+the complete call as strict JSON with `stop_reason: tool_use`. It must evict
+the rejected SDK session and replay the client's result into a fresh one:
+
+```bash
+bun scripts/e2e-capped-turns.mjs --case=unparsed-input --stream
+bun scripts/e2e-capped-turns.mjs --case=unparsed-input --stream --headerless
+bun scripts/e2e-capped-turns.mjs --case=unparsed-input --stream --deferred
+```
+
+The actual-client control runs real Pi against the same kind of fixture. Pi
+must apply the rejected edit to a TAB-indented file and finish the follow-up
+turn. `--expect-baseline` asserts the unfixed failure: no edit, and Pi exits
+on `Reached maximum number of turns (1)`:
+
+```bash
+bun scripts/e2e-pi-unparsed-tool-input.mjs
+bun scripts/e2e-pi-unparsed-tool-input.mjs --expect-baseline   # without the fix
+```
+
+**Verified 2026-10-12:** macOS arm64, Bun 1.3.14, Agent SDK 0.2.141, Claude
+Code 2.1.296, Pi 1.1.0. With the fix, all four commands pass. Without it
+(base b68710f), the three capped-turn commands end in an SSE `api_error`
+frame (`(4)` with `--deferred`), and only `--expect-baseline` passes. The 17
+other capped-turn and client-refusal commands above still pass. In three live
+Pi runs with Claude Opus 5.5, the model did not emit a raw TAB. The fixture is
+the only reproduction.
+
+
 For the affected model and Pi adapter on Linux, also run the live
 multi-turn control (real Claude Team account, not the fixture upstream):
 
@@ -7647,6 +7680,26 @@ This validates macOS text and client tool use, not Windows/Linux runtime behavio
 Model ID, capability and pricing source:
 https://platform.claude.com/docs/en/models/sonnet-5-5/overview .
 
+## OpenAI pricing and Claude-answered GPT ids
+
+Start an isolated proxy (`MERIDIAN_CONFIG_DIR`, `MERIDIAN_SESSION_DIR` in a
+scratch directory, `MERIDIAN_CREDENTIALS_READONLY=1`) and point Codex CLI at
+it with a throwaway `CODEX_HOME` whose `config.toml` sets `model = "gpt-5.5"`
+and the Meridian provider from [docs/agents.md](docs/agents.md). Run
+`codex exec --skip-git-repo-check "Reply with exactly the word: pong"`, then:
+
+- The proxy log shows `adapter=codex model=sonnet`: Claude answered the GPT id.
+- `/telemetry/summary` `costEstimate.byModel["gpt-5.5"].estimatedUsd` is `null`
+  and `unpricedRequestCount` is 1; the request is not valued at GPT rates.
+- `/settings/api/pricing` lists the generated `gpt-*` built-ins.
+- After `PUT /settings/api/pricing/gpt-5.5` the same request is priced at the
+  override.
+
+Verified 2026-09-27 on Linux x64, Codex CLI 0.151.0, Agent SDK 0.2.141: all
+four checks passed (override `3/15` valued the turn at $0.052142, dominated by
+13,887 cache-write tokens). Requests actually served by an OpenAI model need
+the ChatGPT gateway, which is not part of this flow.
+
 ## Scrub plugin headless acceptance
 
 These opt-in harnesses preserve the actual client paths used for the 2026-09-24
@@ -8259,3 +8312,18 @@ tool result holding a fresh nonce: the follow-up must resume the same SDK
 session at its checkpoint and return the nonce. `--expect-digest` inverts the
 deferred count for a build without the fix. Unchanged `main` before #1370 made
 three model requests per deferred hand-off. Costs a few cents of real tokens.
+
+## Antigravity prompt byte budget (#1382)
+
+`node scripts/e2e-antigravity-prompt-limit.mjs <dist/server.js> <pi cli.js> <official agy> <report.json> <label>`
+runs actual Pi in RPC mode against a built Meridian and official `agy`
+(`gemini-3.8-flash-low`). Turn 1 reads six 40 KB files with Pi's `read` tool
+so the conversation exceeds `agy`'s ~192,000-byte single-step input cap. After
+the live `agy` process expires (`idleConversationMs: 3000`), Turn 2 asks
+without tools for the code at the end of the newest file, the code at the top of
+the oldest file, and a nonce from the question.
+
+Run once against an unbudgeted baseline (which sends ~249 KB in the replayed step
+and reports `NEWEST_TURN_LOST`) and once against the candidate (which shrinks
+the oldest tool results first to ~170 KB and reports `NEWEST_TURN_DELIVERED`
+with `newestTail: true`, `oldestHead: true`, `nonce: true`, and `toolCalls: 0`).

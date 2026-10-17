@@ -161,7 +161,7 @@ export function toolChoiceInstruction(request: AgRequest): string {
     : "Choose whether to call a client tool or answer the user."
   return instruction + (parallelAgTool(request) ? `\nFor independent parallel client actions, call the meridian_client MCP tool ${parallelAgTool(request)!.name} with {calls:[{name,arguments},...]}. It delivers those calls together to the client.\n` + JSON.stringify(parallelAgTool(request)) : "") + "\nThe complete client tool definitions for this response follow. Use these exact schemas; do not read CLI metadata files to discover tools.\n" + JSON.stringify(availableAgTools(request))
 }
-export function renderAgPrompt(request: AgRequest, nativeTools: string[] = []): string {
+export function renderAgPrompt(request: AgRequest, nativeTools: string[] = [], omitted = false): string {
   return [
     "You are serving a client through Meridian. Follow the client's instructions and answer its latest user message.",
     "The JSON below is the client's conversation history. Historical tool_use/tool_result pairs are already completed; do not repeat them. Client tools are provided by meridian_client MCP. Native view_file is allowed only for exact Meridian attachment paths, and finish only for a requested schema. " + (nativeTools.length ? "The operator also enables these native tools: " + nativeTools.join(", ") + ". Use these when the client requests native capabilities. Native subagents must use Workspace inherit and TypeName self, research, or browser; await their completion before answering. Never schedule background work." : "All other built-in tools and native subagents are disabled.") + " Other host filesystem paths and shell commands remain forbidden. Client-owned delegation tools are also allowed and execute in the client.",
@@ -172,8 +172,114 @@ export function renderAgPrompt(request: AgRequest, nativeTools: string[] = []): 
     request.output_config?.format ? "Submit the final response using the native finish tool. The full client schema below is authoritative; Meridian validates all its constraints even when the CLI transport cannot express them. Intermediate tool calls are allowed when the client permits them.\n" + JSON.stringify(request.output_config.format.schema) : "",
     "Image attachment references are created by Meridian from client-supplied bytes. Inspect each relevant attachment with view_file using its exact absolute path. Those are the only permitted filesystem reads.",
     "Client system instructions:\n" + (typeof request.system === "string" ? request.system : request.system?.map(b => b.text).join("\n") ?? ""),
+    omitted ? AG_OMIT_NOTE : "",
     "Client conversation:\n" + JSON.stringify(request.messages),
   ].filter(Boolean).join("\n\n")
+}
+
+// NOTE: agy keeps only about 192,000 bytes of one user input step (`max_tokens_per_user_input_step`, present in 1.2.7
+// through 1.3.5 and apparently set by the service) and silently drops the rest. The history is the end of the prompt,
+// so the newest messages and tool results are what disappears. Measured in UTF-8 bytes for English, JSON-heavy and
+// Chinese text alike; JSON escaping is not counted twice.
+export const AG_MAX_PROMPT_BYTES = 190_000
+const AG_OMIT_NOTE = "To fit Antigravity's input limit, Meridian omitted the middle of some larger tool results, tool arguments or messages (marked \"omitted by Meridian\"). Re-read anything you still need, in smaller parts if it is large."
+/** MERIDIAN_AGY_MAX_PROMPT_BYTES overrides the prompt byte limit; 0 disables it. */
+export function agPromptByteLimit(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.MERIDIAN_AGY_MAX_PROMPT_BYTES
+  if (raw === undefined || raw === "") return AG_MAX_PROMPT_BYTES
+  const limit = Number(raw)
+  return Number.isSafeInteger(limit) && limit >= 0 ? limit : AG_MAX_PROMPT_BYTES
+}
+function promptTooLong(bytes: number, limit: number): AntigravityError {
+  return new AntigravityError(`prompt is too long: ${bytes} bytes > ${limit} maximum that Antigravity accepts without silently dropping the end of the conversation`)
+}
+/** The newest user message with typed text: the client's current request. */
+function latestTypedRequest(messages: AgMessage[]): number {
+  for (let at = messages.length - 1; at >= 0; at--) {
+    const { role, content } = messages[at]!
+    if (role === "user" && (typeof content === "string" ? content.trim() : content.some(b => b.type === "text" && b.text.trim()))) return at
+  }
+  return -1
+}
+/** Text with its middle replaced by a marker, or undefined when that would not make it shorter. */
+function omitMiddle(text: string, keep: number, min: number): string | undefined {
+  if (text.length <= min) return undefined
+  // A cut inside a surrogate pair would leave a lone surrogate in the kept head or tail, so move it inward.
+  const isLow = (at: number) => (text.charCodeAt(at) & 0xFC00) === 0xDC00, isHigh = (at: number) => (text.charCodeAt(at) & 0xFC00) === 0xD800
+  const headEnd = keep > 0 && isHigh(keep - 1) && isLow(keep) ? keep - 1 : keep
+  const tailStart = keep > 0 && isLow(text.length - keep) && isHigh(text.length - keep - 1) ? text.length - keep + 1 : text.length - keep
+  const out = `${text.slice(0, headEnd)}\n[... ${tailStart - headEnd} chars omitted by Meridian: Antigravity input limit; re-read if needed ...]\n${text.slice(tailStart)}`
+  return out.length < text.length ? out : undefined
+}
+/** Every string leaf of a JSON value shrunk, keys, array shape and other values unchanged; the same value when nothing qualified. */
+function omitDeep(value: unknown, cut: (text: string) => string | undefined): unknown {
+  if (typeof value === "string") return cut(value) ?? value
+  if (Array.isArray(value)) { const items = value.map(item => omitDeep(item, cut)); return items.some((item, i) => item !== value[i]) ? items : value }
+  if (value && typeof value === "object") { const entries = Object.entries(value).map(([key, item]) => [key, omitDeep(item, cut)] as const); return entries.some(([key, item]) => item !== (value as Record<string, unknown>)[key]) ? Object.fromEntries(entries) : value }
+  return value
+}
+type OmitKind = "result" | "use" | "text"
+type Loose = { type?: string; text?: string; content?: unknown; input?: Record<string, unknown> }
+/** One message with one kind of content shrunk (tool results, tool_use arguments or text); the same object when nothing qualified. */
+function omitIn(message: AgMessage, kind: OmitKind, keep: number, min: number): AgMessage {
+  const cut = (text: string) => omitMiddle(text, keep, min)
+  const text = (b: Loose): Loose => { const t = typeof b.text === "string" ? cut(b.text) : undefined; return t === undefined ? b : { ...b, text: t } }
+  if (typeof message.content === "string") { const t = kind === "text" ? cut(message.content) : undefined; return t === undefined ? message : { ...message, content: t } }
+  let changed = false
+  const content = (message.content as Loose[]).map(b => {
+    let next = b
+    if (kind === "text" && b.type === "text") next = text(b)
+    else if (kind === "result" && b.type === "tool_result") {
+      if (typeof b.content === "string") { const t = cut(b.content); if (t !== undefined) next = { ...b, content: t } }
+      else if (Array.isArray(b.content)) { const parts = (b.content as Loose[]).map(part => part.type === "text" ? text(part) : part); if (parts.some((part, i) => part !== (b.content as Loose[])[i])) next = { ...b, content: parts } }
+    } else if (kind === "use" && b.type === "tool_use" && b.input) {
+      const input = omitDeep(b.input, cut)
+      if (input !== b.input) next = { ...b, input: input as Record<string, unknown> }
+    }
+    if (next !== b) changed = true
+    return next
+  })
+  return changed ? { ...message, content } as AgMessage : message
+}
+/**
+ * renderAgPrompt plus an optional suffix, kept within `limit` bytes instead of letting agy drop the newest messages.
+ * Shrinks the oldest large content first, to head-and-tail snippets and then to markers: tool results, tool_use
+ * arguments and long text before the client's current request; then the tool work since it, except the newest round;
+ * last, the newest round's tool results and arguments, including tool results sent with the request. The request's
+ * own text is never shrunk: when it alone does not fit, the request fails with a 400 prompt-too-long error. Under the
+ * limit the prompt is unchanged.
+ */
+export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: string[] = [], suffix = "", limit = agPromptByteLimit()): string {
+  const full = renderAgPrompt(request, nativeTools) + suffix
+  if (!limit || Buffer.byteLength(full) <= limit) return full
+  const current = latestTypedRequest(request.messages)
+  const lastAssistant = request.messages.findLastIndex(m => m.role === "assistant"), lastUser = request.messages.findLastIndex(m => m.role === "user")
+  // Tool results that arrive with the request (some clients add text next to them) count as the newest round.
+  const newest = new Set([lastAssistant, lastUser, current].filter(at => at >= 0 && at >= current))
+  const size = (message: AgMessage) => Buffer.byteLength(JSON.stringify(message))
+  let messages = request.messages, changed = false
+  let excess = Buffer.byteLength(full) - limit + Buffer.byteLength(AG_OMIT_NOTE) + 2
+  const render = () => renderAgPrompt({ ...request, messages }, nativeTools, true) + suffix
+  const range = (from: number, to: number) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + i)
+  const phases: Array<{ at: number[]; kinds: readonly OmitKind[]; passes: readonly (readonly [number, number])[] }> = [
+    { at: range(0, current), kinds: ["result", "use", "text"], passes: [[300, 2000], [0, 200]] },
+    { at: range(current + 1, messages.length).filter(at => !newest.has(at)), kinds: ["result", "use"], passes: [[300, 2000], [0, 200]] },
+    { at: [...newest].sort((a, b) => a - b), kinds: ["result", "use"], passes: [[4000, 10000], [1000, 2500]] },
+  ]
+  for (const { at, kinds, passes } of phases) for (const [keep, min] of passes) for (const kind of kinds) for (const i of at) {
+    const next = omitIn(messages[i]!, kind, keep, min)
+    if (next === messages[i]) continue
+    if (!changed) { messages = [...messages]; changed = true }
+    excess -= size(messages[i]!) - size(next)
+    messages[i] = next
+    if (excess > 0) continue
+    const prompt = render(), over = Buffer.byteLength(prompt) - limit
+    if (over <= 0) return prompt
+    excess = over
+  }
+  const prompt = changed ? render() : full, bytes = Buffer.byteLength(prompt)
+  if (bytes > limit) throw promptTooLong(bytes, limit)
+  return prompt
 }
 
 export type AgEvent =

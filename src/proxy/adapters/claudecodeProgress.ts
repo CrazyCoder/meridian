@@ -1,9 +1,13 @@
 // NOTE: Claude Code-specific. A subagent periodically asks for a short caption
 // of its latest action by appending this instruction to the end of the last
 // user message (#1288): as the final text block after tool results or other
-// text, or as a user message of its own after an assistant reply. The strings
-// below are the client's prompt, byte for byte; only the quoted previous
-// caption between them varies.
+// text, or as a user message of its own after an assistant reply. When the
+// first caption fires while the subagent's initial tool call is still in
+// flight, the client strips the unresolved assistant tool_use turn and hoists
+// the subagent's system-role context attachments into a trailing `system`
+// message after that user message (as it also does for a post-turn token
+// reminder). The strings below are the client's prompt, byte for byte; only
+// the quoted previous caption between them varies.
 const PROGRESS_PREFIX = "Describe your most recent action in 3-5 words using present tense (-ing). Name the file or function, not the branch. Do not use tools.\n\n"
 const PROGRESS_EXAMPLES = `Good: "Reading runAgent.ts"
 Good: "Fixing null check in validate.ts"
@@ -21,19 +25,34 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined
 }
 
+function isTrailingSystemTurn(value: unknown): boolean {
+  const message = record(value)
+  if (message?.role !== "system") return false
+  if (typeof message.content === "string") return message.content.trim().length > 0
+  if (!Array.isArray(message.content) || message.content.length === 0) return false
+  return message.content.every(entry => {
+    const block = record(entry)
+    return block?.type === "text" && typeof block.text === "string" && block.text.trim().length > 0
+  })
+}
+
 /**
  * True only for the exact caption request: a streaming request with tools
- * whose last message is a user message ending in the caption instruction —
- * the whole string content, or the final text block. Earlier blocks are the
- * working turn's content and are not inspected, except that tool results must
- * carry distinct ids. The caption text quoted inside a longer text, followed
- * by more text, or returned inside a tool result does not match.
+ * whose last user message (ignoring at most one trailing `system` reminder
+ * turn) ends in the caption instruction — the whole string content, or the
+ * final text block. Earlier blocks are the working turn's content and are not
+ * inspected, except that tool results must carry distinct ids. The caption text
+ * quoted inside a longer text, followed by more text, or returned inside a tool
+ * result does not match.
  */
 export function isClaudeCodeProgressSummary(body: unknown): boolean {
   const request = record(body)
   if (request?.stream !== true || !Array.isArray(request.tools) || request.tools.length === 0) return false
-  if (!Array.isArray(request.messages)) return false
-  const last = record(request.messages.at(-1))
+  if (!Array.isArray(request.messages) || request.messages.length === 0) return false
+  const tail = request.messages.at(-1)
+  const last = isTrailingSystemTurn(tail)
+    ? record(request.messages.at(-2))
+    : record(tail)
   if (last?.role !== "user") return false
   if (typeof last.content === "string") return isProgressPrompt(last.content)
   if (!Array.isArray(last.content)) return false
