@@ -401,7 +401,95 @@ ForgeCode uses reqwest's default User-Agent, so automatic detection isn't possib
 
 ### Pi
 
-Pi uses the `@mariozechner/pi-ai` library which supports a configurable `baseUrl` on the model. Add a provider-level override in `~/.pi/agent/models.json`:
+Pi 1.0 and newer use the Meridian extension, which ships with Meridian:
+
+```bash
+meridian setup --client pi
+pi --model meridian/claude-sonnet-5-5
+```
+
+Setup copies the extension to `~/.pi/agent/extensions/meridian` (or
+`$PI_CODING_AGENT_DIR/extensions/meridian`) and creates the shared
+`opencode-turn.key`. Rerun it after upgrading Meridian; startup warns when the
+installed copy is missing or differs from the one Meridian ships. Restart Pi or
+run `/reload`, then pick a model under the `meridian` provider with `/model`.
+If a directory Meridian did not install is already at that path, setup moves it
+to `~/.pi/agent/meridian-extension-backup-*` and prints where.
+
+Always name the provider (`meridian/claude-sonnet-5-5`). Pi 1.3 rejects a bare
+model ID that more than one authenticated provider offers.
+
+The extension registers a `meridian` provider next to Pi's built-in
+`anthropic` provider, so direct Anthropic models stay available. It:
+
+- discovers models from Meridian's `/v1/models` and keeps the catalog in Pi's
+  model store, so Pi starts offline with the last catalog it saw;
+- keys every request by Pi's own session ID (`x-session-affinity`), so a
+  resumed Pi session finds its backing conversation and a fork gets its own;
+- marks compaction, branch summaries and other side calls with
+  `x-meridian-source: fork-side-call`, under their own session key, which keeps
+  them out of the primary conversation. They keep the conversation's model
+  tier: a compaction request carries the history it summarizes, so it needs
+  the same context window;
+- gives delegated children the base model tier: a child Pi process started with
+  `MERIDIAN_SOURCE=subagent-<name>` in its environment, or with pi-subagents'
+  `PI_SUBAGENT_CHILD=1`, sends that source on every request, and in-process
+  pi-subagents agents are recognized by their `<active_agent name="…"/>` prompt
+  marker;
+- signs the latest user message of a root conversation, so
+  [`next-user-turn` priority failback](profiles.md) can move it back to the
+  preferred profile. Saved forks, children, side calls and requests with an
+  explicit `x-meridian-profile` are never signed.
+
+Configuration:
+
+| Setting | Effect |
+|---------|--------|
+| `MERIDIAN_BASE_URL` | Meridian's URL (default `http://127.0.0.1:3456`) |
+| `MERIDIAN_API_KEY` | Sent as `x-api-key` when Meridian has [API-key protection](configuration.md) on |
+| `providers.meridian.baseUrl` in `~/.pi/agent/models.json` | Overrides `MERIDIAN_BASE_URL` (Pi 1.3 and newer) |
+| `MERIDIAN_SOURCE` | `x-meridian-source` for every request of this Pi process |
+
+Pi runs in passthrough mode — it executes its own tools and Meridian just
+forwards the `tool_use` blocks. Opt out with `MERIDIAN_PASSTHROUGH=0`.
+
+Known limits:
+
+- Pi refreshes the catalog only in interactive and RPC modes. `pi -p` uses the
+  stored catalog for up to seven days, so start Pi interactively once to pick
+  up new Meridian models sooner.
+- A child that runs on the base tier still sees each model's full context
+  window in the catalog. With Opus and Fable, whose base tier is 200k, a long
+  child conversation can overflow before Pi compacts it.
+- A user message another extension adds (for example with
+  `pi.sendUserMessage()`) is signed like one you typed. Forks and clones of an
+  unsaved (`--no-session`) session have no parent on record, so they are
+  signed as root conversations.
+- Pi's `/bug` summary reuses the conversation's session ID. Meridian treats it
+  as a turn of that conversation, and the next real turn replays the history.
+- The extension always sends `x-meridian-agent: pi`, so it cannot select a
+  custom Pi-based [adapter instance](#adapter-instances).
+
+#### Moving from the `models.json` setup
+
+Earlier Meridian docs pointed Pi's built-in `anthropic` provider at Meridian.
+That keeps working after you install the extension, but those requests still
+go out without the extension's session identity, and the same model IDs then
+exist under both `anthropic` and `meridian`. To switch:
+
+1. Remove the `anthropic` `baseUrl` override from `~/.pi/agent/models.json`, and
+   any `ANTHROPIC_BASE_URL` you export for Pi, unless you want both routes.
+2. Remove any extension of your own that sets `x-session-affinity` or
+   `x-meridian-agent` for the `anthropic` provider; the Meridian extension does
+   this for its own provider.
+3. Set `"defaultProvider": "meridian"` in `~/.pi/agent/settings.json`, or pick
+   a `meridian/…` model with `/model`. A resumed session keeps the model it was
+   using until you switch it.
+
+#### Without the extension
+
+Pi releases before 1.0, which cannot load the extension, can point the built-in
+`anthropic` provider at Meridian in `~/.pi/agent/models.json`:
 
 ```json
 {
@@ -417,9 +505,13 @@ Pi uses the `@mariozechner/pi-ai` library which supports a configurable `baseUrl
 }
 ```
 
-Pi mimics Claude Code's User-Agent, so automatic detection isn't possible. The `x-meridian-agent: pi` header in the config above tells Meridian to use the Pi adapter. For reliable tool-loop continuity, also configure [session affinity](configuration.md#client-driven-tool-loops-need-a-session-header). Alternatively, if Pi is your only agent, you can set `MERIDIAN_DEFAULT_AGENT=pi` as an env var instead.
-
-Pi runs in passthrough mode by default — it executes its own tools and Meridian just forwards the `tool_use` blocks. Opt out with `MERIDIAN_PASSTHROUGH=0`.
+Pi mimics Claude Code's User-Agent, so the `x-meridian-agent: pi` header (or
+`MERIDIAN_DEFAULT_AGENT=pi` when Pi is your only agent) selects the Pi adapter.
+This setup sends no session identity: Meridian falls back to fingerprint
+matching, side calls share the primary model tier, and priority failback cannot
+move the conversation. Meridian logs a one-time warning when it sees such a
+request. For reliable tool-loop continuity, configure
+[session affinity](configuration.md#client-driven-tool-loops-need-a-session-header).
 
 [Oh My Pi](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent) (`omp`) is
 built on the same runtime and uses the Pi adapter. Its config lives in
@@ -829,7 +921,7 @@ letting the header decide.
 | [Cline](https://github.com/cline/cline) | ✅ Verified | Config (see [Agent Setup](#agent-setup)) — full tool support, file read/write/edit, bash, session resume |
 | [Aider](https://github.com/paul-gauthier/aider) | ✅ Verified | Env vars — file editing, streaming; `--no-stream` broken (litellm bug) |
 | [Open WebUI](https://github.com/open-webui/open-webui) | ✅ Verified | OpenAI-compatible endpoints — set base URL to `http://127.0.0.1:3456` |
-| [Pi](https://github.com/mariozechner/pi-coding-agent) | ✅ Verified | models.json config (see [Agent Setup](#agent-setup)) — full tool support via passthrough; detected via `x-meridian-agent: pi` header |
+| [Pi](https://github.com/earendil-works/pi) | ✅ Verified | `meridian setup --client pi` extension on Pi 1.0+ (see [Pi](#pi)); models.json config for older releases — full tool support via passthrough, per-session identity, subagent tiering and `next-user-turn` failback |
 | [Prime Agent](https://www.npmjs.com/package/prime-agent) | ⚠️ Single-agent verified | Extension config (see [Agent Setup](#agent-setup)) — reliable with one active agent. Concurrent RLM subagents receive distinct session keys, but are not yet production-safe; see [Prime Agent subagents](#prime-agent-subagents). The extension's `metadata.user_id` stamp is **required**, not optional. |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | ✅ Verified | `ANTHROPIC_BASE_URL` — remote clients share a Max subscription over the network; client CWD preserved in system prompt |
 | [Cherry Studio](https://github.com/CherryHQ/cherry-studio) | ✅ Verified | `cherry` adapter (see [Agent Setup](#agent-setup)) — chat client with Claude's built-in web search via internal mode |
