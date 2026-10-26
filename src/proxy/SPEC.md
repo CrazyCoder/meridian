@@ -25,7 +25,9 @@ The server and the default Claude request path:
   shutdown drain, upstream reachability;
 - errors and throttling (`errors.ts`, `retryAfter.ts`, `sseFailureSniff.ts`);
 - protocol translation (`openai.ts`, `openaiResponses.ts`) and build
-  provenance / update check (`build*.ts`, `updateCheck.ts`);
+  provenance / update check (`build*.ts`, `updateCheck.ts`, and
+  `pluginUpdateCheck.ts` for loaded plugins' npm packages in the same opt-in
+  pass — see [`plugins`](plugins/SPEC.md));
 - process-level services beside it: settings/config (`src/settings.ts`,
   `src/configDir.ts`, `src/headerSettings.ts`, `src/sameOrigin.ts`), logging,
   MCP tool definitions (`src/mcpTools.ts`) and opt-in crash reporting
@@ -38,7 +40,7 @@ The server and the default Claude request path:
   extracted modules. New pure logic becomes a new leaf module with unit tests.
 - Leaf modules (`errors`, `retryAfter`, `toolInputJson`, `models`, `tools`,
   `messages`, `profiles`, `profileCli`, `buildInfo`, `updateCheck`,
-  `sseFailureSniff`) never import `server.ts`, `session/` or `adapter.ts`;
+  `pluginUpdateCheck`, `sseFailureSniff`) never import `server.ts`, `session/` or `adapter.ts`;
   `buildInfo`, `retryAfter`, `toolInputJson` are additionally pure.
 - `query.ts` builds SDK options **through the adapter interface**, never from
   tool constants directly.

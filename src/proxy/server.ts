@@ -117,7 +117,8 @@ import { checkPluginConfigured, isPluginlessOpenCodeRequest, notePluginlessOpenC
 import { checkPiExtensionConfigured, notePluginlessPiRequest } from "./piSetup"
 import { describeBuildDrift } from "./buildInfo"
 import { buildRuntime } from "./buildRuntime"
-import { getLatestVersion, isUpdateCheckEnabled, startUpdateCheck, stopUpdateCheck } from "./updateCheck"
+import { checkPluginsNow, getLatestVersion, isUpdateCheckEnabled, startUpdateCheck, stopUpdateCheck } from "./updateCheck"
+import { getPluginUpdates, trackPlugins } from "./pluginUpdateCheck"
 import { createAuthStatusOwner } from "./authStatusOwnership"
 import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, expireAuthStatusCache, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable, recordExtendedContextRateLimited, subscriptionIncludesExtendedContext } from "./models"
 import { livenessReport, readinessReport, renderProbe } from "./probes"
@@ -9532,6 +9533,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
       envOptOut: envBool("NO_UPDATE_CHECK"),
       enabled: isUpdateCheckEnabled(),
       build: currentBuild(),
+      plugins: getPluginUpdates(),
     }
   }
 
@@ -9554,10 +9556,13 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
     // Takes effect now rather than on the next start: the checker is one
     // unref'd timer with no store to swap out from under in-flight work, so
     // there is nothing to justify making someone restart for it. Switching on
-    // waits for the first answer (bounded by the fetch timeout) so the reply
-    // already says whether an update exists.
-    if (isUpdateCheckEnabled()) await beginUpdateCheck(finalConfig)
-    else stopUpdateCheck()
+    // waits for the first answer so the reply already says whether an update
+    // exists; Meridian's lookup and the plugin pass run side by side, each
+    // bounded by one fetch timeout. The plugins stay listed either way.
+    const enabled = isUpdateCheckEnabled()
+    if (!enabled) stopUpdateCheck()
+    trackPlugins(loadedPlugins, [pluginDir])
+    if (enabled) await beginUpdateCheck(finalConfig)
 
     return c.json(updateSettingsState())
   })
@@ -10784,6 +10789,8 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
     try {
       loadedPlugins = await loadPlugins(pluginDir, pluginConfigPath)
       pluginTransforms = getActiveTransforms(loadedPlugins)
+      trackPlugins(loadedPlugins, [pluginDir])
+      void checkPluginsNow()
       const active = loadedPlugins.filter(p => p.status === "active").length
       plog(`[PROXY] Plugins reloaded: ${active} active`)
       return c.json({
@@ -11618,6 +11625,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
     try {
       loadedPlugins = await loadPlugins(pluginDir, pluginConfigPath)
       pluginTransforms = getActiveTransforms(loadedPlugins)
+      trackPlugins(loadedPlugins, [pluginDir])
       if (loadedPlugins.length > 0) {
         const active = loadedPlugins.filter(p => p.status === "active").length
         const disabled = loadedPlugins.filter(p => p.status === "disabled").length
