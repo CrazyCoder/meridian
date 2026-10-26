@@ -34,12 +34,25 @@ External plugins depend on these interfaces. **Changes require project owner app
 | `GET /build-status` | `buildRuntime.ts` | Local/dev runtime versus disk provenance (#1170); optional API-key protection, npm returns 404 |
 | `POST /v1/messages` request/response format | `server.ts` | All agents (Anthropic API contract) |
 | `GET /profiles/list` response shape | `server.ts` | Profile management UI and CLI |
+| `GET /profiles/list` entries' `duplicateOf`, `duplicateBasis` and `factsRefresh` (`{state,since,at,error}` or `null`); a Claude entry's `email` from the account read | `server.ts`, `duplicateProfiles.ts`, `profileFactsRefresh.ts`, `organizationName.ts` | Owner-approved 2026-10-26 (#1446): additive, informational duplicate-account and post-sign-in status on every entry |
 | `GET /inflight` response shape and loopback-only access | `server.ts`, `inflight.ts` | Loopback supervisors observing `scope: client-http`; not a restart/admission barrier (#1216) |
 | `POST`/`DELETE /drain` request/response and local operator access | `server.ts`, `admissionHold.ts` | Owner-approved #1282: bounded per-instance generation delay; actual loopback/no forwarding/no Origin, configured API key required; aggregate `draining`/`drain` in `GET /inflight`, no restart guarantee |
 | `GET /readyz` status and `upstream-claude` check, `/health` `upstream.claude` block, loopback-only `PUT /upstream-reachability` | `server.ts`, `probes.ts`, `upstreamReachability.ts` | Instance-local native-Claude transport failure observations, default readiness policy and bounded operator override; owner-approved in #1281 |
 | `POST /profiles/active` request/response | `server.ts` | Profile switching from CLI and UI |
 | ChatGPT additions: OpenAI model ids on `/v1/responses` routed to ChatGPT seats; new `POST /v1/images/generations` and `/v1/images/edits` (ChatGPT only, 404 without it); `/health` `chatgpt` and `backends`; `/profiles/list` entries with `type: "chatgpt"`, `activeProfiles`, `chatgpt.owner`; `provider` on `POST /profiles/active`; `chatgpt` in `GET /inflight`; `/profiles/chatgpt/*`, `/settings/api/chatgpt` | `server.ts`, `upstream/`, `backends/chatgpt.ts`, `chatgpt/` | Additive and absent unless `MERIDIAN_CHATGPT_CREDENTIALS` (or a populated owned store) enables ChatGPT; existing fields keep their meaning: `activeProfile` stays the Claude pointer wherever Claude profiles exist |
 If you need to modify any of these, open an issue first — breaking changes affect downstream plugin authors.
+
+The owner approved #1446's `/profiles/list` additions on 2026-10-26. Every
+entry gains `duplicateOf` (ids of other profiles signed in to the same account,
+`[]` when none), `duplicateBasis` (`account-organization`, `email-organization`,
+`seat`, `workspace-email` or `null`) and `factsRefresh` (`null` when idle,
+`{ state: "updating", since }` after a finished sign-in, or
+`{ state: "failed", since, at, error }` for five minutes after its re-read
+failed). A Claude entry's existing `email` now prefers the email
+`GET /api/oauth/profile` reported for the credential the profile stores now
+over `claude auth status`, which can still name the account signed in before.
+The fields are informational: they do not change routing, cooldowns or any
+other entry field.
 
 The owner approved the generic OpenAI conversation-header contract in #1441
 on 2026-10-21. `x-opencode-session` and `x-session-affinity` retain precedence
