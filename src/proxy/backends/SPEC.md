@@ -41,6 +41,9 @@ belong to [`chatgpt-backend`](../chatgpt/SPEC.md).)
 - Client tools execute with the **client's** permissions via
   `MERIDIAN_AGY_ALLOW_TOOL_BRIDGE`; native browser/subagent capabilities need a
   separate explicit operator grant.
+- Client setup writes where the client itself reads: Pi's directory is resolved
+  by the shared `piAgentDirectory()` (`PI_CODING_AGENT_DIR` with Pi's own `~`
+  expansion), the same as `meridian setup --client pi`.
 - Persistence (`statePath`) is opt-in and bounded; Antigravity plugins
   (`antigravityPlugins.ts`) are separate from Claude user plugins.
 
