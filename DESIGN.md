@@ -191,10 +191,12 @@ then lifts the `.container` max-width and pads it and the header with
 `--page-gutter` (`clamp(16px, 3vw, 48px)`). A page that lays out cards or
 label/value rows adds its own `html[data-layout="wide"]` rule so a value
 never ends up a screen away from its label: the home page keeps its card size
-and adds columns, `/profiles` shows larger cards side by side, and Settings
-and Providers keep rows and cards about as wide as when contained. The content
-wrapper must be `.container` for any of this to reach it. A contained page
-carries no attribute, so it renders as before.
+and adds columns, `/profiles` shows larger cards side by side, Settings rows
+add columns at a width that holds a long select beside its label (at least
+560px, against about 400px in two contained columns), and Providers keeps
+cards about as wide as when contained. The content wrapper must be
+`.container` for any of this to reach it. A contained page carries no
+attribute, so it renders as before.
 
 **The header owns the brand.** It shows the mark + wordmark (links home),
 the site nav (Home · Providers · Telemetry · Profiles · Settings · Plugins), the

@@ -21,7 +21,12 @@ Record what Meridian did and show it to the operator:
   shared site header (`profileBar.ts`), which is the single home of the color
   tokens;
 - pure presentation shared with the desktop app (`providerView.ts`,
-  `providerSetup.ts`).
+  `providerSetup.ts`);
+- the shared `settingRow` presentation (`settingRow.ts`) every `/settings`
+  row renders through: label and control on one line, description, status and
+  env-override lines below. The override line credits an env var only when the
+  resolver used it (`telemetryEnvSources` applies the resolver's own parse); a
+  set but unusable variable is named as such.
 
 ## Boundary
 
