@@ -136,8 +136,10 @@ OPENCODE_DISABLE_AUTOUPDATE=1 ~/.local/bin/opencode
 The V2 plugin uses the native `model.request` and `http.request` hooks. It keeps
 primary and compaction requests attached to the correct OpenCode session,
 detaches concurrent hidden title/summary and transient generate requests, and
-gives each visible subagent its own trusted identity. Request bodies and model
-input are unchanged.
+gives each visible subagent its own trusted identity. Compaction keeps the
+conversation's model tier (`x-meridian-source: fork-compaction`), so a session on
+Opus or Fable `[1m]` that has grown past 200k tokens can still compact. Request
+bodies and model input are unchanged.
 
 The V2 plugin also reads `GET /v1/models` from the configured Meridian base URL
 and writes what it finds into V2's model catalog: the context window your

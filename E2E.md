@@ -5274,7 +5274,13 @@ Anthropic traffic to a real Meridian SDK/model through a local relay. It checks
 title and generate detachment, signed primary headers, a resumed session's prior
 user input, cold model discovery of `#xhigh`, a real read-tool result, a fork
 that cannot advance or attest as the original root, and compaction that remains
-on the root while using its lower tier. The relay stores sanitized request facts
+on the root and keeps the conversation's model tier (`fork-compaction`; the
+routed model is read from Meridian's request log, and
+`E2E_EXPECT_COMPACTION_MODEL=opus[1m]` asserts it for an Opus run; `E2E_COMPACTION_SOURCE`
+observes an older plugin build as a control). On a Claude subscription set
+`E2E_PLUGIN_PATH` to the installed OpenCode server scrub, which the harness loads into its
+isolated Meridian config; without it Claude can refuse the client as third-party
+("extra usage"). The relay stores sanitized request facts
 and system-block lengths, and the per-turn client output remains in its isolated
 artifact directory. Model wording is not used as the sole assertion.
 
