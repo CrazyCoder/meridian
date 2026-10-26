@@ -1,3 +1,11 @@
+---
+id: api-contract
+type: architecture-design
+title: Stable public API and plugin contract
+status: active
+parent: architecture
+---
+
 # Plugin API boundaries
 
 ## Stable API Contract

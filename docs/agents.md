@@ -302,7 +302,7 @@ MERIDIAN_KEY=x codex exec "run the tests and summarize failures"   # non-interac
 
 Codex is a tool-driving agent — Meridian runs the `/v1/responses` endpoint in **passthrough** mode automatically (Codex executes its own shell/apply-patch tools), so no `MERIDIAN_PASSTHROUGH` change is needed. A harmless `Model metadata for 'claude-sonnet-5' not found` warning from Codex is expected — it doesn't recognize non-OpenAI model ids but works regardless.
 
-`model_reasoning_effort` is supported and won't stall the CLI, but Claude's private thinking isn't yet carried **across** turns — the Responses API's encrypted-reasoning envelope is OpenAI-specific and incompatible with Claude's signed thinking blocks, so cross-turn reasoning continuity is deferred (each turn still reasons with full context including tool results). Verified on Codex 0.144 with plain, tool-driving, and reasoning-enabled turns.
+`model_reasoning_effort` is supported and won't stall the CLI. Reasoning carries **across** turns through SDK session resume, not through the Responses API's encrypted-reasoning envelope: each Codex thread resumes its own Claude SDK session, keyed by the thread id in `x-codex-turn-metadata` (falling back to `prompt_cache_key`), so Claude's earlier thinking stays in the resumed session. The encrypted reasoning items Codex sends back are OpenAI-specific and incompatible with Claude's signed thinking blocks, so Meridian ignores them and returns an empty reasoning item where Codex expects one. Spawned subagent threads and side requests (`compact`, `title`, `summary`, …) get keys of their own, so they never rewrite the conversation's session. Verified on Codex 0.144 with plain, tool-driving, and reasoning-enabled turns.
 
 ### OpenAI-compatible tools (Open WebUI, Continue, etc.)
 
@@ -334,7 +334,7 @@ Set the OpenAI API base to `http://127.0.0.1:3456/v1` (clients append `/chat/com
 
 ### Jcode
 
-Use `/v1/chat/completions` with a stable `x-jcode-session` header. The dedicated `jcode` adapter preserves append-only history for SDK session reuse. Explicit selection uses `x-meridian-agent: jcode`; automatic detection requires both a `jcode/` User-Agent and a valid session header. Generic OpenAI clients retain their separate history-packing behavior.
+Use `/v1/chat/completions` with a stable `x-jcode-session` header. The dedicated `jcode` adapter preserves append-only history for SDK session reuse. Explicit selection uses `x-meridian-agent: jcode`; automatic detection requires both a `jcode/` User-Agent and a valid session header. Other OpenAI clients follow the rules in the note above: with a recognized session key (or a derived `tool-loop:` key) they also keep their real history, and only unkeyed requests have prior turns packed.
 
 ### Letta Code
 

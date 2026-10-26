@@ -1,3 +1,11 @@
+---
+id: design-language
+type: architecture-design
+title: Meridian design language (web UI, desktop, brand)
+status: active
+parent: architecture
+---
+
 # DESIGN.md — The Meridian Design Language
 
 The single source of truth for how Meridian looks and feels — the web UI
@@ -189,7 +197,7 @@ wrapper must be `.container` for any of this to reach it. A contained page
 carries no attribute, so it renders as before.
 
 **The header owns the brand.** It shows the mark + wordmark (links home),
-the site nav (Home · Telemetry · Profiles · Settings · Plugins), the
+the site nav (Home · Providers · Telemetry · Profiles · Settings · Plugins), the
 active-profile chip, the live health pill, the running version to its right,
 and — when the update check is on and a newer release exists — a blue
 update badge after that. Consequences:
