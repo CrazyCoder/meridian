@@ -250,6 +250,8 @@ src/
 │   ├── requestAbort.ts        ← HTTP request abort → SDK query abort bridge
 │   ├── runtimeCancelWarning.ts ← Startup warning under Bun, whose HTTP server misses a client gone before the first byte (leaf)
 │   ├── sessionTree.ts         ← Live parent→child request registry; subtree cancellation (PURE bookkeeping)
+│   ├── cacheKeepalive.ts      ← Operator-enabled prompt-cache keepalive: eligibility, account exclusions, schedule (PURE)
+│   ├── cacheKeepaliveRunner.ts ← One read-only keepalive beat on the server's gated SDK path, never persisted
 │   ├── shutdown.ts            ← HTTP drain, retained cleanup deadlines and connection tracking
 │   ├── inflight.ts            ← Per-upstream in-flight request counts for GET /inflight (PURE bookkeeping)
 │   ├── admissionHold.ts       ← Bounded per-instance generation reservations for the best-effort POST /drain hold
@@ -514,7 +516,8 @@ maintenance guard remains shared until the last owner closes. Backend/directory
 changes while a SQLite runtime is owned are rejected.
 
 `closeBackend()` caches the original cleanup and joins admitted requests,
-control/provider operations and their finalizers before releasing its owner.
+prompt-cache keepalive beats, control/provider operations and their finalizers
+before releasing its owner.
 `ProxyInstance.close()` bounds the wait after HTTP drain: an unjoined cleanup
 rejects instead of reporting success, while the original cleanup retains SQL
 and ChatGPT ownership until those operations join. Repeated calls return the

@@ -39,6 +39,21 @@ import { guardUpstreamIdle, UpstreamIdleError, type LateIdleDeadline } from "./s
 import { IdleStallCeilingError, IdleStallTracker, idleStallRequestKey } from "./idleStallCeiling"
 import { linkRequestAbort, type RequestAbortLink } from "./requestAbort"
 import { processSessionTree, truncateSessionKey, type SessionTreeRegistration } from "./sessionTree"
+import {
+  CacheKeepaliveScheduler,
+  cacheKeepaliveAccountBlock,
+  classifyCacheTier,
+  resolveCacheKeepaliveEnabled,
+  resolveCacheKeepaliveMaxInFlight,
+  type CacheTierUsage,
+} from "./cacheKeepalive"
+import {
+  cacheKeepaliveOptions,
+  cacheTierUsageOf,
+  createCacheKeepaliveRunner,
+  currentCacheKeepaliveSessionId,
+  type CacheKeepaliveRecipe,
+} from "./cacheKeepaliveRunner"
 import { AbortableSemaphore, getProcessSdkSemaphore, type SemaphoreLease } from "./concurrency"
 import { InflightRegistry, isLoopbackPeer, onResponseDone, type InflightHandle } from "./inflight"
 import { plog, setProxyDiagnosticSink, setProxyLogSilent } from "./operationalLog"
@@ -52,7 +67,7 @@ import { resolveSdkWorkingDirectory } from "./cwd"
 import type { Context } from "hono"
 import { DEFAULT_PROXY_CONFIG, resolveBackendConfig } from "./types"
 import { createAntigravityServer } from "./backends/antigravity"
-import { env, envBool, envInt, envVarSource } from "../env"
+import { env, envBool, envInt, envIntValue, envVarSource } from "../env"
 import { installErrorReporter } from "../errorReporting"
 import type { ProxyConfig, ProxyInstance, ProxyServer } from "./types"
 export type { ProxyConfig, ProxyInstance, ProxyServer }
@@ -121,7 +136,7 @@ import { buildRuntime } from "./buildRuntime"
 import { checkPluginsNow, getLatestVersion, isUpdateCheckEnabled, startUpdateCheck, stopUpdateCheck } from "./updateCheck"
 import { getPluginUpdates, trackPlugins } from "./pluginUpdateCheck"
 import { createAuthStatusOwner } from "./authStatusOwnership"
-import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, expireAuthStatusCache, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable, recordExtendedContextRateLimited, subscriptionIncludesExtendedContext } from "./models"
+import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, expireAuthStatusCache, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable, recordExtendedContextRateLimited, isExtendedContextKnownUnavailable, subscriptionIncludesExtendedContext } from "./models"
 import { livenessReport, readinessReport, renderProbe } from "./probes"
 import { UpstreamReachability, DEFAULT_OVERRIDE_TTL_MS, MAX_OVERRIDE_TTL_MS, unreachableDetail, withReachability } from "./upstreamReachability"
 import { resolveReachabilityThresholds } from "./upstreamReachabilityConfig"
@@ -295,6 +310,8 @@ export type { LineageResult }
 
 
 const exec = promisify(execCallback)
+/** Abort reason of the passthrough single-step stop: a normal tool-boundary end, not a client abort. */
+const PASSTHROUGH_SINGLE_STEP_ABORT_REASON = "passthrough single-step complete"
 
 // Max gap between real upstream messages before we treat the stream as stalled.
 // Must be > slowest legitimate TTFB / server-side thinking pause, and < the
@@ -396,6 +413,13 @@ interface RequestMeta {
    * lease, so skipping the lease and skipping session lookup cannot disagree.
    */
   auxiliaryRequest?: boolean
+  /** Set on a real turn of a session prompt-cache keepalive may track. */
+  cacheKeepalive?: CacheKeepaliveRegistration
+}
+
+interface CacheKeepaliveRegistration {
+  key: string
+  recipe: Omit<CacheKeepaliveRecipe, "options" | "extendedContext">
 }
 
 interface PriorityAttemptExposure {
@@ -1223,6 +1247,59 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
     requestMeta.sdkQueueWaitMs += lease.waitedMs
     const startedAt = Date.now()
     requestMeta.currentSdkStartedAt = startedAt
+    const keepalive = requestMeta.cacheKeepalive
+    if (!keepalive) {
+      try {
+        yield* runGatedSdkQuery(params, signal, lease, mode, activeLocators)
+      } finally {
+        requestMeta.sdkActiveDurationMs += Date.now() - startedAt
+      }
+      return
+    }
+    // A real turn of a tracked session: it ends the idle period now, and its
+    // usage says whether the session is worth keeping warm afterwards.
+    const turnModel = params.options?.model ?? keepalive.recipe.model
+    const keepaliveRecipe: CacheKeepaliveRecipe = {
+      ...keepalive.recipe,
+      model: turnModel,
+      extendedContext: turnModel.endsWith("[1m]"),
+      options: cacheKeepaliveOptions(params.options ?? {}),
+    }
+    cacheKeepalive.noteTurnStart(keepalive.key, startedAt)
+    let cacheUsage: CacheTierUsage | undefined
+    try {
+      for await (const message of runGatedSdkQuery(params, signal, lease, mode, activeLocators)) {
+        // Only usage that breaks cache writes down by tier says anything.
+        const usage = cacheTierUsageOf(message)
+        if (usage?.cache_creation) cacheUsage = usage
+        yield message
+      }
+    } finally {
+      requestMeta.sdkActiveDurationMs += Date.now() - startedAt
+      // See proxy-core spec: the cache tier is a fact of the request upstream
+      // received, so a tool-boundary stop (max_turns, single-step abort) keeps
+      // it; only a client abort, which evicts the session, drops tracking.
+      const clientAborted = signal.aborted && signal.reason !== PASSTHROUGH_SINGLE_STEP_ABORT_REASON
+      const tier = clientAborted ? "none" : classifyCacheTier(cacheUsage)
+      cacheKeepalive.noteTurnEnd(keepalive.key, { recipe: keepaliveRecipe, startedAt, tier })
+    }
+  }
+
+  /**
+   * One SDK query with its permit already held: process gate, close and join,
+   * and the writer lease on `activeLocators`. An empty list is a query that
+   * writes no transcript (a keepalive beat, `persistSession: false`); it is
+   * still gated and joined, but takes no writer lease that would refuse a
+   * real turn on the same transcript. The permit is released only after the
+   * child has been joined.
+   */
+  async function* runGatedSdkQuery(
+    params: Parameters<typeof query>[0],
+    signal: AbortSignal,
+    lease: SemaphoreLease,
+    mode: string,
+    activeLocators: readonly TranscriptLocator[],
+  ) {
     let sdkQuery: ReturnType<typeof query> | undefined
     let activeTranscriptLease: Awaited<ReturnType<typeof acquireActiveTranscriptLease>> | undefined
     let processGate: Awaited<ReturnType<typeof createSdkProcessGate>> | undefined
@@ -1232,19 +1309,19 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
       for (const locator of activeLocators) {
         await ensureTranscriptJournaled(locator, admissionLifecycleOptions)
       }
-      activeTranscriptLease = await acquireActiveTranscriptLease(activeLocators, admissionLifecycleOptions)
+      if (activeLocators.length > 0) {
+        activeTranscriptLease = await acquireActiveTranscriptLease(activeLocators, admissionLifecycleOptions)
+      }
       signal.throwIfAborted()
       // Unit SDK doubles never create an OS child. Production and real E2E runs
       // always use the gated exact-incarnation writer path.
       if (process.env.MERIDIAN_TEST_DISABLE_SDK_PROCESS_GATE !== "1") {
+        const writerLease = activeTranscriptLease
         processGate = await createSdkProcessGate(
           join(getSessionStoreDir(), "sdk-process-gates"),
-          (executor, recoverableAfterCrash) => attachActiveTranscriptExecutor(
-            activeTranscriptLease!,
-            executor,
-            admissionLifecycleOptions,
-            recoverableAfterCrash,
-          ),
+          (executor, recoverableAfterCrash) => writerLease
+            ? attachActiveTranscriptExecutor(writerLease, executor, admissionLifecycleOptions, recoverableAfterCrash)
+            : Promise.resolve(),
           params.options?.stderr,
         )
         params.options ??= {}
@@ -1275,11 +1352,37 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
           await releaseJoinedTranscriptLease(activeTranscriptLease, sessionGcOptions)
         }
       } finally {
-        requestMeta.sdkActiveDurationMs += Date.now() - startedAt
         lease.release()
       }
     }
   }
+
+  // Prompt-cache keepalive (src/proxy/SPEC.md → Decisions). Off unless the
+  // operator switches it on; beats run on the same gated SDK path as turns
+  // and count as in-flight work for shutdown.
+  const cacheKeepaliveEnabled = (): boolean =>
+    resolveCacheKeepaliveEnabled(env("CACHE_KEEPALIVE"), () => getSetting("cacheKeepalive"))
+  const cacheKeepalive = new CacheKeepaliveScheduler<CacheKeepaliveRecipe>({
+    enabled: cacheKeepaliveEnabled,
+    maxInFlight: resolveCacheKeepaliveMaxInFlight(envIntValue("CACHE_KEEPALIVE_MAX_IN_FLIGHT")),
+    currentSessionId: currentCacheKeepaliveSessionId,
+    beat: createCacheKeepaliveRunner({
+      // Never the last free permit: a client turn arriving mid-beat must not
+      // wait behind it.
+      tryAcquirePermit: () => sdkSemaphore.tryAcquire(1),
+      runQuery: (params, signal, lease) => runGatedSdkQuery(params, signal, lease, "cache_keepalive", []),
+      pinTranscript: (locator) => pinActiveSessionGcLocators(locator),
+      isDraining: () => draining,
+      accountBlock: (recipe) => cacheKeepaliveAccountBlock({
+        profileType: recipe.profileType,
+        rateLimits: rateLimitStore.getAll(recipe.profileId),
+        coolingDown: priorityExhaustion.isExhausted(recipe.profileId),
+        spent: spentProfiles.get(recipe.profileId) !== undefined,
+        benched: recipe.extendedContext && isExtendedContextKnownUnavailable(recipe.profileId, recipe.benchSessionKey),
+        now: Date.now(),
+      }),
+    }),
+  })
 
   const pluginDir = finalConfig.pluginDir ?? configPath("plugins")
   const pluginConfigPath = finalConfig.pluginConfigPath ?? configPath("plugins.json")
@@ -4288,6 +4391,39 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
         }
       }
       const hasDeferredTools = passthroughMcp?.hasDeferredTools ?? false
+      // Prompt-cache keepalive (src/proxy/SPEC.md → Decisions). Only a real
+      // turn of a keyed passthrough session on a subscription account is
+      // tracked: beats resume the stored mapping, and in passthrough every
+      // tool is a client stub, so nothing can execute. Side calls and other
+      // independent requests never touch the session's schedule.
+      const cacheKeepaliveKey = agentSessionId ? `${adapter.name}:${agentSessionId}` : undefined
+      requestMeta.cacheKeepalive = undefined
+      // Subagent and one-shot requests (title, summary, delegated children) are
+      // neither tracked nor forgotten: an older V2 plugin sends compaction as a
+      // subagent source under the primary key, which must keep its schedule.
+      if (cacheKeepaliveKey && !isIndependentSession && !isSubagentRequest) {
+        if (passthrough && profileSessionId && profile.type === "claude-max" && cacheKeepaliveEnabled()) {
+          const keepaliveMcp = passthroughMcp
+          requestMeta.cacheKeepalive = {
+            key: cacheKeepaliveKey,
+            recipe: {
+              mappingKey: profileSessionId,
+              createMcpServers: () => {
+                if (!keepaliveMcp) return {}
+                return { [keepaliveMcp.serverName]: keepaliveMcp.createServer() }
+              },
+              adapterName: adapter.name,
+              profileId: profile.id,
+              profileType: profile.type,
+              benchSessionKey,
+              model,
+              requestModel: body.model || undefined,
+            },
+          }
+        } else {
+          cacheKeepalive.forget(cacheKeepaliveKey)
+        }
+      }
       // Count deferred tools: when auto-defer is active, non-core tools are deferred
       const coreNames = pipelineCtx.coreToolNames ? [...pipelineCtx.coreToolNames] : undefined
       const coreSet = coreNames ? new Set(coreNames.map(n => n.toLowerCase())) : undefined
@@ -4448,7 +4584,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
                   // subprocess; the abort-shaped termination is converted into a
                   // clean stop_reason:"tool_use" response by the recovery paths.
                   requestAbort.setCause("passthrough_single_step")
-                  requestAbort.abort("passthrough single-step complete")
+                  requestAbort.abort(PASSTHROUGH_SINGLE_STEP_ABORT_REASON)
                 } else {
                   capturedSignatures.add(signature)
                   capturedToolNames.add(toolName)
@@ -11817,13 +11953,14 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
   }
 
   const bookkeepingHandle = retainProxyBookkeeping()
-  const getInFlightCount = () => inFlightRequests + pendingControlOperations + pendingProviderRequests + (antigravity?.getInFlightCount?.() ?? 0)
+  const getInFlightCount = () => inFlightRequests + cacheKeepalive.inFlight + pendingControlOperations + pendingProviderRequests + (antigravity?.getInFlightCount?.() ?? 0)
   const beginDrain = () => {
     if (draining) return
     draining = true
     shutdownAdmission.abort(new Error("Proxy shutdown started"))
     // Held requests leave admission with 503; they remain owned through finally.
     admissionHold.end("shutdown")
+    cacheKeepalive.stop()
     antigravity?.beginDrain?.()
     chatGptLoginClosed = chatGptLogin?.close()
   }
@@ -11864,6 +12001,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
     },
     getInFlightCount,
     sweepSessionGc,
+    tickCacheKeepalive: () => cacheKeepalive.tick(),
     ...(chatGptSource ? { chatGpt: {
       mode: chatGptSource.mode,
       accounts: () => chatGptSource.seats().length,
@@ -12010,6 +12148,7 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
     forceAbortInFlight,
     getInFlightCount,
     sweepSessionGc,
+    tickCacheKeepalive,
     closeBackend,
     chatGpt,
   } = proxy
@@ -12023,6 +12162,15 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
     : undefined
   sessionGcInterval?.unref?.()
   if (sweepSessionGc) void sweepSessionGc()
+
+  // Same ownership rule as the GC sweep: only the owned server runs the timer.
+  // The tick only compares timestamps (and returns at once with nothing
+  // tracked), so a short period costs little and starts each beat within
+  // seconds of when it is due.
+  const cacheKeepaliveInterval = tickCacheKeepalive
+    ? setInterval(tickCacheKeepalive, 10_000)
+    : undefined
+  cacheKeepaliveInterval?.unref?.()
 
   // Cached, once a day, never on the request path, and only when the
   // checkForUpdates setting is on. The banner below reports build-source drift
@@ -12191,6 +12339,7 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
         if (profileTokenRefreshInterval) clearInterval(profileTokenRefreshInterval)
         if (authKeepaliveInterval) clearInterval(authKeepaliveInterval)
         if (sessionGcInterval) clearInterval(sessionGcInterval)
+        if (cacheKeepaliveInterval) clearInterval(cacheKeepaliveInterval)
         // Refuse new work before potentially waiting for a deletion child.
         beginDrain?.()
         const chatGptRenewalStopped = chatGptRenewal?.stop()

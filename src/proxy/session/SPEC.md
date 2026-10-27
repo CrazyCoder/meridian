@@ -41,6 +41,15 @@ Code: `src/proxy/session/`, plus `sessionStore.ts`, `sessionLifecycle.ts` and
   `recoveryClaim`).
 - JSON bookkeeping is the default; `MERIDIAN_BOOKKEEPING=sqlite` is explicit and
   a SQLite directory never falls back to JSON.
+- A prompt-cache keepalive beat (see `proxy-core` → Decisions) only **reads**
+  a published mapping: it resumes the mapping's current transcript as a
+  non-persisted fork, takes no writer or publication lease, and never
+  publishes, invalidates or reclassifies anything. The session's mapping,
+  transcript and lineage are byte-identical before and after a beat. The
+  source transcript is pinned against this process's GC until the beat's
+  child is joined; collectors in other processes ignore that private pin, but
+  the published mapping retains the source, and if another process retires it
+  anyway the beat only fails and is retried or stopped.
 - Transcript GC here is the only Meridian-owned transcript deletion. Opt-in
   transcript retention (`proxy/transcriptRetention.ts`, off by default) hands
   Claude Code's own cleanup a period; that cleanup is outside this module's

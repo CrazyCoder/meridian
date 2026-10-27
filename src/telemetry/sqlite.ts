@@ -1,7 +1,7 @@
 import Database from "libsql"
 import { statSync } from "node:fs"
 import type { RequestMetric, TelemetrySummary, ITelemetryStore, IDiagnosticLogStore, DiagnosticLog, TelemetryRetention } from "./types"
-import { computeSummary } from "./percentiles"
+import { CACHE_KEEPALIVE_REQUEST_SOURCE, computeSummary } from "./percentiles"
 import { getPricingOverrides } from "./pricingStore"
 
 const METRICS_SCHEMA = `
@@ -285,8 +285,10 @@ class SqliteTelemetryStore implements ITelemetryStore {
   getLastForSession(sdkSessionId: string): RequestMetric | undefined {
     try {
       const row = this.db.prepare(
-        `SELECT * FROM metrics WHERE sdk_session_id = ? AND error IS NULL ORDER BY timestamp DESC, id DESC LIMIT 1`
-      ).get(sdkSessionId) as Record<string, unknown> | undefined
+        `SELECT * FROM metrics WHERE sdk_session_id = ? AND error IS NULL
+           AND (request_source IS NULL OR request_source != ?)
+         ORDER BY timestamp DESC, id DESC LIMIT 1`
+      ).get(sdkSessionId, CACHE_KEEPALIVE_REQUEST_SOURCE) as Record<string, unknown> | undefined
       return row ? rowToMetric(row) : undefined
     } catch {
       return undefined

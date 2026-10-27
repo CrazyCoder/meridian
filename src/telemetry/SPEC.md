@@ -60,6 +60,16 @@ Record what Meridian did and show it to the operator:
   updating card dims only its figures; its name row and active border never
   dim.
 
+- **Keepalive beats are not requests.** Rows with
+  `requestSource: "cache-keepalive"` answered no client, so `computeSummary`
+  (both stores), the route summary and Prometheus request series exclude
+  them, and `getLastForSession` skips them so token-anomaly checks compare
+  turn to turn. They are totalled apart in `TelemetrySummary.cacheKeepalive`
+  (beats, reached, not reached, tokens, estimated USD), a dashboard section
+  and `meridian_cache_keepalive_beats_total{outcome}`. A beat that never
+  reached upstream carries status `0` and its reason in `error`, and is shown
+  as skipped, not as an error.
+
 User-facing behavior is documented in `MONITORING.md`.
 
 ## Known limitations

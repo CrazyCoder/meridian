@@ -187,6 +187,10 @@ Request queries support `limit` (up to 500), `since` (epoch milliseconds), and `
 
 The CLI writes logs to stderr. The supervisor/service may redirect them to `~/.cache/meridian/proxy.err`; this is not a universal CLI log file. Use `docker logs <container>` or `journalctl --user -u meridian` for those deployments.
 
+## Prompt-Cache Keepalive
+
+When the operator turns on [prompt-cache keepalive](docs/configuration.md#prompt-cache-keepalive), its background requests are recorded with `requestSource: "cache-keepalive"`. They answer no client, so the request, error, cache-hit, route and cost figures leave them out; the dashboard's **Cache Keepalive** section, `cacheKeepalive` in `/telemetry/summary` (beats, reached, not reached, tokens, `estimatedUsd`) and `meridian_cache_keepalive_beats_total{outcome}` in `/metrics` report them separately. A beat that never reached upstream was skipped and is not an error.
+
 ## Persistence
 
 By default, request metrics and diagnostic logs live in bounded memory stores and disappear on restart. Enable SQLite history before starting Meridian:

@@ -116,6 +116,69 @@ Contract*, *Cancellation Contract*; public routes and headers are in
 - **`max_tokens` is not enforced by default:** the Agent SDK exposes no output
   cap, and the CLI's cap counts thinking plus text, so an answer-sized cap can
   leave no room for an answer. `MERIDIAN_ENFORCE_MAX_TOKENS=1` honors it exactly.
+- **Prompt-cache keepalive** (#1193, contributed by @XInTheDark, redesigned
+  with the owner 2026-10-26; `cacheKeepalive.ts` schedules, pure;
+  `cacheKeepaliveRunner.ts` sends one beat).
+  - *Measured TTL.* On the owner's Max account through the Agent SDK, turn 1
+    wrote 42,663 tokens to the one-hour tier (`ephemeral_1h_input_tokens`,
+    `ephemeral_5m_input_tokens: 0`) and turn 2, after 7 idle minutes, read all
+    of them from cache (evidence `1193-cache-ttl-20261026`). The contributor's
+    five-minute model therefore beat subscription sessions twelve times an
+    hour for nothing; the benefit is only for idles longer than an hour.
+  - *Operator switch, no header.* Off by default; `MERIDIAN_CACHE_KEEPALIVE`
+    (wins) or the `cacheKeepalive` setting, re-read per turn and per tick. A
+    beat is billed background traffic, so the operator decides; the
+    contributor's `x-meridian-cache-keepalive` header was dropped rather than
+    added to the public contract.
+  - *Eligibility from usage.* Only a real turn of a keyed passthrough session
+    on a `claude-max` profile is tracked, and only while its latest turn wrote
+    the one-hour tier (any five-minute write, no tier breakdown, or a failed
+    turn stops tracking; a pure cache read keeps the current period). A
+    five-minute prefix would expire long before a beat.
+  - *55 minutes, 3 beats.* One beat 55 minutes after the latest real turn
+    started, and 55 minutes after each reached beat: five minutes of margin
+    under the hour for tick jitter (10 s), the 15 s settle after a new
+    mapping, a retry, and SDK start-up. At most three per idle period (≈3 h)
+    bounds the cost of a session that never comes back. A real turn ends the
+    period (and no beat runs while one is running); auxiliary/independent
+    requests never touch the schedule.
+  - *Main conversations only.* Subagent and one-shot requests (OpenCode's
+    title and summary, delegated children) are never tracked: the live A/B
+    showed OpenCode's title request keyed apart and carrying the full prefix,
+    so a beat on it cost as much as the useful one for a conversation never
+    resumed. They do not forget the key either, because an older V2 plugin
+    sends compaction as a subagent source under the primary key.
+  - *Measured* (2026-10-27, OpenCode 1.18.34, Sonnet 5.5, Max account, ~90k
+    token unique prefix, 65 min idle): without keepalive the next turn
+    rewrote 86,385 tokens; with it, one beat at 55.3 min read 90,018 and the
+    next turn read 90,018 and wrote 340, about 89% cheaper in input-token
+    equivalents net of the beat.
+  - *Never on someone's money or an exhausted window.* No beat on API-key or
+    token profiles, while any live window reports `isUsingOverage`, a
+    rejected or fully used window, priority cooldown, a spent refusal, or a
+    `[1m]` bench for the session's model. A beat always uses the profile the
+    mapping was published under (the mapping key is profile-scoped) and never
+    routes or fails over; a blocked beat retries 30 s later.
+  - *Same lifecycle as a turn.* Beats run through `runGatedSdkQuery`, the
+    gated, joined core of `runSdkQueryAttempt`: process gate, close and join,
+    permit released only after the join. A beat takes no writer lease (it
+    writes nothing and must not refuse a real turn on the same transcript);
+    it pins the source transcript against GC until joined. Beats count in
+    `getInFlightCount`, `beginDrain` aborts them, and `closeBackend` waits for
+    them, so no CLI child is orphaned.
+  - *Never ahead of real turns.* A beat takes an SDK permit only with
+    `tryAcquire(1)`: never queued, never ahead of a waiter, never the last free
+    permit; otherwise it is skipped and retried. A global in-flight cap
+    (default 1, at most 2) bounds beats across sessions.
+  - *Read-only.* `forkSession: true`, `persistSession: false`, `maxTurns: 1`,
+    `DISABLE_AUTO_COMPACT`, stopped at `message_start`: no transcript, mapping
+    or lineage change. A beat that read nothing (cache already gone) or wrote
+    the five-minute tier stops tracking instead of paying again.
+  - *The tier is a fact of the request upstream received.* A turn's tier is
+    read from the usage it reported, whatever ended it: a tool-boundary stop
+    (the single-turn cap's `max_turns`, the single-step abort) keeps the
+    session tracked, since an agent waiting at a tool call is the main case.
+    Only a client abort, which evicts the session, drops tracking.
 
 ## Codex Responses wire contract
 
@@ -139,6 +202,12 @@ response response.created → response.in_progress → output_item.added →
 
 ## Known limitations
 
+- **Keepalive needs two SDK slots.** A beat never takes the last free permit,
+  so with `MERIDIAN_MAX_CONCURRENT=1` keepalive never runs.
+- **Keepalive tracking is unbounded in count.** Each tracked session holds its
+  latest request recipe (system prompt, tool definitions) for up to about
+  three idle hours; a busy shared instance with keepalive on holds one per
+  active session.
 - **Bun misses early disconnects:** under Bun the HTTP server does not notice a
   client that leaves before the first byte (a startup warning says so).
 - **Anthropic server tools** (`web_search_*`, `web_fetch_*`) cannot be produced

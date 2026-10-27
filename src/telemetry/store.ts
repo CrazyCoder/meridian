@@ -6,7 +6,7 @@
  */
 
 import type { RequestMetric, TelemetrySummary, ITelemetryStore, TelemetryRetention } from "./types"
-import { computeSummary } from "./percentiles"
+import { computeSummary, isCacheKeepaliveMetric } from "./percentiles"
 import { getPricingOverrides } from "./pricingStore"
 import { getSetting } from "../settings"
 
@@ -97,12 +97,13 @@ export class MemoryTelemetryStore implements ITelemetryStore {
   }
 
   /** Find the most recent successful metric for a given SDK session ID.
-   *  Used by anomaly detection to compare consecutive turns. */
+   *  Used by anomaly detection to compare consecutive turns, so a keepalive
+   *  beat, which is not a turn, is skipped. */
   getLastForSession(sdkSessionId: string): RequestMetric | undefined {
     for (let i = 0; i < this.count; i++) {
       const idx = (this.head - 1 - i + this.capacity) % this.capacity
       const metric = this.buffer[idx]
-      if (metric && metric.sdkSessionId === sdkSessionId && metric.error === null) {
+      if (metric && metric.sdkSessionId === sdkSessionId && metric.error === null && !isCacheKeepaliveMetric(metric)) {
         return metric
       }
     }
