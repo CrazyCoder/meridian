@@ -40,7 +40,15 @@ Code: `src/proxy/chatgpt/` (incl. `migrate/`), `src/proxy/codex/`,
     fails rather than degrades if it cannot;
   - `follow-external` and `codex/` only **read** the oc-codex-multi-auth pool
     and never write it, its locks or the token endpoint;
-  - migration *moves* refresh authority rather than copying it.
+  - migration *moves* refresh authority rather than copying it;
+  - the `exchangeStartedAt` stamp, written before an exchange goes out and
+    cleared by the commit of its result, is what stops a second exchange: the
+    refresher and renewal pass refuse any stamped seat. For **listing** only,
+    a stamp means "needs a sign-in" once no exchange can still clear it. The
+    lease holder asks its refresher which exchanges it has out; other readers
+    (`MERIDIAN_CREDENTIALS_READONLY`) treat a stamp younger than the exchange
+    timeout plus 5 s as in flight, so they may lag a lost sign-in by up to
+    about 20 s, and a stamp dated in the future is not trusted (#1463).
 - Seats are profiles with `type: "chatgpt"` and their own active pointer; they
   never live in Claude's profile config. All additions are absent unless
   ChatGPT is enabled, and existing fields keep their meaning
