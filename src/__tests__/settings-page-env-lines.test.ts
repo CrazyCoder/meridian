@@ -30,7 +30,7 @@ interface StubElement {
 }
 
 type Loader = () => Promise<void>
-interface PageLoaders { loadTelemetry: Loader; loadUpdates: Loader; loadRouting: Loader }
+interface PageLoaders { loadTelemetry: Loader; loadUpdates: Loader; loadRouting: Loader; loadTranscripts: Loader }
 
 /** The page script up to its start-up calls, evaluated with a stub DOM. */
 function pageLoaders(app: TestApp, cards: Map<string, StubElement>): PageLoaders {
@@ -50,7 +50,7 @@ function pageLoaders(app: TestApp, cards: Map<string, StubElement>): PageLoaders
     },
   }
   const fetch = (url: string) => app.fetch(new Request(`http://localhost${url}`))
-  const build = new Function("document", "fetch", `${script}\nreturn { loadTelemetry, loadUpdates, loadRouting };`)
+  const build = new Function("document", "fetch", `${script}\nreturn { loadTelemetry, loadUpdates, loadRouting, loadTranscripts };`)
   return build(document, fetch) as PageLoaders
 }
 
@@ -86,6 +86,8 @@ describe("settings page env-override lines", () => {
     "MERIDIAN_UPDATE_CHECK_URL",
     "MERIDIAN_ROUTING",
     "MERIDIAN_PROFILE_ORDER",
+    "MERIDIAN_TRANSCRIPT_RETENTION_DAYS",
+    "CLAUDE_PROXY_TRANSCRIPT_RETENTION_DAYS",
   ]
 
   beforeEach(() => {
@@ -179,5 +181,65 @@ describe("settings page env-override lines", () => {
       "In use: priority, from MERIDIAN_ROUTING=priority (env); saved setting sticky is ignored",
       "In use: personal, work, from MERIDIAN_PROFILE_ORDER=personal,work (env); saved setting work, personal is ignored",
     ])
+  })
+
+  describe("transcript retention card", () => {
+    const transcriptsCard = async () => {
+      await page.loadTranscripts()
+      return cards.get("transcripts-body")?.innerHTML ?? ""
+    }
+
+    it("renders through the shared setting row and reads off by default", async () => {
+      const html = await transcriptsCard()
+      expect(html).toContain('<div class="setting-row">')
+      expect(html).toContain('id="tr-days"')
+      expect(html).toContain("now: off, nothing is deleted")
+      expect(envLines(html)).toEqual([])
+    })
+
+    it("shows the saved period in use", async () => {
+      setSetting("transcriptRetentionDays", 45)
+      const html = await transcriptsCard()
+      expect(html).toContain('value="45"')
+      expect(html).toContain("now: Claude Code deletes its files older than 45 days")
+    })
+
+    it("a period variable outranks the saved setting", async () => {
+      setSetting("transcriptRetentionDays", 45)
+      process.env.MERIDIAN_TRANSCRIPT_RETENTION_DAYS = "7"
+      expect(envLines(await transcriptsCard()))
+        .toEqual(["In use: 7 days, from MERIDIAN_TRANSCRIPT_RETENTION_DAYS=7 (env); saved setting 45 days is ignored"])
+    })
+
+    it("a variable set to 0 pins retention off over the saved setting", async () => {
+      setSetting("transcriptRetentionDays", 45)
+      process.env.MERIDIAN_TRANSCRIPT_RETENTION_DAYS = "0"
+      const html = await transcriptsCard()
+      expect(html).toContain("now: off, nothing is deleted")
+      expect(envLines(html))
+        .toEqual(["In use: off, from MERIDIAN_TRANSCRIPT_RETENTION_DAYS=0 (env); saved setting 45 days is ignored"])
+    })
+
+    it("an unusable variable, legacy name included, leaves the saved setting or off in use, and says so", async () => {
+      process.env.CLAUDE_PROXY_TRANSCRIPT_RETENTION_DAYS = "forever"
+      expect(envLines(await transcriptsCard()))
+        .toEqual(["CLAUDE_PROXY_TRANSCRIPT_RETENTION_DAYS is set but not a valid number (forever); default off used"])
+      setSetting("transcriptRetentionDays", 45)
+      expect(envLines(await transcriptsCard()))
+        .toEqual(["CLAUDE_PROXY_TRANSCRIPT_RETENTION_DAYS is set but not a valid number (forever); saved setting 45 days used"])
+    })
+
+    it("says plainly that it is off by default and what Claude Code deletes when on", () => {
+      const start = settingsPageHtml.indexOf("Transcript Retention</h1>")
+      const end = settingsPageHtml.indexOf('id="transcripts-card"', start)
+      expect(start).toBeGreaterThanOrEqual(0)
+      const copy = settingsPageHtml.slice(start, end).replace(/<[^>]+>/g, "").replace(/\s+/g, " ")
+      expect(copy).toContain("Off by default.")
+      expect(copy).toContain("deletes all of its files older than that in each profile directory")
+      for (const kind of [
+        "including conversations Meridian still maps, which then replay from the client's history",
+        "file history", "plans", "tasks", "uploads", "shell snapshots", "debug logs", "backups",
+      ]) expect(copy).toContain(kind)
+    })
   })
 })

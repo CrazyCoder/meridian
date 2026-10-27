@@ -41,6 +41,12 @@ Code: `src/proxy/session/`, plus `sessionStore.ts`, `sessionLifecycle.ts` and
   `recoveryClaim`).
 - JSON bookkeeping is the default; `MERIDIAN_BOOKKEEPING=sqlite` is explicit and
   a SQLite directory never falls back to JSON.
+- Transcript GC here is the only Meridian-owned transcript deletion. Opt-in
+  transcript retention (`proxy/transcriptRetention.ts`, off by default) hands
+  Claude Code's own cleanup a period; that cleanup is outside this module's
+  leases and pins and may retire a mapped transcript by age, after which the
+  conversation replays (see `architecture` → *Transcript publication
+  lifetime*).
 
 Detailed contracts live in [`architecture`](../../../ARCHITECTURE.md): *Session
 Management*, *Lineage Verification*, *SQLite bookkeeping boundary*, *Transcript
@@ -66,3 +72,14 @@ publication lifetime*, *Session store write cost*, *Lineage hash encoding* and
   resuming (only with `MERIDIAN_SESSION_PROFILE_COPY_PRUNE=1`).
 - **Windows writer-lease recovery** for a crashed proxy waits for a host reboot,
   because an executor's death does not prove its descendants gone.
+- **Retention cleanup can race a resume** (only with opt-in transcript
+  retention on). Claude Code's cleanup runs a few seconds after a request
+  child starts, in any child sharing the config root, and deletes by mtime
+  alone. A conversation idle for longer than the period whose resume is
+  loading its transcript while a concurrent cleanup deletes it can lose its
+  SDK-side history: the child keeps what it already read but appends to a new
+  file without the earlier turns, so a later resume silently lacks them and
+  lineage cannot detect it. A conversation
+  whose transcript is already gone is refused and replays from client
+  history instead. A pin-aware cleanup is a recorded follow-up (`proxy-core`
+  → *Decisions*).

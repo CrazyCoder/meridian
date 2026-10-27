@@ -84,6 +84,15 @@ export interface MeridianSettings {
    * MERIDIAN_ERROR_REPORTING_DSN wins. Read once at startup.
    */
   errorReportingDsn?: string
+  /**
+   * Opt-in: when set (1-3650), Claude Code's own retention cleanup runs in
+   * Meridian's SDK children and deletes its files older than this many days in
+   * each profile's config directory. Unset is off.
+   * MERIDIAN_TRANSCRIPT_RETENTION_DAYS wins, and a profile whose own
+   * settings.json names `cleanupPeriodDays` keeps that. Re-read on every
+   * request; see proxy/transcriptRetention.ts.
+   */
+  transcriptRetentionDays?: number
   /** Ask the npm registry once a day whether a newer Meridian is published.
    *  Off unless switched on: an instance only reaches a third party on a timer
    *  because someone asked it to. The header shows the running version either

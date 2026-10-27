@@ -273,6 +273,8 @@ src/
 │   ├── instanceImport/        ← `meridian instance-import` (never imported by the server)
 │   ├── openai.ts, openaiResponses.ts ← Pure OpenAI Chat Completions / Responses translation
 │   ├── query.ts               ← SDK query options builder (shared between stream/non-stream paths)
+│   ├── transcriptRetention.ts ← Opt-in Claude Code retention period per SDK config root (off by default)
+│   ├── transcriptRetentionSettings.ts ← GET/PUT /settings/api/transcripts (same-origin browser writes)
 │   ├── errors.ts              ← Error classification (SDK errors → HTTP responses)
 │   ├── toolInputJson.ts       ← Tool input JSON repair for raw control characters in strings (PURE)
 │   ├── retryAfter.ts          ← Retry-After computation for 429/503/529 (PURE)
@@ -401,8 +403,8 @@ server.ts (HTTP layer)
    persisted consent, using standard web types and `settings.ts`;
    it must not import a server, provider, Hono or session module. The Origin
    policy for settings that disclose something or choose what runs lives in
-   `src/sameOrigin.ts` (standard web types only), used by the header and
-   Claude Code executable settings. Backend auth remains at each caller's
+   `src/sameOrigin.ts` (standard web types only), used by the header,
+   Claude Code executable and transcript retention settings. Backend auth remains at each caller's
    existing boundary. Shared same-origin browser-write policy is
    reused by the loopback reachability override; it confers no peer/key authority.
    `upstreamReachability.ts` has no imports or settings/filesystem I/O; its
@@ -771,6 +773,8 @@ E2E tests (`E2E.md`) should be run before releases or after major refactors.
 `sessionLifecycle.ts` persists a publication lease atomically with each new request target before SDK launch. The lease survives physical SDK writer shutdown and commit until the synchronous durable mapping CAS succeeds, or the request abandons its target. Failed publication restores the lease. Collectors in other processes cannot depend on a proxy instance's private request pins, so they consult these durable leases as well as durable mappings.
 
 Publication leases use the existing unarmed active-lease representation with `purpose: "publication"`. Older collectors also retain them while the owner process is alive; exact process-incarnation death permits recovery. They do not count as exclusive SDK writers, and abandoning publication never removes an actual writer lease. Published transcripts are retained by their durable mappings and become collectible after eviction.
+
+Exception, only with opt-in transcript retention (`MERIDIAN_TRANSCRIPT_RETENTION_DAYS` or `transcriptRetentionDays`, off by default): Meridian then passes `cleanupPeriodDays` to its request children, and Claude Code's own cleanup deletes files in the config root by modification time alone. It does not see publication leases, durable mappings or request pins, so it can retire a published or pinned transcript once it is older than the period. The next resume of an affected conversation is refused as unresumable and replays from the client's history into a fresh session (flattened text; SDK thinking is not restored). A cleanup racing a resume that is still loading the transcript can lose that conversation's SDK-side history; see the `session` spec's *Known limitations*. With retention off, Meridian passes no period and this lifetime contract holds without exception.
 
 An SDK writer lease is released once its writer has been joined. If the lifecycle lock is busy at that point, the next GC sweep, including the shutdown sweep, retries the release; the completed turn does not fail. On win32 an executor's death does not prove its descendants gone, so a writer lease left by a crashed proxy is recovered only after the host reboots.
 

@@ -88,6 +88,31 @@ Contract*, *Cancellation Contract*; public routes and headers are in
   (not whole-server memory): built sets from about 20 MiB per session to one
   shared set; the remaining per-session heap from about 1 MiB to about 80 KiB. Shared values are read-only; each query still
   builds its own MCP server from them.
+- **Transcript retention is opt-in and delegated to Claude Code (#1261,
+  owner decision 2026-10-27).** Meridian's empty `settingSources` (#490/#634)
+  also skips Claude Code's retention cleanup, so transcripts Meridian's own GC
+  no longer tracks accumulate. `MERIDIAN_TRANSCRIPT_RETENTION_DAYS` /
+  `transcriptRetentionDays` (1-3650; env `0` pins off) pass `cleanupPeriodDays`
+  as a flag setting to request children; unset passes nothing, so an
+  unconfigured instance sends exactly what it did before. `0` is never sent:
+  Claude Code validates the key as a positive integer and older versions read
+  `0` as "write no transcripts".
+  - *Why opt-in:* the cleanup deletes every file of its kind older than the
+    period in the whole config directory (transcripts Meridian still maps or
+    pins, file history, plans, tasks, uploads, shell snapshots, debug logs,
+    backups…), by mtime only, and can race a resume (`session` → *Known
+    limitations*). That is a data-deletion choice for the operator.
+  - *Why no Meridian-owned sweep yet:* the proposed idle sweep launched a
+    promptless Claude Code child per profile root without process custody (its
+    SDK slot was released before the child was joined, `close()` could succeed
+    with it unjoined, root reservation raced) and exported
+    `ProxyServer.transcriptSweep` without contract approval. Retention
+    therefore runs only inside request children; a profile that serves no
+    requests is not cleaned.
+  - *Follow-ups:* a pin-aware transcript GC that honors durable mappings and
+    publication leases, then an idle sweep with full process custody (slot held
+    until the child is joined, joined on close, atomic root reservation).
+  - Settings writes are same-origin only (`transcriptRetentionSettings.ts`).
 - **`max_tokens` is not enforced by default:** the Agent SDK exposes no output
   cap, and the CLI's cap counts thinking plus text, so an answer-sized cap can
   leave no room for an answer. `MERIDIAN_ENFORCE_MAX_TOKENS=1` honors it exactly.

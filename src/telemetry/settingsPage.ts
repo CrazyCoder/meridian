@@ -251,6 +251,22 @@ ${profileBarHtml}
     <div id="telemetry-body">Loading…</div>
   </div>
 
+  <h1 style="margin-top:40px">Transcript Retention</h1>
+  <p class="subtitle" style="max-width:720px;line-height:1.6">
+    Every request leaves a Claude Code transcript on disk, in the config directory of the profile that served it,
+    and Meridian starts Claude Code with its own cleanup switched off, so that directory keeps growing.
+    <strong style="color:var(--text)">Off by default.</strong> Set a number of days to turn on Claude Code's own
+    cleanup in the processes that serve requests. <strong style="color:var(--yellow)">When on, Claude Code deletes
+    all of its files older than that in each profile directory</strong>, not only transcripts: transcripts (including
+    conversations Meridian still maps, which then replay from the client's history), file history, plans, tasks,
+    uploads, shell snapshots, debug logs and backups. Without profiles that directory is your own
+    <code>~/.claude</code>. A profile whose own <code>settings.json</code> sets <code>cleanupPeriodDays</code> keeps
+    its value. Changes apply to the next request; no restart needed.
+  </p>
+  <div class="adapter-card" id="transcripts-card">
+    <div id="transcripts-body">Loading…</div>
+  </div>
+
   <h1 style="margin-top:40px">Updates</h1>
   <p class="subtitle" style="max-width:720px;line-height:1.6">
     Meridian is installed and updated by hand, so an instance can sit on an old version for weeks without
@@ -936,6 +952,45 @@ async function putTelemetry(body) {
   await loadTelemetry();
 }
 
+async function loadTranscripts() {
+  const cfg = await (await fetch('/settings/api/transcripts')).json();
+  const lim = cfg.limits || { min: 1, max: 3650 };
+  const eff = cfg.effective || {};
+  const days = (n) => n == null || n === 0 ? null : n.toLocaleString() + ' days';
+  const now = eff.days > 0 ? 'Claude Code deletes its files older than ' + days(eff.days) : 'off, nothing is deleted';
+
+  document.getElementById('transcripts-body').innerHTML = settingRowHtml({
+    label: 'Delete after',
+    forId: 'tr-days',
+    controlHtml: '<input type="number" class="setting-input" id="tr-days" value="' + (cfg.saved == null ? '' : cfg.saved) + '"'
+      + ' min="' + lim.min + '" max="' + lim.max + '" step="1" placeholder="off" style="width:110px">'
+      + '<span class="setting-unit">days</span>',
+    desc: 'Leave blank or 0 for off. ' + lim.min + ' to ' + lim.max + ' days turns the cleanup on.',
+    statusHtml: [nowLine(telemetryEsc(now))],
+    envText: envOverrideText((cfg.envSources || {}).transcriptRetentionDays, eff.days > 0 ? days(eff.days) : 'off', days(cfg.saved)),
+  });
+
+  document.getElementById('tr-days').addEventListener('change', async (e) => {
+    const raw = e.target.value.trim();
+    await putTranscripts({ transcriptRetentionDays: raw === '' ? null : Number(raw) });
+  });
+}
+
+async function putTranscripts(body) {
+  const res = await fetch('/settings/api/transcripts', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert(err.error || 'Failed to save transcript retention');
+  } else {
+    showSaved();
+  }
+  await loadTranscripts();
+}
+
 async function loadUpdates() {
   const cfg = await (await fetch('/settings/api/updates')).json();
   const build = cfg.build || {};
@@ -1168,6 +1223,7 @@ loadChatGpt();
 loadPricing();
 loadRouting();
 loadTelemetry();
+loadTranscripts();
 loadUpdates();
 loadClaudeExecutable();
 loadHeaderSettings();

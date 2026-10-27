@@ -627,6 +627,44 @@ warning only reports it. Live evidence owed: a run through the proxy with a
 real client cancel on the current Bun (and any Bun 1.4.x in use, where the
 claim is unchecked), on Linux and on Windows. No model calls were made here.
 
+## Transcript retention
+
+```sh
+MERIDIAN_TRANSCRIPT_RETENTION_DAYS=30 bun scripts/e2e-transcript-retention.mjs
+bun scripts/e2e-transcript-retention.mjs
+```
+
+Needs no credentials, network or running proxy. The harness drives the
+installed Claude Code CLI through the Agent SDK with the options
+`buildQueryOptions` produces, against a disposable config directory holding one
+transcript last touched 40 days ago and one fresh one. The child never receives
+a message, so nothing reaches the model; it idles while Claude Code's
+background housekeeping runs. The opted-in run asserts the cleanup deletes the
+old transcript, keeps the fresh one and loads no settings file, then that
+resuming the deleted session is refused in a way `classifyResumeRefusal` reads
+as `unresumable`, the cue for Meridian's fresh-session replay. The second run
+uses the default (retention off): the child receives no `cleanupPeriodDays`,
+exactly the settings Meridian sent before this setting existed, and nothing is
+deleted.
+
+**Verified 2026-10-03** (contributor, before retention became opt-in): Linux,
+Claude Code 2.1.284, Agent SDK 0.2.141: with 30 days the old transcript was
+deleted, the fresh one kept, and the resume classified `unresumable`; with
+retention off both transcripts were kept.
+
+**Verified 2026-10-27** (maintainer, opt-in default, real transcripts): macOS
+arm64, Meridian `371e9362e` launching Claude Code 2.1.311 (Agent SDK 0.2.141),
+`claude-haiku-4-5`, a disposable profile directory with an access-only token.
+Real transcripts written by real requests, two aged to 3 days. With
+`MERIDIAN_TRANSCRIPT_RETENTION_DAYS=1` the CLI received `--settings
+{…"cleanupPeriodDays":1}` and empty `--setting-sources`; the aged pair was
+deleted and every fresh transcript kept. With retention unset the argv had no
+`cleanupPeriodDays` and nothing was deleted. Cross-origin, `text/plain` and
+`Origin: null` writes to `/settings/api/transcripts` returned 403 and saved
+nothing. Found: an off request stamps `.last-cleanup`, so the first opted-in
+cleanup can wait up to a day (documented in configuration.md); a child that
+lives under about 5 s never cleans up.
+
 ## Antigravity subscription CLI backend
 
 ```sh
