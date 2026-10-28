@@ -14,7 +14,8 @@
  *   3. Each chat completions request gets a fresh SDK session
  * A request that carries a session key the adapter recognizes (Jcode's
  * x-jcode-session, or the OpenCode-family x-opencode-session /
- * x-session-affinity) is exempt: it keeps its real messages and resumes like
+ * x-session-affinity, or the generic x-session-id) is exempt: it keeps its
+ * real messages and resumes like
  * any keyed client. An unkeyed request keeps the packing above.
  */
 
@@ -117,6 +118,16 @@ export interface AnthropicImageBlock {
   }
 }
 
+export interface AnthropicDocumentBlock {
+  type: "document"
+  title?: string
+  source: {
+    type: "base64"
+    media_type: "application/pdf"
+    data: string
+  }
+}
+
 export interface AnthropicMessage {
   role: "user" | "assistant"
   content: string | AnthropicContentBlock[]
@@ -205,6 +216,7 @@ export interface AnthropicThinkingBlock {
 export type AnthropicContentBlock =
   AnthropicTextBlock |
   AnthropicImageBlock |
+  AnthropicDocumentBlock |
   AnthropicThinkingBlock |
   AnthropicToolResultBlock |
   AnthropicToolUseBlock
@@ -425,6 +437,18 @@ export function parseDataUrlImage(url: string): AnthropicImageBlock | null {
       media_type: mediaType,
       data,
     },
+  }
+}
+
+/** A base64 PDF data URL as an Anthropic document block; null for anything else. */
+export function parseDataUrlPdf(url: string, title?: string): AnthropicDocumentBlock | null {
+  const match = /^data:application\/pdf;base64,(.+)$/is.exec(url)
+  const data = match?.[1]
+  if (!data) return null
+  return {
+    type: "document",
+    ...(title ? { title } : {}),
+    source: { type: "base64", media_type: "application/pdf", data },
   }
 }
 
@@ -1059,6 +1083,46 @@ export function translateAnthropicSseEvent(
   // All other events (ping, content_block_start, content_block_stop,
   // message_stop, thinking_delta, etc.) are skipped
   return null
+}
+
+/** OpenAI's in-band stream error frame: `data: {"error": {...}}`. */
+export interface OpenAiStreamErrorChunk {
+  error: {
+    message: string
+    type: string
+    code: string
+    [key: string]: unknown
+  }
+}
+
+/**
+ * Translate an Anthropic SSE `error` event into OpenAI's in-band stream error.
+ *
+ * A turn that fails after `message_start` is closed with
+ * `stop_reason: "max_tokens"` followed by an `error` event, so Anthropic
+ * clients can see both the partial content and the failure. The chat
+ * completions translator has no error shape, so without this the error was
+ * dropped and OpenAI clients saw only `finish_reason: "length"`: an upstream
+ * refusal (for example a safeguard rejection) looked like truncation, and
+ * clients that continue truncated turns re-sent the request that had just
+ * been refused.
+ *
+ * `code` mirrors the Anthropic error type so clients can classify the failure
+ * (rate limit, overload, auth) the same way they would an HTTP error body.
+ * Extra fields such as retry-after hints are preserved.
+ */
+export function translateAnthropicSseError(
+  event: { type?: unknown; error?: unknown },
+): OpenAiStreamErrorChunk | null {
+  if (event.type !== "error") return null
+  const upstream = event.error && typeof event.error === "object"
+    ? event.error as Record<string, unknown>
+    : {}
+  const type = typeof upstream.type === "string" && upstream.type ? upstream.type : "api_error"
+  const message = typeof upstream.message === "string" && upstream.message
+    ? upstream.message
+    : "Upstream stream error"
+  return { error: { ...upstream, message, type, code: type } }
 }
 
 // ---------------------------------------------------------------------------

@@ -311,6 +311,26 @@ export interface TelemetrySummary {
 
   /** Estimated cost of the window's usage at static API list prices */
   costEstimate: CostEstimate
+
+  /** Prompt-cache keepalive beats in the window. They answer no client, so
+   *  every other figure above excludes them; they are totalled only here. */
+  cacheKeepalive: CacheKeepaliveSummary
+}
+
+/** What the window's prompt-cache keepalive beats did and cost. */
+export interface CacheKeepaliveSummary {
+  /** Beats attempted. */
+  beats: number
+  /** Beats that reached upstream and refreshed the cache. */
+  reached: number
+  /** Beats that never reached upstream. Not errors: no client was answered. */
+  notReached: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  /** Estimated USD of the beats at the same list prices as costEstimate. */
+  estimatedUsd: number
 }
 
 /**

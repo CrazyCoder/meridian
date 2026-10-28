@@ -245,6 +245,11 @@ export interface QueryContext {
   sharedMemory?: boolean
   /** Run the WebFetch domain safety check (hostname sent to api.anthropic.com) */
   webFetchPreflight?: boolean
+  /** `cleanupPeriodDays` for Claude Code's own retention cleanup, as resolved
+   *  by transcriptRetention.ts. Anything but a positive integer (0 = off, the
+   *  default) passes no period, exactly as before #1261. Required so a new call
+   *  site states its retention instead of silently differing. */
+  transcriptRetentionDays: number
   /** Load the account's claude.ai MCP connectors (ignored in passthrough) */
   claudeAiConnectors?: boolean
   /** Per-request cost cap in USD */
@@ -661,6 +666,11 @@ export function buildQueryOptions(ctx: QueryContext, abortController?: AbortCont
     effort, thinking, taskBudget, outputFormat, betas, settingSources, codeSystemPrompt, clientSystemPrompt,
     memory, dreaming, sharedMemory, maxBudgetUsd, maxOutputTokens, fallbackModel, sdkDebug, additionalDirectories,
   } = ctx
+  // Passthrough tool execution belongs to the client. Loading proxy-host
+  // settings also loads native plugins and SessionStart hooks: plugins: []
+  // does not disable installed plugins, and their names are not client tools.
+  // Keep client-provided instructions and explicit SDK settings/hooks instead.
+  const sdkSettingSources = passthrough ? [] : (settingSources ?? [])
   const resolvedModel = model === "haiku"
     ? ctx.envOverrides?.ANTHROPIC_DEFAULT_HAIKU_MODEL ?? cleanEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL ?? "claude-haiku-5-5"
     : model
@@ -760,6 +770,7 @@ export function buildQueryOptions(ctx: QueryContext, abortController?: AbortCont
             // `--tools`, sending every deferred MCP tool with its full schema
             // on every turn even when `ENABLE_TOOL_SEARCH=true`.
             tools: hasDeferredTools ? ["ToolSearch"] : [],
+            strictMcpConfig: true,
             disallowedTools: [...allBlockedTools],
             ...(passthroughMcp ? {
               allowedTools: [...passthroughMcp.toolNames],
@@ -789,14 +800,19 @@ export function buildQueryOptions(ctx: QueryContext, abortController?: AbortCont
         // the check. `webFetchPreflight` is the positive form the settings
         // UI shows; the SDK setting is the negative one.
         skipWebFetchPreflight: ctx.webFetchPreflight === false,
+        // Opt-in retention (transcriptRetention.ts): only a positive integer
+        // is ever sent; off sends no key at all. See src/proxy/SPEC.md.
+        ...(Number.isSafeInteger(ctx.transcriptRetentionDays) && ctx.transcriptRetentionDays > 0
+          ? { cleanupPeriodDays: ctx.transcriptRetentionDays }
+          : {}),
       },
       // #634/#490: always explicit. Empty array → SDK emits
       // `--setting-sources=` → subprocess loads nothing. Omitting the key
       // makes claude-code fall back to its built-in default (user + project
       // + local) and slurp CLAUDE.md from the PROXY HOST's cwd into the
-      // system prompt regardless of claudeMd:"off" — #490 fixed this for
-      // passthrough; this extends the same guarantee to every adapter.
-      settingSources: settingSources ?? [],
+      // system prompt regardless of claudeMd:"off". Client-owned passthrough
+      // always stays isolated; SDK-owned tools retain the selected sources.
+      settingSources: sdkSettingSources,
       ...(onStderr ? { stderr: onStderr } : {}),
       env: {
         // First, so an operator-set value of any kind overrides it.

@@ -6,6 +6,7 @@
  * conserving rate limit budget for the primary agent.
  */
 
+import { installModelsMock } from "./modelsMock"
 import { describe, it, expect, mock, beforeEach } from "bun:test"
 
 import { installSdkMock } from "./sdkMock"
@@ -50,12 +51,10 @@ installMcpToolsMock(() => ({
   createOpencodeMcpServer: () => ({ type: "sdk", name: "opencode", instance: {} }),
 }))
 
-// Pass through the real resolveSdkModelDefaults — mock.module is process-global
-// in Bun, and stubbing it as () => ({}) leaks to proxy-env-stripping.test.ts.
-import { resolveSdkModelDefaults } from "../proxy/models"
+// Unspecified model exports retain their real implementation.
 
 // Fix auth status so mapModelToClaudeModel always picks the max/1m path
-mock.module("../proxy/models", () => ({
+installModelsMock(() => ({
   mapModelToClaudeModel: (model: string, sub?: string | null, agentMode?: string | null) => {
     const base = model.toLowerCase()
     if (base.includes("opus")) return agentMode === "subagent" ? "opus" : "opus[1m]"
@@ -64,7 +63,6 @@ mock.module("../proxy/models", () => ({
     return "sonnet"
   },
   resolveClaudeExecutableAsync: async () => "claude",
-  resolveSdkModelDefaults,
   getClaudeAuthStatusAsync: async () => ({ loggedIn: true, subscriptionType: "max" }),
   getAuthCacheInfo: () => ({ lastCheckedAt: 0, lastSuccessAt: 0, isFailure: false }),
   hasExtendedContext: (m: string) => m.endsWith("[1m]"),
@@ -79,6 +77,8 @@ mock.module("../proxy/models", () => ({
 }))
 
 const { createProxyServer, clearSessionCache } = await import("../proxy/server")
+const { SIDE_CALL_SOURCE } = await import("../../plugin/pi/headers")
+const { applyMeridianV2Headers, fallbackAgentTraits } = await import("../../plugin/meridian-v2")
 
 function post(body: any, headers: Record<string, string> = {}) {
   const { app } = createProxyServer({ port: 0, host: "127.0.0.1" })
@@ -103,8 +103,8 @@ const TASK_TOOL = {
 }
 
 describe("Subagent model selection", () => {
-  beforeEach(() => {
-    clearSessionCache()
+  beforeEach(async () => {
+    await clearSessionCache()
     capturedModel = null
     capturedOptions = null
   })
@@ -146,6 +146,26 @@ describe("Subagent model selection", () => {
       "x-meridian-source": "subagent-reviewer",
     })
     expect(capturedModel).toBe("opus")
+  })
+
+  it("keeps a Pi extension side call on the conversation's 1M tier", async () => {
+    // A compaction request carries the history it summarizes, so it must not
+    // fall to the 200k subagent tier of a 1M Opus conversation.
+    await post({ ...BASE_REQUEST, model: "claude-opus-4-6" }, {
+      "x-meridian-agent": "pi",
+      "x-session-affinity": "pi-compaction-session",
+      "x-meridian-source": SIDE_CALL_SOURCE,
+    })
+    expect(capturedModel).toBe("opus[1m]")
+  })
+
+  it("keeps an OpenCode V2 attached compaction on the conversation's 1M tier", async () => {
+    // The V2 plugin's own headers for an attached compaction: the compaction
+    // carries the history it summarizes, so it needs the conversation's window.
+    const headers: Record<string, string> = {}
+    applyMeridianV2Headers(headers, { sessionID: "ses_long", agent: "compaction", traits: fallbackAgentTraits("compaction"), kind: "compaction" })
+    await post({ ...BASE_REQUEST, model: "claude-opus-4-6" }, headers)
+    expect(capturedModel).toBe("opus[1m]")
   })
 
   it("preserves the legacy OpenCode mode header on non-OpenCode adapters", async () => {
