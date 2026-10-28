@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.87.0](https://github.com/rynfar/meridian/compare/meridian-v1.86.0...meridian-v1.87.0) (2026-10-27)
+
+
+### Features
+
+* check loaded plugins for updates alongside Meridian ([#1445](https://github.com/rynfar/meridian/issues/1445)) ([a70a992](https://github.com/rynfar/meridian/commit/a70a992557ca72974af4b879a7ea2e556d091bce))
+* list and redeem Claude banked resets ([#1429](https://github.com/rynfar/meridian/issues/1429)) ([19b0f76](https://github.com/rynfar/meridian/commit/19b0f76230f97be833ffca83fa98fd75b2ff9be0))
+* optional prompt-cache keepalive for idle sessions ([#1193](https://github.com/rynfar/meridian/issues/1193)) ([1b643b1](https://github.com/rynfar/meridian/commit/1b643b1a59efa4a9f49616437d66ce683d8bf95a))
+* **profiles:** flag profiles signed in to one account, show a card updating after sign-in, refresh pages in place ([#1446](https://github.com/rynfar/meridian/issues/1446)) ([72da174](https://github.com/rynfar/meridian/commit/72da1744b93e94e48c2bde1ad64af179ca3175a5))
+
+
+### Bug Fixes
+
+* **antigravity:** expand a leading ~ in PI_CODING_AGENT_DIR for Pi setup ([#1456](https://github.com/rynfar/meridian/issues/1456)) ([df3839e](https://github.com/rynfar/meridian/commit/df3839e3e7312606967c0a726b75b8a7618cb74b))
+* **chatgpt:** list a seat as it was while its renewal is out ([#1463](https://github.com/rynfar/meridian/issues/1463)) ([2534575](https://github.com/rynfar/meridian/commit/253457540f08b57ddbb376d6885949cada1d0184))
+* delete old Claude Code transcripts again ([#1261](https://github.com/rynfar/meridian/issues/1261)) ([3548ff2](https://github.com/rynfar/meridian/commit/3548ff28b3256e57691eb65cc2380f1d0b3f49ef))
+* **opencode:** keep V2 compaction on the conversation's model tier ([#1458](https://github.com/rynfar/meridian/issues/1458)) ([c433b20](https://github.com/rynfar/meridian/commit/c433b205de7d7f722368082c2c5b1633e8f684c4))
+* **passthrough:** share built tool definitions between sessions ([#1410](https://github.com/rynfar/meridian/issues/1410)) ([9d971d5](https://github.com/rynfar/meridian/commit/9d971d504d9f05ada8d9ff7a71670a3b447772ea))
+* **settings:** put each control on its label's line and name the env var that overrides a setting ([#1443](https://github.com/rynfar/meridian/issues/1443)) ([662fd4c](https://github.com/rynfar/meridian/commit/662fd4c15f52448882a3b52d546baa7e7007b2cd))
+
+
+### Performance
+
+* **passthrough:** share per-session tool lists between sessions ([#1444](https://github.com/rynfar/meridian/issues/1444)) ([cb37785](https://github.com/rynfar/meridian/commit/cb3778580e0d578fe0e9f76e8e04df9bdab800f3))
+
 ## [1.86.0](https://github.com/rynfar/meridian/compare/meridian-v1.85.0...meridian-v1.86.0) (2026-10-26)
 
 
