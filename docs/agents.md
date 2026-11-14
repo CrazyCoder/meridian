@@ -49,18 +49,26 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:3456
 
 #### Host support policy
 
-Meridian qualifies the released `@opencode/cli@2.0.16` and the earlier public
+Meridian qualifies Desktop/CLI **2.2.0** on Darwin arm64 with Opus 5.5, released
+CLI versions **2.0.16, 2.0.21 and 2.0.31**, and the earlier public
 `@opencode-ai/cli` betas `0.0.0-beta-18314`, `0.0.0-beta-18866`, and
 `0.0.0-beta-19271`. The 2.0.16 plugin API moved catalog editing into separate
 provider and model domains; the bundled plugin selects the matching host API
 at load time while keeping the beta path.
+
+The 2.2.0 qualification uses the app's actual bundled CLI, an independently
+installed V2 package, and real Opus 5.5 through the SDK. The earlier Opus 5
+marker refusal remains a separate retained observation, not a claim of a
+fixed upstream classifier. Other platforms and unpinned priority failback
+are not certified by this run. See the
+[evidence and scope](maintenance/evidence/opencode-desktop-220-20261028/README.md).
 
 Because upstream V2 plugin interfaces, session headers, subagent tracking, and
 compaction hooks are under active iteration, Meridian enforces a strict
 fail-closed policy rather than permitting wildcard or unverified host versions.
 A V2 release is only added to `SUPPORTED_OPENCODE_V2_VERSIONS` after passing the
 matching headless package gate (`scripts/e2e-opencode-v2-package.mjs --live --extended`
-for the betas; `scripts/e2e-opencode-v2-stable-live.mjs` for 2.0.16).
+for the betas; `scripts/e2e-opencode-v2-stable-live.mjs` for stable versions).
 Across these gates, we verify:
 
 1. **Plugin configuration & loading:** bundled and source plugin installation via `meridian setup --v2`.
@@ -69,7 +77,7 @@ Across these gates, we verify:
 4. **Subagent & agent isolation:** detached title/summary work, independent concurrent subagents, and compaction.
 5. **Model discovery & effort variants:** `GET /v1/models` catalog synchronization, cold-start cache seeding, and cache invalidation.
 
-The 2.0.16 gate exercises its real setup, title and generate jobs, resume,
+The stable gate exercises its real setup, title and generate jobs, resume,
 read-tool result, fork, compaction, and discovered effort variant. The beta
 gate additionally exercises undo, concurrent subagents, and cache invalidation;
 those checks have not yet been repeated on the released host.
@@ -77,11 +85,17 @@ those checks have not yet been repeated on the released host.
 Unverified releases, phantom versions, and nightly/dev builds are rejected by
 `meridian setup --v2` with an informative message listing the verified releases.
 
-Install the qualified 2.0.16 release and select its executable:
+For a build that includes Desktop 2.2.0 support, select the app's
+bundled executable on macOS (older published Meridian builds reject this host):
 
 ```bash
-npm install -g --prefix ~/.local @opencode/cli@2.0.16
-meridian setup --v2 --opencode-bin ~/.local/bin/opencode
+meridian setup --v2 --opencode-bin /Applications/OpenCode.app/Contents/Resources/opencode-cli
+```
+
+For the terminal client, select its executable:
+
+```bash
+meridian setup --v2 --opencode-bin "$(command -v opencode)"
 ```
 
 For an earlier beta, use its matching executable:
@@ -104,8 +118,9 @@ Configure V2's Anthropic provider to use Meridian. Keep the existing settings in
 
 ```json
 {
+  "$schema": "https://opencode.ai/config.json",
   "model": "anthropic/claude-opus-4-6",
-  "small_model": "anthropic/claude-haiku-5-5",
+  "agents": { "title": { "model": "anthropic/claude-haiku-5-5" } },
   "providers": {
     "anthropic": {
       "settings": {
@@ -121,13 +136,17 @@ Configure V2's Anthropic provider to use Meridian. Keep the existing settings in
 }
 ```
 
-V2 renamed these keys: it reads `providers` and `settings`, where V1 read
-`provider` and `options`. A V1-shaped block is silently ignored, so the client
-would talk to the real Anthropic API instead of Meridian. Anything you put under
+Native V2 uses `providers` and `settings`, where V1 used `provider` and
+`options`. OpenCode 2.2 also normalizes supported V1 configuration; its plugin
+API is not backward-compatible, so a V1 Meridian plugin must still be replaced
+by setup. Verify the effective provider endpoint rather than assuming the
+plugin redirects requests: the plugin adds identity headers, not the base URL.
+Anything you put under
 `models` is your own override and wins over both the built-in catalog and
 Meridian's advertised models.
 
-Then start the selected client (`opencode` for 2.0.16, `opencode2` for a beta):
+Then use Desktop or start the selected terminal client (`opencode`, or
+`opencode2` for an earlier beta):
 
 ```bash
 OPENCODE_DISABLE_AUTOUPDATE=1 ~/.local/bin/opencode
@@ -177,8 +196,9 @@ For either generation, the plugin enables:
 - **Model defaults** — Opus requests 1M context; Sonnet 5+ has a native 1M window, while Sonnet 4.x uses 200k by default ([defaults and account eligibility](configuration.md#configuration))
 - **Subagent model selection** — subagents use the 200k tier, preserving rate-limit budget
 
-If the plugin is missing, Meridian warns at request time. Restart OpenCode after
-running setup so it loads the selected plugin.
+If the plugin is missing, Meridian warns at request time. OpenCode 2.2 watches
+configuration and reloads plugins after setup; `/reload` forces a reload. Older
+clients may require a restart.
 
 #### oh-my-opencagent (OMO)
 
@@ -205,6 +225,7 @@ Add a provider to `~/.config/crush/crush.json`:
       "base_url": "http://127.0.0.1:3456",
       "api_key": "dummy",
       "models": [
+        { "id": "claude-fable-5-2",  "name": "Claude Fable 5.2 (1M)",   "context_window": 1000000, "default_max_tokens": 32768, "can_reason": true, "supports_attachments": true },
         { "id": "claude-fable-5-1",  "name": "Claude Fable 5.1 (1M)",   "context_window": 1000000, "default_max_tokens": 32768, "can_reason": true, "supports_attachments": true },
         { "id": "claude-fable-5",    "name": "Claude Fable 5 (1M)",     "context_window": 1000000, "default_max_tokens": 32768, "can_reason": true, "supports_attachments": true },
         { "id": "claude-opus-5",     "name": "Claude Opus 5 (1M)",      "context_window": 1000000, "default_max_tokens": 32768, "can_reason": true, "supports_attachments": true },
@@ -233,6 +254,7 @@ Add Meridian as a custom model provider in `~/.factory/settings.json`:
 ```json
 {
   "customModels": [
+    { "model": "claude-fable-5-2",        "name": "Fable 5.2 (Meridian)",  "provider": "anthropic", "baseUrl": "http://127.0.0.1:3456", "apiKey": "x" },
     { "model": "claude-fable-5-1",        "name": "Fable 5.1 (Meridian)",  "provider": "anthropic", "baseUrl": "http://127.0.0.1:3456", "apiKey": "x" },
     { "model": "claude-fable-5",          "name": "Fable 5 (Meridian)",    "provider": "anthropic", "baseUrl": "http://127.0.0.1:3456", "apiKey": "x" },
     { "model": "claude-opus-5",           "name": "Opus 5 (Meridian)",     "provider": "anthropic", "baseUrl": "http://127.0.0.1:3456", "apiKey": "x" },
@@ -313,6 +335,7 @@ Meridian speaks the OpenAI protocol natively — no LiteLLM or translation proxy
 **`POST /v1/chat/completions`** — accepts OpenAI chat format, returns OpenAI completion format (streaming and non-streaming)
 
 - `image_url` parts are supported when provided as **data URLs** (`data:image/...;base64,...`)
+- `file` parts are supported for PDFs sent inline as a **data URL** in `file_data` (`data:application/pdf;base64,...`); Claude receives them as documents, titled with `filename`. An uploaded `file_id`, another file type, or any other part Meridian cannot deliver (such as `input_audio`) is replaced by a short omission note, so the model knows the input is missing
 - multimodal tool flows where a tool returns `tool_result.content = [text, image]` are preserved through the structured multimodal path instead of being flattened to text
 
 **`GET /v1/models`** — returns available Claude models in OpenAI format
@@ -325,7 +348,7 @@ Set the OpenAI API base to `http://127.0.0.1:3456/v1` (clients append `/chat/com
 # OpenAI SDK: base_url="http://127.0.0.1:3456/v1", api_key="x"
 ```
 
-> **Note:** A request without a session key has its prior turns packed into the system prompt and runs on a fresh SDK session — the client replays the full history itself. A request keyed by `x-opencode-session`, `x-session-affinity` or `x-session-id` (Jcode: `x-jcode-session`) keeps its real messages and resumes one SDK session per key, under the contract every keyed client has:
+> **Note:** A request without a session key has its prior turns packed into the system prompt and runs on a fresh SDK session — the client replays the full history itself. Images and PDFs from earlier turns are packed as `[Image attached]` / `[Document attached]` placeholders, so only the latest message's attachments reach the model. A request keyed by `x-opencode-session`, `x-session-affinity` or `x-session-id` (Jcode: `x-jcode-session`) keeps its real messages and resumes one SDK session per key, under the contract every keyed client has:
 >
 > - turns under one key are serialized; a turn that lost the race and no longer holds the committed history is refused with HTTP 400 (`This session advanced while the request was waiting`) — retry it with the latest history;
 > - the history per key must be append-only: an edited turn forks at the edit as an undo, a rewritten middle replays fresh;
@@ -434,7 +457,10 @@ The extension registers a `meridian` provider next to Pi's built-in
 `anthropic` provider, so direct Anthropic models stay available. It:
 
 - discovers models from Meridian's `/v1/models` and keeps the catalog in Pi's
-  model store, so Pi starts offline with the last catalog it saw;
+  model store. Pi starts without waiting for Meridian, from the catalog it last
+  discovered at that URL or, failing that, from the list of models the
+  installed extension's Meridian version serves, so `pi --model meridian/…`
+  works straight after setup;
 - keys every request by Pi's own session ID (`x-session-affinity`), so a
   resumed Pi session finds its backing conversation and a fork gets its own;
 - marks compaction, branch summaries and other side calls with
@@ -467,8 +493,19 @@ forwards the `tool_use` blocks. Opt out with `MERIDIAN_PASSTHROUGH=0`.
 Known limits:
 
 - Pi refreshes the catalog only in interactive and RPC modes. `pi -p` uses the
-  stored catalog for up to seven days, so start Pi interactively once to pick
-  up new Meridian models sooner.
+  catalog last discovered at your Meridian URL for seven days, and after that
+  as long as it still lists every model the installed extension knows.
+  Otherwise it uses the list that ships with the extension. After upgrading
+  Meridian and rerunning setup, start Pi interactively once, or new models
+  reach `pi -p` only when that week is up. The shipped list shows Opus 4.6 at 200k
+  even when your account has its legacy 1M window, 1M windows even when
+  Meridian runs with `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`, and the models of
+  the Meridian version that ran setup, even if `MERIDIAN_BASE_URL` points at
+  another version. Start Pi interactively once to load your Meridian's own
+  catalog.
+- A session that started on the shipped list or on an expired catalog keeps
+  the model definition it started with. Select the model again with `/model`,
+  or restart Pi, to pick up the discovered one.
 - A child that runs on the base tier still sees each model's full context
   window in the catalog. With Opus and Fable, whose base tier is 200k, a long
   child conversation can overflow before Pi compacts it.
@@ -493,9 +530,11 @@ exist under both `anthropic` and `meridian`. To switch:
 2. Remove any extension of your own that sets `x-session-affinity` or
    `x-meridian-agent` for the `anthropic` provider; the Meridian extension does
    this for its own provider.
-3. Set `"defaultProvider": "meridian"` in `~/.pi/agent/settings.json`, or pick
-   a `meridian/…` model with `/model`. A resumed session keeps the model it was
-   using until you switch it.
+3. Set `"defaultProvider": "meridian"` together with a `"defaultModel"` such
+   as `"claude-sonnet-5-5"` in `~/.pi/agent/settings.json`, or pick a
+   `meridian/…` model with `/model`. Pi ignores `defaultProvider` without a
+   `defaultModel`. A resumed session keeps the model it was using until you
+   switch it.
 
 #### Without the extension
 
@@ -928,7 +967,7 @@ letting the header decide.
 
 | Agent | Status | Notes |
 |-------|--------|-------|
-| [OpenCode](https://github.com/anomalyco/opencode) | ✅ Verified | V1, three pinned V2 betas, and released 2.0.16; use the matching `meridian setup` mode ([setup](#opencode)). The [V2 host policy](#host-support-policy) lists version-specific live coverage. |
+| [OpenCode](https://github.com/anomalyco/opencode) | ✅ Verified | V1, three pinned V2 betas, and released 2.0.16/2.0.21/2.0.31; Desktop 2.2.0 qualified on Darwin arm64 with Opus 5.5. Use the matching `meridian setup` mode ([setup](#opencode)); the [V2 host policy](#host-support-policy) lists coverage and limits. |
 | [ForgeCode](https://forgecode.dev) | ✅ Verified | Provider config (see [Agent Setup](#agent-setup)) — passthrough tool execution, session resume, streaming |
 | [Droid (Factory AI)](https://factory.ai/product/ide) | ✅ Verified | BYOK config (see [Agent Setup](#agent-setup)) — full tool support, session resume, streaming |
 | [Crush](https://github.com/charmbracelet/crush) | ✅ Verified | Provider config (see [Agent Setup](#agent-setup)) — full tool support, session resume, headless `crush run` |

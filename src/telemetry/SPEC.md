@@ -21,7 +21,9 @@ Record what Meridian did and show it to the operator:
   shared site header (`profileBar.ts`), which is the single home of the color
   tokens;
 - pure presentation shared with the desktop app (`providerView.ts`,
-  `providerSetup.ts`);
+  `providerSetup.ts`, `settingRow.ts`), and the pure cost valuation in
+  `pricing.ts`, whose `resolveRequestPricing` the desktop uses to value each
+  request exactly as `computeCostEstimate` does;
 - the shared `settingRow` presentation (`settingRow.ts`) every `/settings`
   row renders through: label and control on one line, description, status and
   env-override lines below. The override line credits an env var only when the
@@ -56,9 +58,29 @@ Record what Meridian did and show it to the operator:
   line. The page remembers a sign-in it finished, so an answer requested
   before it cannot clear the updating state; `/profiles` polls every 1.5s
   while a card updates, drops an answer older than one already drawn, and
-  exempts an updating card from the search (not from the provider chips). An
+  exempts an updating card from the search and the login-state chips (not
+  from the provider chips), because a sign-in changes both under it. An
   updating card dims only its figures; its name row and active border never
   dim.
+- **Login-state chips use the pages' own rules** (`profileLoginStates.ts`).
+  Each account is in exactly one state: *Needs auth* is `isUnusable()`
+  (`profileSpent.ts`, the rule behind the red needs-login border), *Expires
+  soon* is a logged-in account with `renewalRequiredSoon` from
+  `/profiles/list`, and every other account is *Authenticated*. A spent or
+  unreachable account is not in *Needs auth*, and a ChatGPT seat, which states
+  no login deadline, never expires soon. `?login=` names the chips that are on
+  exactly as `?provider=` does (`profileFilterUrl.ts`): an absent or
+  unknown-only parameter keeps the remembered choice, an empty one turns
+  every chip off, and opening a link never saves a preference.
+- **`/`, `/profiles` and `/providers` stop polling while their tab is
+  hidden.** All three read `/v1/usage/quota/all` (`/providers` through
+  `/providers/view`, whose Claude card re-reads it at most every 10 s), and
+  Meridian caches each Claude profile's usage for only 30 s. One forgotten
+  background tab polling every 10 s therefore asks Anthropic's OAuth usage
+  endpoint for every profile about twice a minute, enough to keep it
+  answering 429 for the CLIs and widgets that share it. A hidden tab skips its
+  timed polls, and `visibilitychange` refreshes the page as soon as it is
+  shown again.
 
 - **Keepalive beats are not requests.** Rows with
   `requestSource: "cache-keepalive"` answered no client, so `computeSummary`
@@ -69,6 +91,26 @@ Record what Meridian did and show it to the operator:
   and `meridian_cache_keepalive_beats_total{outcome}`. A beat that never
   reached upstream carries status `0` and its reason in `error`, and is shown
   as skipped, not as an error.
+
+- **`/telemetry/timeseries` buckets what `/summary` counts.** It serves the
+  desktop app's history charts: `start`/`end`/`bucket` (or `window` instead of
+  `start`), buckets aligned to `start` over `[start, end)` so a client's local
+  midnight yields local-hour buckets, every bucket present. Rows are the raw
+  store rows with keepalive beats excluded, NOT collapsed route chains, because
+  `computeSummary` does not collapse either; a failover's hops count once each,
+  so the buckets of a range sum to the summary's requests, errors and token
+  totals. Hit rate is summary's mean per-row rate, p50 uses
+  `computePercentiles`, cost is `computeCostEstimate` with the user overrides:
+  `costUsd` is `null` only when every request in the bucket is unpriced, and
+  `unpricedRequests` labels a partial figure (an empty bucket costs `0`).
+  Ranges over 31 days or 1,000 buckets are refused, which bounds the response;
+  the read goes through `getRecent` with an exclusive `until`, so rows after
+  `end` do not spend the 100,000-row bound (summary's SQLite bound).
+  `truncated` is set when that bound is hit, when a full memory ring's oldest
+  row is newer than `start`, or when `start` reaches past SQLite retention and
+  the oldest held row is newer than it. A ring that is not full has dropped
+  nothing, so a range before the first request is empty, not truncated. The
+  bucketing is pure (`timeseries.ts`); the route only parses and reads.
 
 User-facing behavior is documented in `MONITORING.md`.
 

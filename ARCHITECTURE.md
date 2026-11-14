@@ -307,6 +307,7 @@ src/
 │   ├── session/
 │   │   ├── index.ts           ← Barrel export
 │   │   ├── lineage.ts         ← Pure functions: hashing, lineage verification
+│   │   ├── interruptedTurn.ts ← Pure functions: the interrupted-turn check, candidate and settlement action
 │   │   ├── fingerprint.ts     ← Conversation fingerprinting, client CWD extraction
 │   │   ├── cache.ts           ← LRU session caches, lookup/store operations
 │   │   ├── turnCoordinator.ts ← Process-wide serialization for reliable session IDs
@@ -339,6 +340,7 @@ src/
 │   ├── index.ts               ← Barrel export
 │   ├── store.ts               ← Request metrics storage
 │   ├── routes.ts              ← Telemetry API endpoints
+│   ├── timeseries.ts          ← Bucketing for /telemetry/timeseries (pure)
 │   ├── logStore.ts            ← Diagnostic log ring buffer
 │   ├── dashboard.ts           ← HTML dashboard
 │   ├── pricing.ts             ← Static API list prices + cost estimation (pure)
@@ -377,9 +379,11 @@ server.ts (HTTP layer)
     ├── models.ts
     ├── tools.ts
     ├── messages.ts
-    ├── session/cache.ts ──► session/lineage.ts ──► messages.ts
+    ├── session/cache.ts ──► session/interruptedTurn.ts ──► session/lineage.ts ──► messages.ts
+    │                    ──► session/lineage.ts
     │                    ──► session/fingerprint.ts
     │                    ──► sessionStore.ts
+    ├── session/interruptedTurn.ts ──► session/lineage.ts
     ├── profiles.ts
     ├── profileCli.ts
     ├── agentDefs.ts
@@ -392,7 +396,7 @@ server.ts (HTTP layer)
 
 ### Rules
 
-1. **`session/lineage.ts` is pure.** No side effects, no I/O, no caches. Only crypto hashing and comparison logic. Must stay testable without mocks.
+1. **`session/lineage.ts` and `session/interruptedTurn.ts` are pure.** No side effects, no I/O, no caches. `lineage.ts` holds only crypto hashing and comparison logic; `interruptedTurn.ts` holds the interrupted-turn decisions over the values it is given and imports only `lineage.ts`, so its state stays in `session/cache.ts` and its orchestration in `server.ts`. Both must stay testable without mocks.
 
 2. **`session/cache.ts` owns all mutable session state.** No other module should create or manage LRU caches for sessions.
 
@@ -462,12 +466,16 @@ Agent-specific behavior is isolated behind the `AgentAdapter` interface (`adapte
 | `getMcpServerName()` | MCP server name for tool registration |
 | `getAllowedMcpTools()` | MCP tools allowed through the proxy |
 
-### Remaining OpenCode-Specific Code (Not Yet in Adapter)
+### Agent-Specific Logic Outside Adapters
+
+Code that knows one client's conventions but lives outside `adapters/`. Each
+site carries a `NOTE: agent-specific` marker.
 
 | Logic | Location | Status |
 |-------|----------|--------|
 | `buildAgentDefinitions` | `agentDefs.ts`, `transforms/opencode.ts` | Pure OpenCode Task parser invoked by the adapter transform. |
 | Passthrough mode | `passthroughTools.ts` | Agent-agnostic but OpenCode-motivated. Keep as-is. |
+| Client-owned tool search (#1478) | `passthroughTools.ts` (`clientOwnsToolSearch`), used by `server.ts` and `passthroughEarlyStop.ts` | Claude Code's convention: a loaded tool named `ToolSearch` beside `defer_loading` tools. Detected from the request's shape rather than the adapter, so Claude Code traffic routed to another adapter (`x-meridian-agent`, an adapter instance) is handled the same way. |
 
 ## Session Management
 
@@ -541,20 +549,32 @@ retains the guard and requires process restart before maintenance. Offline WAL
 TRUNCATE requires an exclusive maintenance connection and one local handle.
 A sole runtime handle still holds shared ownership and may only use PASSIVE.
 
-Standalone cache/store operations remain synchronous except the owner-approved
-`clearSessionCache(): Promise<void>`. Clear resets both LRUs immediately and
-fences older cache commit hooks. SQL cleanup joins bounded FIFO admission; a
-second reset runs at its durable COMMIT before later publications, rather than
-in an await continuation that could erase them. Internal synchronous scopes
-join the existing transaction. Cleanup keeps its best-effort error policy;
-callers await it before relying on completed durable work. JSON cleanup still
-runs synchronously before returning its completion promise. Server
-mutation roots enter asynchronous admission around the complete operation;
-nested store writes join the same transaction. Lifecycle publication promotes
-the resource and publishes its mapping/pins/priority state in one COMMIT. Its
-callback is synchronous and performs no SDK, filesystem or process probes.
-Cache and priority-memory changes are commit hooks; server publication flags
-are set only after the awaited durable publication returns. Unknown COMMIT
+JSON durable mutations return promises and serialize per store path in call order.
+They await lock publication/retries, writes, fsync, close, rename and directory
+flush; reads and parsing remain synchronous. Cache snapshots own caller data
+before the first yield, and cancellation is rechecked immediately before rename.
+Request-local publication ordering keeps cancellation behind an earlier admitted
+write. Offline migration retains its separate synchronous, bounded legacy lock.
+
+SQLite cache/store operations remain synchronous inside their admitted scope.
+`storeMutationResult.ts` runs a continuation immediately for a native result or
+after the JSON mutation promise settles; it never adds an await inside a SQL
+transaction. Server mutation roots enter asynchronous admission around the whole
+operation, and nested SQL writes join the same transaction. Lifecycle publication
+promotes the resource and publishes its mapping/pins/priority state in one COMMIT;
+its SQL callback performs no SDK, filesystem or process probes. JSON lifecycle
+publication may await the durable mapping mutation while retaining its sidecar lock.
+
+The owner-approved `clearSessionCache(): Promise<void>` resets both LRUs
+immediately and fences older cache commit hooks. SQL cleanup joins bounded FIFO
+admission; a second reset runs at its durable COMMIT before later publications.
+Internal synchronous scopes join the existing SQL transaction. JSON cleanup joins
+its ordered writer queue and resets memory again inside that queue after durable
+publication, before admitting a later writer. Both backends carry this private
+clear effect through their commit boundary. Both paths keep the best-effort error policy, and
+callers await completion before relying on durable cleanup. Cache hooks are fenced
+by the epoch captured at invocation; priority publication metadata still follows
+its store commit even when cleanup superseded the cache hook. Unknown SQL COMMIT
 outcomes retain the turn fence and never authorize abandonment of that fork.
 
 Native SQLite `busy_timeout=0` prevents synchronous lock waits. A bounded local
@@ -683,8 +703,29 @@ session identity still bench profile-wide; there is nothing narrower to use.
 ## Cancellation Contract
 
 Cancellation is per-HTTP-request: `requestAbort.ts` forwards one socket's abort
-into that request's SDK abort controller, and the abort path evicts the session
-mapping so no interrupted tail stays resumable.
+into that request's SDK abort controller, and the abort path never leaves an
+interrupted tail resumable. Every resume writes an isolated fork, so a turn that
+was not yet published leaves the mapped transcript ending at the last completed
+turn, and how the mapping is settled depends on what reached the client and
+who stopped the turn (`interruptedMappingAction` in `session/interruptedTurn.ts`;
+`isClientStop` in `requestAbort.ts` says the client's own disconnect or body
+cancel did):
+
+- nothing: the mapping is left as it was;
+- text or thinking, and the client itself stopped a plain continuation (it
+  closed the socket or cancelled the response body): the mapping is kept but
+  marked interrupted, and the next request resumes it only if it adds nothing
+  but user content, which shows the client discarded the partial output. A
+  request that carries any assistant content after the session's own reply
+  shows the client kept it and replays fresh, because resuming would let the
+  model and the client diverge silently. The rule, its storage and why it
+  survives a restart only as a replay are in the [`session`](src/proxy/session/SPEC.md)
+  spec, *Interrupted turns*;
+- anything else evicts, so the next request replays: a turn that already
+  streamed a tool call, an explicit subtree cancel (a parent's abort or
+  `POST /v1/sessions/:key/cancel`), the turn watchdog, shutdown, an unlabeled
+  abort, a published fork. Non-stream turns, side requests and priority
+  publications keep their own handling.
 
 That is not enough for a client whose subagents are separate requests. Prime
 Agent's RLM children arrive on their own session keys, so cancelling the parent
@@ -773,7 +814,7 @@ E2E tests (`E2E.md`) should be run before releases or after major refactors.
 
 ## Transcript publication lifetime
 
-`sessionLifecycle.ts` persists a publication lease atomically with each new request target before SDK launch. The lease survives physical SDK writer shutdown and commit until the synchronous durable mapping CAS succeeds, or the request abandons its target. Failed publication restores the lease. Collectors in other processes cannot depend on a proxy instance's private request pins, so they consult these durable leases as well as durable mappings.
+`sessionLifecycle.ts` persists a publication lease atomically with each new request target before SDK launch. The lease survives physical SDK writer shutdown and commit until the durable mapping CAS succeeds, or the request abandons its target. Failed publication restores the lease. Collectors in other processes cannot depend on a proxy instance's private request pins, so they consult these durable leases as well as durable mappings.
 
 Publication leases use the existing unarmed active-lease representation with `purpose: "publication"`. Older collectors also retain them while the owner process is alive; exact process-incarnation death permits recovery. They do not count as exclusive SDK writers, and abandoning publication never removes an actual writer lease. Published transcripts are retained by their durable mappings and become collectible after eviction.
 
@@ -802,7 +843,7 @@ remain synchronous; same-context recursive acquisition is rejected explicitly.
 
 ## Session store write cost
 
-`sessionStore.ts` mutations are synchronous and run on the event loop, so their cost is lag for every request. The parsed document is cached by file identity (device, inode, size, mtime, ctime); every writer publishes by rename while holding the store lock, so a locked mutation that finds the cache current builds on it without re-parsing. Mutators receive a copy-on-write draft and replace entries rather than editing them. New entries own a deep copy of caller data before serialization. Cached entries/maps and metadata are frozen; privately parsed nested arrays are frozen before a lookup or snapshot exposes them, avoiding a full nested walk for a single cold lookup. Each entry's serialized UTF-8 bytes are memoized, so a write encodes only the entries it changed. Unchanged entries keep their identity and serialized bytes. The file format, lock, fsync and rename are unchanged.
+`sessionStore.ts` JSON mutations await filesystem work off the event loop; reading, parsing and serialization still run on it, so their CPU cost is lag for every request. The parsed document is cached by file identity (device, inode, size, mtime, ctime); every writer publishes by rename while holding the store lock, so a locked mutation that finds the cache current builds on it without re-parsing. Mutators receive a copy-on-write draft and replace entries rather than editing them. New entries own a deep copy of caller data before serialization. Cached entries/maps and metadata are frozen; privately parsed nested arrays are frozen before a lookup or snapshot exposes them, avoiding a full nested walk for a single cold lookup. Each entry's serialized UTF-8 bytes are memoized, so a write encodes only the entries it changed. Unchanged entries keep their identity and serialized bytes. The file format and lock/fsync/rename durability protocol are unchanged; lock retries and filesystem writes now yield instead of blocking other requests.
 
 A conversation that has run under several profiles has one mapping per profile (`<profile>:<session>`), each holding full per-message hashes and pinning its own transcript. With explicit `MERIDIAN_SESSION_PROFILE_COPY_PRUNE=1`, before each GC sweep mappings superseded by a newer copy under another profile and unused for `MERIDIAN_SESSION_PROFILE_COPY_GRACE_MS` (default 24 hours, `DEFAULT_PROFILE_COPY_GRACE_MS`) are removed. Priority route and rollback mappings and conversations with a turn registered in this process are exempt. Removal only unpins transcripts; reconciliation retires them through the normal lifecycle backlog, and `releaseSupersededProfileCopies` limits the transcripts it unpins so that at least half of the pending budget stays free and admission never has to return the prune's retirements to live. A conversation returning to a pruned profile replays instead of resuming. A profile's own copy also gives way when another profile's copy, used since, holds more of the raw client history (`copyElsewhereHoldingMore` in `session/cache.ts`): the lineage becomes `diverged` with reason `moved-on-elsewhere` and the turn replays, because a resume delta would drop the replies given elsewhere. Only the copy that would be resumed triggers the lookup, which reads the other profiles' mappings from the shared store. The guard needs the newer mapping present: an explicit eviction still brings the stale resume back. A shared-store read error rejects the request before SDK execution instead of authorizing stale resume. Pruning and expiry remove the older, stale copy first and lead to a replay. Pruning is off by default to preserve native resume history, including SDK thinking that flattened replay cannot restore. Maintenance acquires nonwaiting conversation leases and reserves retirement capacity while holding the lifecycle lock; held or stale turn locks defer pruning. SQLite uses the same pure selection rules over ordered mapping metadata, rechecks exact generations and protected routes, and commits mapping removal plus its retirement reservation atomically. Application activity/pin callbacks and path observations run outside native transactions, including a fresh activity check after FIFO or SQLite busy waits. Additional pins are refreshed by reconciliation before the turn leases release; destructive GC claims independently refresh their pins.
 

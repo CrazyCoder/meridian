@@ -59,7 +59,7 @@ Environment variables, endpoints, authentication, SDK feature toggles, passthrou
 | `MERIDIAN_CONFIG_DIR` | — | `~/.config/meridian` | Meridian's own config directory. Moving it moves everything inside it — see [below](#relocating-the-config-directory). |
 | `MERIDIAN_PRICING_CONFIG` | `CLAUDE_PROXY_PRICING_CONFIG` | `~/.config/meridian/model-pricing.json` | Path to the model pricing overrides file used by cost estimation |
 | `MERIDIAN_PROFILES` | — | unset | JSON array of profile configs (overrides disk discovery). See [Multi-Profile Support](profiles.md). |
-| `MERIDIAN_DEFER_TOOL_THRESHOLD` | — | `15` | Number of tools before non-core tools are deferred via ToolSearch. Set to `0` to disable. |
+| `MERIDIAN_DEFER_TOOL_THRESHOLD` | — | `15` | Number of tools before non-core tools are deferred via ToolSearch. A client that marks any tool `defer_loading: true` manages deferral itself and is never auto-deferred. Set to `0` to disable. |
 | `MERIDIAN_TELEMETRY_PERSIST` | `CLAUDE_PROXY_TELEMETRY_PERSIST` | unset | Enable SQLite telemetry persistence. Data survives proxy restarts. |
 | `MERIDIAN_TELEMETRY_DB` | `CLAUDE_PROXY_TELEMETRY_DB` | `~/.config/meridian/telemetry.db` | SQLite database path (when persistence is enabled) |
 | `MERIDIAN_TELEMETRY_RETENTION_DAYS` | `CLAUDE_PROXY_TELEMETRY_RETENTION_DAYS` | `7` | Days to retain telemetry data before cleanup |
@@ -131,6 +131,16 @@ not a reconstruction of the model actually served.
 
 See Anthropic's [overview](https://platform.claude.com/docs/en/models/haiku-5-5/overview)
 and [migration guide](https://platform.claude.com/docs/en/models/haiku-5-5/migration-guide).
+
+### Fable 5.2
+
+Request `claude-fable-5-2` explicitly; the bare `fable` alias still defaults to
+`claude-fable-5-1`. Use Claude Code **2.1.322 or newer** (including when
+selecting a system/custom executable); older CLIs may not recognize the model and
+fall back to a 200k context window. Fable 5.2 has a native **1M context
+window** and always-on adaptive thinking controlled by effort, so `/v1/models`
+advertises it without disabled-thinking support. `claude-mythos-5-2` rides the
+same Fable tier and pricing ($8 / $40 per MTok, $0.20 cache reads).
 
 ### Read-only credentials
 
@@ -345,6 +355,7 @@ adapter lets the subprocess run the built-in WebFetch at all.
 | `GET /telemetry` | Performance dashboard |
 | `GET /telemetry/requests` | Recent request metrics (JSON) |
 | `GET /telemetry/summary` | Aggregate statistics (JSON) |
+| `GET /telemetry/timeseries` | Requests, errors, tokens, cache hit rate, p50 latency and estimated cost per time bucket (JSON); see [Monitoring](../MONITORING.md#diagnostic-queries) |
 | `GET /telemetry/logs` | Diagnostic logs (JSON) |
 | `GET /metrics` | Prometheus exposition format metrics |
 | `GET /profiles` | Profile management page |
@@ -1165,6 +1176,7 @@ Every request line carries `lineage=`, and every divergence also carries
 | `missing-session-header` | An OpenCode request arrived without its session header |
 | `moved-on-elsewhere` | Another profile's copy, used since, holds more of the history; this profile's older copy would drop the replies given there, so the turn replays |
 | `concurrent-race`, `priority-failback` | Lost a commit race; routed to another profile |
+| `interrupted-turn-kept:<why>` | The previous turn was stopped mid-stream and this request cannot resume the session kept for it (see [Stopping a turn](#stopping-a-turn)). `<why>` is `kept-assistant` (the request carries assistant content after the session's reply: the client kept the partial output), `prefix-changed` (an earlier message was edited), `reply-changed` (the session's own reply was altered or dropped), `no-user-turn` (nothing new after that reply) or `unknown-tool-result` (a tool result for a call the session never made) |
 | `independent-request:headerless-tool-result` | The client-driven tool loop above |
 | `independent-request:fork-source` | Declared `x-meridian-source: fork-*` |
 | `independent-request:subagent` | Declared a subagent flow |
@@ -1174,9 +1186,48 @@ A resumed turn prints no `diverged=` field at all. The
 `independent-request:*` causes skip session lookup before it happens; the rest
 are the verdict of a lookup that ran.
 
+A turn that replays its history for a reason other than the lookup's verdict
+says why with `replay=`, after `diverged=` when both are present. Every such
+line reads `session=new`. One value applies, in this order:
+
+| `replay=` | When it appears |
+|---|---|
+| `transformed-history` | A plugin rewrote the history this turn runs. This does not depend on the lookup, so it appears on any line, `lineage=new` (with its `diverged=`) included |
+| `changed-or-unproved-primary-agent` | The lookup found a session (`lineage=continuation`, `compaction` or `undo`), but OpenCode's primary agent is not the one that session was published with, or that session recorded none |
+| `unproved-sdk-prefix` | The lookup found a session (`lineage=continuation`, `compaction` or `undo`) that holds no proof its SDK transcript matches this history: it was published from a plugin-rewritten history, or it is a stopped turn's kept session read without that turn's record (after a restart, or on another process sharing the store; see [Stopping a turn](#stopping-a-turn)) |
+
 `headerless-tool-result` also prints a one-time warning at the first
 occurrence, because it is a property of how the client is wired rather than of
 a single turn.
+
+### Stopping a turn
+
+Stopping a streaming turn after its output started (Stop or Esc in the client,
+or a dropped connection) no longer always costs the next message a full replay.
+Meridian keeps the conversation's session, which still ends at the last
+completed turn, and lets the next message decide:
+
+- A client that discards the stopped turn's partial output (Pi, Prime Agent)
+  sends only the user's side of the conversation after it. That message resumes
+  the session and reads the prompt cache.
+- A client that keeps the partial output (OpenCode, Oh My Pi) sends it back as
+  an assistant message. The session never received that output, so the message
+  replays the whole history, partial included, exactly as before
+  (`diverged=interrupted-turn-kept:kept-assistant`).
+
+No setting is involved. A turn that already sent a tool call to the client, a
+non-stream request, and `POST /v1/sessions/:key/cancel` still replay the next
+message. The kept session resumes only on the Meridian process that kept it:
+after a restart, or on another process sharing the session store, the next
+message replays, logged as `lineage=continuation session=new
+replay=unproved-sdk-prefix`. A stopped turn ends [prompt-cache keepalive](#prompt-cache-keepalive)
+tracking until a later turn writes the one-hour cache again.
+
+One exception remains: under priority routing across several profiles, a
+conversation whose client signs its turns (the OpenCode V2 plugin, the Pi
+extension) is not checked after a stop yet. Its next message resumes the
+session as it always has, so a client that kept the partial output (OpenCode)
+is answered without it.
 
 ### Prompt-cache keepalive
 
@@ -1660,6 +1711,8 @@ Codex and Polytoken require client-owned tools and cannot be switched to interna
 4. The client executes the tool locally and sends the result back
 
 For large tool sets (>15 tools), non-core tools are automatically deferred via the SDK's ToolSearch mechanism. Core tools (read, write, edit, bash, glob, grep) are always loaded eagerly. The deferral threshold is configurable with `MERIDIAN_DEFER_TOOL_THRESHOLD`.
+
+A client that marks any tool `defer_loading: true` manages deferral itself and is never auto-deferred. A client that also sends its own `ToolSearch` tool gets a single search path: its eager tools stay registered, a deferred tool is registered (eagerly) once the conversation references it through a `tool_reference`, unreferenced deferred tools stay unregistered, and Meridian adds no ToolSearch of its own — `tool_reference` blocks reach the model as text naming the tool as Meridian registered it. Each newly discovered tool changes the registered tool set, so that turn re-primes the prompt cache, as it did before when the client added the discovered tool to its own tool list. Other client-deferral keeps the inner ToolSearch, and `tool_reference` names in client tool results are mapped to the registered names.
 
 **Digest-turn elimination** — after a tool call is captured, the SDK would normally invoke the model one more time to "digest" the denial before ending the turn. That extra invocation is discarded by the proxy but fully billed — and on always-thinking models like Fable it costs a full thinking pass each time.
 

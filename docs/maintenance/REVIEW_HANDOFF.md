@@ -1,6 +1,184 @@
-# Meridian review checkpoint — 2026-10-26 UTC
+# Meridian review checkpoint — 2026-11-10 UTC
 
-Last code delivery: `bd021733deb054bbb95cacc0383fa816469e5773` (#1408). The backlog is unfinished. The 2026-10-25 owner-requested continuation covered only #1408 and a review of the 1.86.0 candidate; the 2026-10-21 record below is unchanged except where #1408's status superseded it. The previous checkpoint is [immutable at 9d94a354](https://github.com/rynfar/meridian/blob/9d94a3542f2e31edace685118d56e6e293feb4bd/docs/maintenance/REVIEW_HANDOFF.md).
+Last code delivery: `8f5e705a72a928be910e4c234c6b75fc289c068d` (1.89.0 release). The 1.89.0 release is recorded first, then the 2026-11-09 work, then the 2026-11-02 work, then the 2026-11-01 review of the new contributor PRs; older sections below are unchanged history. The previous checkpoint is [immutable at 95b3af5a](https://github.com/rynfar/meridian/blob/95b3af5a2441731285c6c0dbfb29fc0b72411bf8/docs/maintenance/REVIEW_HANDOFF.md).
+
+## 2026-11-10: 1.89.0 released
+
+[Record](evidence/review-20261109/release-1.89.0.md). Release Please #1486 head `39815736` merged as `8f5e705a`. npm `1.89.0` is `latest` with provenance, and `ghcr.io/rynfar/meridian:1.89.0` is published for amd64 and arm64. The live OpenCode + Opus 5.5 flow with the Meridian V1 plugin and the scrub passed on both the packed candidate and the published package. #1472 is closed after the published image stayed healthy while logged out. #1511 stays open: its fix shipped under a live-gate waiver.
+
+Open:
+- **macOS desktop:** notarization fails with 401 on 1.87.0, 1.88.0 and 1.89.0. The owner needs to renew the Apple credentials in the repository secrets, then rerun the desktop release.
+- **Changelog:** the 1.89.0 notes do not name #1220, because Release Please could not parse its merge commit.
+- **Load-sensitive tests:** `bookkeeping-server` (held writer lock retry) and `store-mutation-baseline` (legacy mutation order) each failed once in a full local run, then passed alone and in a full rerun.
+
+## 2026-11-09: #1489, #1490, #1491, #1492 and #1497 merged
+
+The owner authorized fixing and merging contributor PRs with credit preserved. Each merge below was an exact-head squash of the contributor's own PR, with Damian Nowak as Git Author, checked with `git log -1 --format='%an <%ae>'`. `scripts/attribution-audit.mjs` afterwards showed no new maintainer-authored re-landings. [QA record](evidence/review-20261109/batch1.md).
+
+- [#1489](https://github.com/rynfar/meridian/pull/1489) `0e420513`: a renamed profile keeps its pool position. Reproduced on main (`['spare', 'employer']`) and fixed on the batch (`['employer', 'spare']`) against real servers.
+- [#1491](https://github.com/rynfar/meridian/pull/1491) `f6b3e8a2`: home-page address chips wrap on a phone (`scrollWidth` 426 before, 320 after, at 320px). Its Settings rule is redundant on current main, because `.setting-status` already wraps.
+- [#1497](https://github.com/rynfar/meridian/pull/1497) `e623e82e`: the (i) popup spans its card, measured in the browser at 1280px and 390px.
+- [#1490](https://github.com/rynfar/meridian/pull/1490) `b9e547e3`: head `ac07ecdd` includes a maintainer correction so `classifyError` also returns 401 for the bare wording; main returned 500.
+  - **Live gate waived by the owner.** A real expired token could not be produced. The bundled Claude Code binary contains `OAuth (?:access )?token has expired\b`.
+- [#1492](https://github.com/rynfar/meridian/pull/1492) `74d13657`: the attributes are present on the search, rename and add-profile fields in the browser.
+  - **Live gate waived by the owner.** No password manager extension was installed, so its fill behavior was not observed.
+
+**Local validation:** `origin/main` `cafdcf78` merged with the five heads, on CI's Bun 1.4.3 and Node 22.23.4. The build passed. `npm test` stops at the first failing command, so the chain was continued by hand, and every other test passed. Three failures, neither related to these changes:
+- `proxy-client-abort-resume` "after the session-turn watchdog" fails on clean main too (3 of 12 runs, against 1 of 12 on the batch).
+- `priority-routing-integration` "leaves the mark unchanged when the OAuth fetch …" failed in 2 of 7 whole-file runs, in both its null and rejecting variants. Run alone, it passed 16 of 16 on both trees at the same duration. Its 5-second margin sits close to the test's 3 seconds of retry backoff. It passed 6 of 6 whole-file runs on main, so a load-only cause is the best explanation, not a proof.
+
+Bun 1.3.11, the `packageManager` version, cannot open the session store on Linux and produces about 1,700 cascading failures. Use CI's versions.
+
+**Also merged, with gates still open:**
+- [#1513](https://github.com/rynfar/meridian/pull/1513) `d482b895` (for #1511, refusals close as `refusal`). Merged under the owner's live-gate waiver and the unsigned-commit `--admin` exception, after all 9 checks passed on its head and focused tests passed against current main. No real refusal has been observed, so #1511 stays open.
+- [#1514](https://github.com/rynfar/meridian/pull/1514) `89fab76f` (for #1472, `HEALTHCHECK` probes `/livez`). The built image has not been run, because Docker was unavailable, so #1472 stays open.
+
+**Deferred:** #1466 stays an error, by owner decision. Retrying with the cap lifted is only safe before anything is streamed, and here the text and the unparseable tool block are already on the wire. Revisit if the rate rises above the reported three in 28 hours, or if tool blocks start being held until their JSON validates. `MERIDIAN_PASSTHROUGH_EARLY_STOP=0` works around it.
+
+**Follow-up:** `weeklyReserve` is also stored by profile id and looked up exactly, so it appears not to follow a rename. Not tested.
+
+## 2026-11-02: #1475, #1478, #1482 and #1480 merged
+
+This continues the 2026-11-01 review below, with the owner's decisions:
+- #1475's recommendations accepted;
+- #1478's live gate run;
+- the drafted comments posted as each PR landed;
+- the new PRs #1480 and #1482 reviewed;
+- #1480 rebuilt to be correct for every client instead of an opt-in.
+
+Each merge below was an exact-head squash with the contributor as Git Author. Each landed tree equals the reviewed parent merged with the validated head, and GitHub verifies each squash. Each comment was posted after the authorship check.
+
+- [#1478](https://github.com/rynfar/meridian/pull/1478) `3903db44`, Aleksey Proshutinskiy.
+  - **Live gate passed:** main fails the reported flow, and the fix passes on Sonnet 5.5 and Opus 5.5. The tool-search-off control and all four E41 modes pass.
+  - **Maintainer commits:** the rendered reference text names the registered tool; ARCHITECTURE.md lists the client-owned tool search among agent-specific logic.
+  - Merged `--admin` under the unsigned-commit exception.
+  - The harness is escrowed in [#1483](https://github.com/rynfar/meridian/pull/1483) `8f0b86b8`. Its self-test fails on the pre-fix tree `c6ec3a92`. [Record](evidence/review-20261101/pr-1478.md).
+- [#1475](https://github.com/rynfar/meridian/pull/1475) `7a971fd1`, Connor Grady, merged as `fix(nix): build packages with the consumer's nixpkgs`, merge state `CLEAN`. Four maintainer commits:
+  - the Home Manager env harness;
+  - the `nix-update` and plugin-path docs;
+  - the floor compares versions before reading `src`, and stops with a message naming both versions when a below-floor `claude-code` cannot be rebuilt;
+  - the deployment guide points configurations at the overlay and lists the upgrade steps.
+
+  All were revalidated on aarch64-linux Nix. [Record](evidence/review-20261101/pr-1475.md).
+- [#1482](https://github.com/rynfar/meridian/pull/1482) `f331ffe7`, Tristan Cartledge.
+  - **The fix:** Chat Completions PDF `file` parts reach Claude as documents; main silently dropped them.
+  - **Maintainer commits:** a packed-history placeholder for earlier PDFs, assistant `refusal` parts kept as text, and the docs and spec.
+  - **The cold 504:** one live run hit `504 upstream idle 90016ms`. It was shown to be environmental: on the final head, a cold request with the PDF took 2,447 ms and the same request without it 2,408 ms.
+  - Merged `--admin`, unsigned. [Record](evidence/review-20261101/pr-1482.md).
+- [#1480](https://github.com/rynfar/meridian/pull/1480) `3a700e36`, XInTheDark, merged as `feat: keep a stopped turn's session when the client discarded its output`.
+  - **Design:** the owner chose correct-for-every-client over the PR's opt-in env var.
+    - A client-stopped streaming turn keeps its session with the durable resume proof withheld.
+    - The next request resumes it only when it carries no assistant content after the session's reply; otherwise it replays.
+    - The rule is the pure module `session/interruptedTurn.ts`.
+  - **Gate:** E79 (`scripts/e2e-client-abort-resume.mjs`) includes real Pi 1.4.0 (discards the partial) and real OpenCode 2.2.0 (keeps it).
+  - **Review:** two independent adversarial rounds found no divergence path. 38 of 39 protections fail tests when removed; the one exception is a defensive await documented as unreachable.
+  - **Live results:** discard resumes with 97.6% of the prefix read from cache, keep replays with the partial, and E41 passes 4/4.
+  - Merged `--admin`, unsigned. [Record](evidence/review-20261101/pr-1480.md).
+- **Release:** #1471, #1475, #1476, #1477, #1478 and #1482 shipped in 1.88.0, which another session published (section below). #1480 is unreleased.
+- **Live model use:**
+  - All runs used the default login read-only (Personal Max, `seven_day` at most 0.19 at each check), on included usage, with no refusals.
+  - The owner's active profile was at its weekly limit and was not used.
+  - Opus runs set `MERIDIAN_OPUS_MODEL=opus` so the `[1m]` variant could not bill Extra Usage.
+- **Attribution audit:** rerun on main `3a700e36`. All seven contributor PRs of this review are classified `merged`, and "Re-landed with the maintainer as Author" stays at 137. [Ledger](ATTRIBUTION_LEDGER.md) regenerated.
+- **Follow-ups (owner decision pending):**
+  - **Priority path:** stopped turns on the priority path are not checked, the same as on main. Under priority routing a stopped turn's mapping stays resumable whatever the client kept, so OpenCode's kept partial is dropped. A probe extending the interrupted-turn rule to priority publications fixes it; that needs its own tests and an OpenCode run under priority routing.
+  - **Upstream failures:** an upstream failure (not an abort) after streamed output leaves the source resumable, on main too, so a client that keeps the failed partial silently diverges. The interrupted-turn marking would cover it.
+  - **Priority eviction:** on main, a priority-routed abort does not evict the routed mapping before its publication.
+  - **Chat Completions and Responses:**
+    - unkeyed packed conversations keep only placeholders for earlier media;
+    - media nested in a packed `tool_result` is dropped;
+    - the Responses adapter silently drops unknown parts;
+    - the 1,600-token replay estimate per document is low for long PDFs.
+  - **ARCHITECTURE.md:** "Current Adapters" names 3 of the adapters, and the multi-client `NOTE` in `passthroughEarlyStop.ts` is missing from the agent-specific table.
+- **Workspace:** every review worktree and branch from this review, their base copies, the harness branch and the `pr1475-nix` Docker volume are removed. Sanitized local evidence stays in `/Volumes/DevSSD/meridian/evidence/review-20261101/`. The owner's checkout was not touched.
+
+## 2026-11-02: #1484 merged and release 1.88.0 published
+
+The owner asked for the weekly reserve (#1484) to be reviewed, merged and released.
+
+- **[#1484](https://github.com/rynfar/meridian/pull/1484) `2a806fde`:** opt-in per-profile weekly reserve for pool routing. An independent code review found 10 candidates; 9 were fixed and 1 was kept by design, with dispositions recorded in the PR. Live OpenCode 2.2.0 evidence: [weekly-reserve-20261102](evidence/weekly-reserve-20261102.md).
+- **Release [1.88.0](https://github.com/rynfar/meridian/releases/tag/meridian-v1.88.0) is published and installed-package validated.** Merge `cdca3539` from Release Please #1469 head `6b4bf0c2`. npm `latest` with provenance; Docker `1.88.0`/`1.88` for amd64 and arm64. `desktop / mac` again failed Apple notarization (HTTP 401). [Release record](evidence/release-1.88.0-20261102/README.md).
+- **Observed:** one profile was refused with "You've hit your 5-hour limit" on 2026-11-02, so the 5-hour window is still enforced on at least some accounts.
+- **Not done:** the owner's launchd service (port 3456) was not upgraded.
+
+## 2026-11-01: new contributor PRs reviewed, #1471, #1476 and #1477 merged
+
+The owner asked to review the new contributor PRs, merge the ready ones, put corrections on the contributors' branches, and keep their credit, following this guidance. The owner then chose the #1476 design below and authorized a comment to its contributor. No other PR comment, release, account switch or credential change was made. The review base was `origin/main` `4d16958a`.
+
+- **Queue:** #1471, #1475, #1476, #1477 and #1478 (opened 2026-10-29 to 31).
+  - Not reviewed: #1464 (Zed adapter) is the contributor's draft; Release Please #1469 and the owner's draft #1468 are out of scope.
+  - Each PR had an independent adversarial review in an isolated worktree, local gates, and model-free E2E. Per-PR records: [review-20261101](evidence/review-20261101/).
+- **Merged, contributor as Git Author.** Each was an exact-head squash, and each landed tree equals the reviewed parent merged with the validated head.
+  - [#1471](https://github.com/rynfar/meridian/pull/1471) `6056b54a`, Author Connor Grady: a profiles-only deployment no longer checks or keeps warm the unused default auth context. The maintainer added a keepalive test and a spec decision on his branch. Merge state was `CLEAN`. [Record](evidence/review-20261101/pr-1471.md).
+  - [#1477](https://github.com/rynfar/meridian/pull/1477) `84043282`, Author Máté Rémiás: `/`, `/profiles` and, through the maintainer's correction, `/providers` stop polling usage while their tab is hidden. Merged `--admin` under the step-3 `bad_email` exception, after every check on head `7183e85a` passed. [Record](evidence/review-20261101/pr-1477.md).
+  - On the combined main, typecheck, a certified build and both PRs' targeted tests pass.
+  - [#1476](https://github.com/rynfar/meridian/pull/1476) `6663c0f9`, Author Nate Berkopec: the Pi extension never contacts Meridian during Pi's cache-only startup phase.
+    - The maintainer's correction makes that answer never empty. It uses a fresh stored catalog, then an expired one that still lists every built-in model, then a built-in catalog that a test keeps identical to `buildModelList(false)`.
+    - Merged `--admin` under the step-3 unsigned-commit exception, after every check on head `34c3c9f6` passed. The posted [explanation](https://github.com/rynfar/meridian/pull/1476#issuecomment-6564465031) was authorized by the owner. [Record](evidence/review-20261101/pr-1476.md).
+- **#1475 and #1478** were held here (owner decisions; live gate). Both merged on 2026-11-02; see above.
+- **Live model use:** three #1476 runs of `scripts/e2e-pi-extension.mjs` passed, 4 Pi requests each with no refusal: the contributor's head, a cold-catalog copy, and the committed `--cold-catalog` mode on the final head. One #1478 request was refused by the weekly limit, and live calls stopped there. Meridian reports quota utilization as 0..1: `1` means 100%, not 1%.
+- **Owner decisions:** all resolved on 2026-11-02; see above. The comments were posted as each PR landed.
+- **Follow-ups:**
+  - The CLI start-up check treats `claude auth status` exiting 1 as "could not verify", so a logged-out instance with no profiles warns instead of exiting. Fix this after #1471.
+  - `proxy-async-ops.test.ts`'s first test reads the default credential store (the macOS login Keychain) during local `npm test`.
+  - Meridian Desktop's main process polls usage every 10 s while its window is hidden.
+  - Done 2026-11-02: ARCHITECTURE.md's agent-specific table lists `clientOwnsToolSearch` (#1478), and the tool-search harness is escrowed (#1483).
+- **Attribution audit:** `scripts/attribution-audit.mjs` reran on main `6663c0f9` in an isolated blob-less clone, and [the ledger](ATTRIBUTION_LEDGER.md) is regenerated.
+  - #1471, #1476 and #1477 are classified `merged`.
+  - "Re-landed with the maintainer as Author" stays at 137, so there is no new maintainer re-land.
+  - The one new "Closed in favor of a maintainer PR" row is the earlier owner-approved #1243 decline (closed 2026-10-21, whose comment cites #1433). It is not from this run.
+- **Workspace:**
+  - Removed: the #1471/#1476/#1477 review worktrees, their local branches, the baseline worktree and the #1471/#1476 base copies.
+  - The `wt-review-1475` and `wt-review-1478` worktrees and the `pr1475-nix` volume kept here were removed on 2026-11-02.
+  - The owner's checkout was not touched.
+- **Local test environment (this Mac):**
+  - Bun 1.3.14 loads Apple's SQLite 3.51.0, which the bookkeeping engine refuses: about 1,054 tests fail on unchanged main. Use `MERIDIAN_TEST_SQLITE_LIBRARY=/opt/homebrew/opt/sqlite/lib/libsqlite3.3.53.4.dylib`.
+  - The `npm test` script chains its 26 groups with `&&`, so a group-0 failure hides groups 1–25. Run each group separately.
+  - Under concurrent load, real-process and real-socket tests in error-reporting, stream-idle-guard, plugin-update-routes and cross-process-turn-coordinator fail on unchanged main too.
+
+## 2026-10-26/27: backlog run and 1.87.0 published
+
+The owner authorized the following for this run:
+
+- reviewing and merging the queue;
+- live model calls on included usage only, stopping on Extra Usage, 402 or `billing_error`, with no account or model switching;
+- PR and issue comments;
+- scrub releases;
+- release 1.87.0.
+
+Each PR below was adversarially reviewed and live- or headless-tested before merge. The review record is on the PR.
+
+- **Contributor PRs merged, contributor as Git Author:**
+  - [#1443](https://github.com/rynfar/meridian/pull/1443) `662fd4c1`: settings rows. The two fields were removed on the owner's decision.
+  - [#1445](https://github.com/rynfar/meridian/pull/1445) `a70a9925`: plugin update check, under the same toggle as Meridian's own.
+  - [#1446](https://github.com/rynfar/meridian/pull/1446) `72da1744`: duplicate-account flags and in-place refresh. This is the UI only; shared-quota routing was split out.
+  - [#1410](https://github.com/rynfar/meridian/pull/1410) `9d971d50` and [#1444](https://github.com/rynfar/meridian/pull/1444) `cb377858`: shared passthrough tool definitions and lists, with heap evidence.
+  - [#1429](https://github.com/rynfar/meridian/pull/1429) `19b0f762` (materemias): lists banked resets and redeems one only explicitly.
+  - [#1261](https://github.com/rynfar/meridian/pull/1261) `3548ff28`: transcript cleanup, narrowed to an opt-in that deletes what Claude Code's own cleanup deletes. `transcriptSweep` is not exported.
+  - [#1193](https://github.com/rynfar/meridian/pull/1193) `1b643b1a` (XInTheDark): optional prompt-cache keepalive. It is operator-only and off by default, beats near the 1-hour expiry, and lasts up to 3 hours. Maintainer corrections went on the contributor's branch.
+  - [#1463](https://github.com/rynfar/meridian/pull/1463) `25345754`: a ChatGPT seat is listed as it was while its renewal is out.
+- **Maintainer PRs:**
+  - [#1455](https://github.com/rynfar/meridian/pull/1455): spec graph.
+  - [#1456](https://github.com/rynfar/meridian/pull/1456): closes #1449, `~` in `PI_CODING_AGENT_DIR`.
+  - [#1458](https://github.com/rynfar/meridian/pull/1458): closes #1448, V2 compaction keeps the conversation's tier.
+  - Bot PRs [#1459](https://github.com/rynfar/meridian/pull/1459) and [#1462](https://github.com/rynfar/meridian/pull/1462).
+  - #1311 was closed (not planned): existing headers already cover it.
+- **Signing exception used once:** #1429's commits are signed but GitHub cannot verify them (`bad_email`). The owner approved an `--admin` exact-head squash on 2026-10-26, and [contributing.md](../../.agents/references/contributing.md) now records that case.
+- **Scrub releases:** opencode-scrub 0.3.0 (#20) and pi-scrub 0.2.3 (#15) are published and verified.
+- **Release [1.87.0](https://github.com/rynfar/meridian/releases/tag/meridian-v1.87.0) is published.**
+  - Gates: full gates, a packed-tarball OpenCode V1 and Pi E2E, and a fresh registry install.
+  - Published: npm `latest` with provenance, plus Docker `1.87.0`/`1.87`.
+  - `desktop / mac` again failed Apple notarization (HTTP 401).
+  - [Release record](evidence/release-1.87.0-20261027/README.md).
+- **Filed:** #1451 (warn when Pi traffic lacks pi-scrub), #1460 (the header shows the active profile while priority routing serves from another), and #1461 (an E41 cyber refusal on Opus 5.5 silently falls back to Opus 4.8). #1450 remains open.
+- **Follow-ups:**
+  - Replace the CI Apple notarization credential.
+  - Desktop does not reload a dead renderer.
+  - The startup model-catalog warm-up fetches (npm, GitHub, chatgpt.com) have no off switch.
+  - Nowaker follow-ups for #1261: an idle sweep with custody, and pin-aware cleanup.
+  - Shared-quota routing for #1446.
+  - #1193 keepalive beats are not shown while retention is on.
+- **Not done:** the owner's launchd service (port 3456) still runs 1.86.0. An upgrade is handed to a separate agent, because this run is served through that service.
 
 ## 2026-10-26: 1.86.0 published
 
