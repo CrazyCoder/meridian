@@ -21,8 +21,9 @@ import { homedir, platform, userInfo } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { promisify } from "node:util"
 import { claudeLog } from "../logger"
+import { authLifecycleFor, noteRefreshRejected, noteRefreshSucceeded, recordInBackground, refreshTokenId } from "./authLifecycle"
 import { isCredentialsReadOnly, refuseCredentialWrite } from "./credentialsMode"
-import { fetchOAuthPlanFields, planFieldsMissing } from "./oauthPlan" 
+import { planReadingDue, readPlanUpdate, resetPlanRecheck, runCredentialMaintenance } from "./planRecheck"
 
 const execFile = promisify(execFileCb)
 
@@ -77,7 +78,8 @@ export interface OAuthCredentials {
    * personal Max 5x reports — and a Standard seat reports `default_raven`,
    * which names no published allotment at all.
    */
-  seatTier?: string
+  seatTier?: string | null
+  planCheckedAt?: number
 }
 
 export interface CredentialsFile {
@@ -121,7 +123,7 @@ function guardCredentialWrites(store: CredentialStore): CredentialStore {
         return refuseCredentialWrite("credential-store", store.refreshKey ?? "unknown-store")
       }
       const written = await store.write(credentials)
-      if (written && store.refreshKey) credentialFactsCache.delete(store.refreshKey)
+      if (written) invalidateCredentialFacts(store.refreshKey)
       return written
     },
   }
@@ -303,6 +305,8 @@ export interface StoredCredentialSnapshot {
   presence: StoredCredentialPresence
   refreshTokenExpiresAt?: number
   accessTokenExpiresAt?: number
+  /** Which refresh token is stored, as authLifecycle identifies it; never the token. */
+  refreshTokenId?: string
 }
 
 function validStoredExpiry(value: unknown): number | undefined {
@@ -324,6 +328,7 @@ export async function readStoredCredentialSnapshot(store: CredentialStore): Prom
     presence: typeof accessToken === "string" && accessToken.length > 0 ? "present" : "absent",
     refreshTokenExpiresAt: validStoredExpiry(oauth?.refreshTokenExpiresAt),
     accessTokenExpiresAt: validStoredExpiry(oauth?.expiresAt),
+    refreshTokenId: refreshTokenId(typeof oauth?.refreshToken === "string" ? oauth.refreshToken : undefined),
   }
 }
 
@@ -334,10 +339,6 @@ export async function readStoredCredentialPresence(store: CredentialStore): Prom
 // ---------------------------------------------------------------------------
 // OAuth refresh
 // ---------------------------------------------------------------------------
-
-/** In-flight refresh promises — deduplicates concurrent callers per credential store. */
-const inflightRefreshByKey = new Map<string, Promise<boolean>>()
-const inflightRefreshByStore = new WeakMap<CredentialStore, Promise<boolean>>()
 
 /**
  * Refresh the Claude Code OAuth access token.
@@ -365,26 +366,33 @@ export async function refreshOAuthToken(store?: CredentialStore): Promise<boolea
     return refuseCredentialWrite("oauth-refresh", s.refreshKey ?? "unknown-store")
   }
 
-  const refreshKey = s.refreshKey
-  if (refreshKey) {
-    const inflight = inflightRefreshByKey.get(refreshKey)
-    if (inflight) return inflight
+  return runCredentialMaintenance(s, { kind: "token", run: () => doRefresh(s) })
+}
 
-    const refresh = doRefresh(s).finally(() => {
-      inflightRefreshByKey.delete(refreshKey)
-    })
-    inflightRefreshByKey.set(refreshKey, refresh)
-    return refresh
-  }
-
-  const inflight = inflightRefreshByStore.get(s)
-  if (inflight) return inflight
-
-  const refresh = doRefresh(s).finally(() => {
-    inflightRefreshByStore.delete(s)
-  })
-  inflightRefreshByStore.set(s, refresh)
-  return refresh
+/**
+ * Re-read the plan of a credential whose access token is still valid, and
+ * write only the plan fields the reading carried. Runs in the same per-store
+ * slot as a token rotation, so a slow plan response can never write back
+ * tokens a concurrent rotation has already replaced.
+ */
+async function recheckStoredPlan(store: CredentialStore): Promise<boolean> {
+  const credentials = await store.read()
+  if (!credentials?.claudeAiOauth.accessToken) return false
+  const update = await readPlanUpdate(credentials.claudeAiOauth, store)
+  if (!update) return true
+  // The slot does not cover the CLI, a re-login or another instance, any of
+  // which may rotate the tokens during the lookup. Lay the plan over what is
+  // on disk now, and only while it is still the token the plan was read with:
+  // writing back the tokens read before the lookup could restore a spent
+  // refresh token.
+  const current = await store.read()
+  if (current?.claudeAiOauth.accessToken !== credentials.claudeAiOauth.accessToken) return true
+  current.claudeAiOauth = { ...current.claudeAiOauth, ...update.fields, planCheckedAt: update.checkedAt }
+  if (update.fields.seatTier === null) delete current.claudeAiOauth.seatTier
+  if (!(await store.write(current))) return false
+  invalidateCredentialFacts(store.refreshKey)
+  claudeLog("auth.plan_rechecked", { fields: update.fields, checkedAt: update.checkedAt })
+  return true
 }
 
 async function doRefresh(store: CredentialStore): Promise<boolean> {
@@ -420,6 +428,11 @@ async function doRefresh(store: CredentialStore): Promise<boolean> {
   if (!response.ok) {
     const body = await response.text().catch(() => "")
     claudeLog("token_refresh.bad_response", { status: response.status, body })
+    // Only RFC 6749 `invalid_grant` says the refresh token itself is no good.
+    // `invalid_request`, `invalid_client`, a throttle or an outage says nothing
+    // about whether the login is alive.
+    const code = oauthErrorCode(body)
+    if (code === "invalid_grant") recordInBackground(() => noteRefreshRefused(store, refreshToken, code))
     return false
   }
 
@@ -468,28 +481,20 @@ async function doRefresh(store: CredentialStore): Promise<boolean> {
     ...(refreshTokenExpiresAt ? { refreshTokenExpiresAt } : {}),
   }
 
-  // The plan is only ever written at login, so a credential file created before
-  // Meridian persisted it stays plan-blind forever — nothing else in the
-  // lifecycle ever asks. A refresh is the one other moment that holds a valid
-  // access token, which is what the profile endpoint requires, so it is the
-  // only place a backfill can happen without forcing an interactive re-login.
-  //
-  // Gated on the fields being absent, so this costs one extra GET once per
-  // profile rather than on every ~8h refresh: the next refresh reads the value
-  // this one wrote and skips. Fill absent, null or empty plan values before
-  // the single store write; populated values already on disk keep precedence.
-  const backfilled = planFieldsMissing(credentials.claudeAiOauth)
-    ? await fetchOAuthPlanFields(tokenData.access_token)
-    : {}
-  for (const key of ["subscriptionType", "rateLimitTier", "seatTier"] as const) {
-    const value = backfilled[key]
-    if (value && !credentials.claudeAiOauth[key]) credentials.claudeAiOauth[key] = value
+  // A plan can change while the login stays the same (Pro to Max, a Team seat
+  // moved to another tier), so a reading expires instead of being taken once.
+  // A due reading rides along with the rotation's single write; a fresh
+  // reported field wins over the stored one, and a field the reading omitted
+  // keeps its stored value.
+  const planUpdate = await readPlanUpdate(credentials.claudeAiOauth, store)
+  if (planUpdate) credentials.claudeAiOauth = {
+    ...credentials.claudeAiOauth, ...planUpdate.fields, planCheckedAt: planUpdate.checkedAt,
   }
+  if (planUpdate?.fields.seatTier === null) delete credentials.claudeAiOauth.seatTier
 
   const written = await store.write(credentials)
   if (!written) return false
-  // Profile/health polling may have cached the incomplete plan before refresh.
-  if (store.refreshKey) credentialFactsCache.delete(store.refreshKey)
+  invalidateCredentialFacts(store.refreshKey)
 
   // Logged so it is observable whether Anthropic ever rolls the refresh-token
   // window — undefined here means the renewal countdown stays anchored to the
@@ -497,9 +502,67 @@ async function doRefresh(store: CredentialStore): Promise<boolean> {
   claudeLog("token_refresh.success", {
     expiresAt,
     refreshTokenExpiresAt,
-    backfilledPlan: Object.keys(backfilled),
+    backfilledPlan: Object.keys(planUpdate?.fields ?? {}),
   })
+  const { refreshTokenExpiresAt: renewedDeadline, refreshToken: renewedToken } = credentials.claudeAiOauth
+  recordInBackground(() => noteRefreshSucceeded(store.refreshKey, { refreshTokenExpiresAt: renewedDeadline, refreshToken: renewedToken }))
   return true
+}
+
+/**
+ * The `error` code of a refused token request: a fixed vocabulary such as
+ * `invalid_grant`, never a secret. Accepts the OAuth shape (`error: "…"`) and
+ * the Anthropic API shape (`error: { type: "…" }`).
+ */
+export function oauthErrorCode(body: string): string | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined
+  const error = (parsed as { error?: unknown }).error
+  const code = typeof error === "string"
+    ? error
+    : typeof error === "object" && error !== null ? (error as { type?: unknown }).type : undefined
+  return typeof code === "string" && /^[a-z_]{1,40}$/.test(code) ? code : undefined
+}
+
+/** How long a Claude Code process that rotated the token first may take to write its replacement down. */
+export const ROTATION_SETTLE_MS = 750
+
+/**
+ * Record an `invalid_grant` as a logout only when the refused refresh token is
+ * provably still the stored one. Claude Code refreshes the same credential
+ * from its own processes, and a token rotated there a moment earlier is
+ * refused for that reason alone. The store is read twice, ROTATION_SETTLE_MS
+ * apart, because the rotating process may still be writing. A read that fails
+ * or returns nothing proves nothing, so it records nothing: unknown stays
+ * unknown.
+ */
+async function noteRefreshRefused(store: CredentialStore, sentRefreshToken: string, detail: string): Promise<void> {
+  if (!store.refreshKey || authLifecycleFor(store.refreshKey)?.firstUnauthedAt) return
+  const stillStored = async (): Promise<boolean | undefined> => {
+    let onDisk: CredentialsFile | null
+    try {
+      onDisk = await store.read()
+    } catch {
+      return undefined
+    }
+    const token = onDisk?.claudeAiOauth?.refreshToken
+    return typeof token === "string" && token.length > 0 ? token === sentRefreshToken : undefined
+  }
+  let verdict = await stillStored()
+  if (verdict === true) {
+    await new Promise(resolve => setTimeout(resolve, ROTATION_SETTLE_MS))
+    verdict = await stillStored()
+  }
+  if (verdict === true) {
+    await noteRefreshRejected(store.refreshKey, { detail, refreshToken: sentRefreshToken })
+    return
+  }
+  claudeLog(verdict === false ? "token_refresh.rotated_elsewhere" : "token_refresh.refusal_unverified", { detail })
 }
 
 /**
@@ -515,16 +578,26 @@ async function doRefresh(store: CredentialStore): Promise<boolean> {
  * expiresAt, refresh request failed). False is non-fatal — the caller
  * proceeds with whatever token is on disk and falls back to the reactive
  * refresh-on-401 path if Anthropic rejects it.
+ *
+ * `recheckPlan` is for the background maintenance loop only: a valid token
+ * then also gets its plan re-read when that reading is due. The request path
+ * leaves it off, so admitting a request never waits on the profile endpoint.
  */
 export async function ensureFreshToken(
   store?: CredentialStore,
   bufferMs = 5 * 60 * 1000,
+  recheckPlan = false,
 ): Promise<boolean> {
   const s = store ?? createPlatformCredentialStore()
   const credentials = await s.read()
   const expiresAt = credentials?.claudeAiOauth?.expiresAt
   if (!expiresAt) return false
-  if (expiresAt - Date.now() > bufferMs) return true
+  if (expiresAt - Date.now() > bufferMs) {
+    if (recheckPlan && !isCredentialsReadOnly() && planReadingDue(credentials.claudeAiOauth, s)) {
+      await runCredentialMaintenance(s, { kind: "plan", run: () => recheckStoredPlan(s) })
+    }
+    return true
+  }
   // Read-only instances report the token as they found it instead of routing
   // into a refusal. This runs before every SDK request, so the refusal log
   // would repeat per request for the whole buffer window; the refusal belongs
@@ -604,14 +677,27 @@ interface StoredCredentialFacts {
   refreshTokenExpiresAt?: number
   subscriptionType?: string
   rateLimitTier?: string
-  seatTier?: string
+  seatTier?: string | null
 }
 
 const credentialFactsCache = new Map<string, { value: StoredCredentialFacts; at: number }>()
 const credentialFactsInflight = new Map<string, Promise<StoredCredentialFacts>>()
+// Bumped by every successful write, so a read that started before the write
+// cannot cache the value it saw once it finishes.
+const credentialFactsVersions = new Map<string, number>()
+let credentialFactsGeneration = 0
+
+function invalidateCredentialFacts(key: string | undefined): void {
+  if (!key) return
+  credentialFactsVersions.set(key, (credentialFactsVersions.get(key) ?? 0) + 1)
+  credentialFactsCache.delete(key)
+  credentialFactsInflight.delete(key)
+}
 
 /** Drop cached credential facts — for tests, and after a re-login. */
 export function resetAuthRenewalCache(): void {
+  credentialFactsGeneration++
+  credentialFactsVersions.clear()
   credentialFactsCache.clear()
   credentialFactsInflight.clear()
 }
@@ -636,6 +722,8 @@ async function readCredentialFacts(s: CredentialStore): Promise<StoredCredential
     if (inflight) return inflight
   }
 
+  const generation = credentialFactsGeneration
+  const version = key ? credentialFactsVersions.get(key) ?? 0 : 0
   const read = (async (): Promise<StoredCredentialFacts> => {
     let credentials: CredentialsFile | null = null
     try {
@@ -650,7 +738,9 @@ async function readCredentialFacts(s: CredentialStore): Promise<StoredCredential
       rateLimitTier: oauth?.rateLimitTier,
       seatTier: oauth?.seatTier,
     }
-    if (key) credentialFactsCache.set(key, { value, at: Date.now() })
+    if (key && generation === credentialFactsGeneration && version === (credentialFactsVersions.get(key) ?? 0)) {
+      credentialFactsCache.set(key, { value, at: Date.now() })
+    }
     return value
   })()
 
@@ -659,7 +749,7 @@ async function readCredentialFacts(s: CredentialStore): Promise<StoredCredential
   try {
     return await read
   } finally {
-    credentialFactsInflight.delete(key)
+    if (credentialFactsInflight.get(key) === read) credentialFactsInflight.delete(key)
   }
 }
 
@@ -855,5 +945,5 @@ export function isBackgroundRefreshActive(): boolean {
 
 /** Reset in-flight state — for testing only. */
 export function resetInflightRefresh(): void {
-  inflightRefreshByKey.clear()
+  resetPlanRecheck()
 }
